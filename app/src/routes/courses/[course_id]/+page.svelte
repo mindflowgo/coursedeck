@@ -37,6 +37,7 @@
     FileDown
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
+  import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
 
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
@@ -921,6 +922,9 @@
     }
 
     startQueueFeedback();
+    // Load the PDF engine and fonts while the browser is idle, so the first
+    // export doesn't pay the cold-start cost on the click.
+    schedulePdfPrewarm();
     if (typeof window !== 'undefined') {
       window.addEventListener('popstate', handlePopState);
     }

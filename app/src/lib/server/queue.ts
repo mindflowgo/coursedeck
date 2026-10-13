@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { LLMService, type LLMConfig } from './llm';
 import { PromptService } from './prompts';
 import { CourseService } from './courses';
@@ -160,25 +158,12 @@ class GenerationQueue {
       tab: 'summary' | 'cheatsheet' | 'test';
     }> = [];
 
-    const courseDir = path.join(CourseService.getCoursesDir(), courseId.toLowerCase());
-
     for (const unit of manifest.units) {
       for (const lesson of unit.lessons) {
         for (const tab of tabs) {
-          const filePath = path.join(courseDir, `${lesson.id}.${tab}.md`);
-          let isMissingOrPlaceholder = true;
-
-          if (fs.existsSync(filePath)) {
-            try {
-              const content = fs.readFileSync(filePath, 'utf8');
-              // If it has substantial text and does not say "*Not yet generated.*"
-              if (content.length > 250 && !content.includes('*Not yet generated.*') && !content.includes('Not yet generated')) {
-                isMissingOrPlaceholder = false;
-              }
-            } catch {}
-          }
-
-          if (isMissingOrPlaceholder) {
+          // Counts any version file (-N included) with real content — lessons
+          // that only carry versioned files are present, not missing.
+          if (!CourseService.hasLessonTabContent(courseId, lesson.id, tab)) {
             tasksToEnqueue.push({
               courseId,
               lessonId: lesson.id,
@@ -388,11 +373,15 @@ class GenerationQueue {
       const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt);
       const parsed = parseFrontmatter(result.completion.trim());
 
-      // Serialize with YAML frontmatter
+      // Serialize with YAML frontmatter. The version must match the filename
+      // saveLessonTab writes below: base overwrite = 1, new version = max + 1.
+      const version = nextTask.asNewVersion
+        ? CourseService.latestVersionNumber(nextTask.courseId, nextTask.lessonId, nextTask.tab) + 1
+        : 1;
       const frontmatter = {
         ...parsed.frontmatter,
         type: nextTask.tab,
-        version: 1,
+        version,
         updatedAt: new Date().toISOString().split('T')[0],
         prompt: systemPrompt
       };

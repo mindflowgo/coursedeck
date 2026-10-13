@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Marked } from 'marked';
-  import katex from 'katex';
+  import { extractMathFromMarkdown, restoreMathTokens } from '$lib/markdown/mathRenderer';
   import DOMPurify from 'dompurify';
   import { getApiBaseUrl } from '$lib/api';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
@@ -176,10 +176,9 @@
         }
 
         const bodyMarkdown = cleanBlock.replace(/<!--\s*target:\s*[\s\S]*?-->/gi, '').trim();
-        let bodyHtml = markedParser.parse(bodyMarkdown) as string;
-
-        // Render KaTeX formulas in body if any
-        bodyHtml = renderMathInHtml(bodyHtml);
+        const { processedMarkdown: noteMd, mathTokens: noteTokens } = extractMathFromMarkdown(bodyMarkdown);
+        let bodyHtml = markedParser.parse(noteMd) as string;
+        bodyHtml = restoreMathTokens(bodyHtml, noteTokens);
 
         const postItHtml = `
 <div class="postit-container not-prose my-5" data-note-id="${noteId}" data-target="${escapeHtml(targetText)}">
@@ -230,13 +229,16 @@
       }
     );
 
-    // 5. Render Markdown via markedParser
-    let html = markedParser.parse(cleaned) as string;
+    // 6. Pre-extract math formulas before markedParser so \(, \[, _, etc. are never mangled by CommonMark
+    const { processedMarkdown: markdownWithoutMath, mathTokens } = extractMathFromMarkdown(cleaned);
 
-    // 6. Render KaTeX formulas if present
-    html = renderMathInHtml(html);
+    // 7. Render Markdown via markedParser
+    let html = markedParser.parse(markdownWithoutMath) as string;
 
-    // 7. Inject rendered Post-It Notes
+    // 8. Restore rendered KaTeX formulas
+    html = restoreMathTokens(html, mathTokens);
+
+    // 9. Inject rendered Post-It Notes
     html = html.replace(/<p>\s*%%%USERNOTE_(\d+)%%%\s*<\/p>/g, (_, idx) => userNotes[Number(idx)] || '');
     html = html.replace(/%%%USERNOTE_(\d+)%%%/g, (_, idx) => userNotes[Number(idx)] || '');
 
@@ -259,76 +261,6 @@
         'data-anchor-id'
       ]
     });
-  }
-
-  function isLikelyLatex(code: string): boolean {
-    const trimmed = code.trim();
-    if (!trimmed) return false;
-
-    // 1. Explicit LaTeX commands: \frac, \sqrt, \alpha, \text, etc.
-    if (/\\[a-zA-Z]+/.test(trimmed)) return true;
-
-    // 2. Math structural notation: power (^), subscript (_), or grouping ({})
-    if (/[\^_{}]/.test(trimmed)) return true;
-
-    // 3. LaTeX escaped symbols or unicode math symbols
-    if (/\\([\\$&#%_{}[\]|<>~^+-/*=])/.test(trimmed)) return true;
-    if (/[≠≈≤≥±×÷·√∞∫∑∏∂∇∈∉⊂⊃∪∩∧∨]/.test(trimmed)) return true;
-
-    // If it has NO LaTeX commands or structural notation:
-    // Any natural language word (3 or more letters, e.g. "Assets", "CAD", "Even", "though") is NOT math
-    if (/[a-zA-Z]{3,}/.test(trimmed)) return false;
-
-    // Multiple words separated by spaces without LaTeX markup -> plain text
-    if (/\b[a-zA-Z]{2,}\s+[a-zA-Z]{2,}\b/.test(trimmed)) return false;
-
-    // Single variable: $x$, $y$, $z$, $n$
-    if (/^[a-zA-Z]$/.test(trimmed)) return true;
-
-    // Short symbolic equation / expression with math operators (no words >= 2 chars):
-    // e.g. "x = 2", "a + b = c", "1 + 1 = 2"
-    if (/[=<>+*]/.test(trimmed) && !/[a-zA-Z]{2,}/.test(trimmed)) {
-      return true;
-    }
-
-    return false;
-  }
-
-  function renderMathInHtml(rawHtml: string): string {
-    // Protect pre, code, script, and style blocks from math evaluation
-    const protectedBlocks: string[] = [];
-    const sanitizedHtml = rawHtml.replace(/<(pre|code|script|style)[\s\S]*?<\/\1>/gi, (match) => {
-      protectedBlocks.push(match);
-      return `%%%MATH_PROTECTED_${protectedBlocks.length - 1}%%%`;
-    });
-
-    // 1. Display math: $$...$$
-    let processed = sanitizedHtml.replace(/\$\$([\s\S]+?)\$\$/g, (match, math) => {
-      if (!isLikelyLatex(math)) return match;
-      try {
-        return katex.renderToString(math.trim(), { displayMode: true });
-      } catch {
-        return match;
-      }
-    });
-
-    // 2. Inline math: $...$
-    // Negative lookbehind ensures $ is not preceded by word char or backslash
-    // Negative lookahead ensures $ is not followed by space or digit (currency like $41,500 or $ 50)
-    // Closing $ must not be preceded by space and not followed by digit
-    processed = processed.replace(/(?<![\w\\])\$(?!\s|[0-9])([^\$\n]+?)(?<!\s)\$(?!\d)/g, (match, math) => {
-      if (!isLikelyLatex(math)) return match;
-      try {
-        return katex.renderToString(math.trim(), { displayMode: false });
-      } catch {
-        return match;
-      }
-    });
-
-    // Restore protected blocks
-    processed = processed.replace(/%%%MATH_PROTECTED_(\d+)%%%/g, (_, idx) => protectedBlocks[Number(idx)] || '');
-
-    return processed;
   }
 
   function highlightTargetInContainer(container: HTMLElement, targetText: string, noteId: string) {

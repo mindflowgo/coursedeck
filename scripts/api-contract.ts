@@ -118,6 +118,20 @@ try {
       byLesson.status === 200 && Array.isArray(byLesson.body.enqueued) && 'status' in byLesson.body
     );
 
+    const lessonTab = await req('/api/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'enqueue', courseId: 'zzz9', lessonId: '01.01', tab: 'lesson' })
+    });
+    check('enqueue with tab=lesson rejected → 400', lessonTab.status === 400);
+
+    const bogusTab = await req('/api/queue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'enqueue', courseId: 'zzz9', tabs: ['summary', 'nope'] })
+    });
+    check('enqueue with unknown tab name rejected → 400', bogusTab.status === 400);
+
     const legacyAction = await req('/api/queue', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -219,6 +233,17 @@ try {
       'markdown ref rewritten with |50% spec',
       md.includes('![Big diagram|50%](./assets/img/big_diagram.jpg)')
     );
+  }
+
+  console.log('\nURL decoding:');
+  {
+    // An asset name containing a literal '%' arrives percent-encoded (%25);
+    // it must decode once and miss (404), not double-decode and blow up (500).
+    const pct = await fetch(`${BASE}/api/courses/tst01/assets/img/100%25.png`);
+    check('asset path with encoded % → 404, not double-decoded 500', pct.status === 404);
+
+    const malformed = await fetch(`${BASE}/api/courses/%E0%A4%A`);
+    check('malformed percent escape in path → 400', malformed.status === 400);
   }
 
   console.log('\nUnknown route:');

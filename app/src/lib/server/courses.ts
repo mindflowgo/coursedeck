@@ -154,6 +154,55 @@ export class CourseService {
     return this.getLessonContent(courseId, lessonId);
   }
 
+  /** Highest existing version number for a lesson tab file (>= 1, base file = 1). */
+  static latestVersionNumber(courseId: string, lessonId: string, tab: string): number {
+    const courseDir = this.courseDir(courseId);
+    if (!fs.existsSync(courseDir)) return 1;
+
+    const baseTab = tab.replace(/-\d+$/, '');
+    const regex = new RegExp(
+      `^${lessonId.replace(/\./g, '\\.')}\\.${baseTab}(?:-(\\d+))?\\.md$`,
+      'i'
+    );
+    let max = 1;
+    for (const f of fs.readdirSync(courseDir)) {
+      const m = f.match(regex);
+      if (m) {
+        const num = m[1] ? parseInt(m[1], 10) : 1;
+        if (num > max) max = num;
+      }
+    }
+    return max;
+  }
+
+  /**
+   * True when any version (base or -N) of the lesson tab exists with real
+   * generated content — more than a stub and not a "Not yet generated"
+   * placeholder. Used by the queue's missing-scan, which must not regenerate
+   * lessons that only carry versioned files.
+   */
+  static hasLessonTabContent(
+    courseId: string,
+    lessonId: string,
+    tab: 'summary' | 'cheatsheet' | 'test'
+  ): boolean {
+    const courseDir = this.courseDir(courseId);
+    if (!fs.existsSync(courseDir)) return false;
+
+    const regex = new RegExp(
+      `^${lessonId.replace(/\./g, '\\.')}\\.${tab}(?:-\\d+)?\\.md$`,
+      'i'
+    );
+    for (const f of fs.readdirSync(courseDir)) {
+      if (!regex.test(f)) continue;
+      try {
+        const content = fs.readFileSync(path.join(courseDir, f), 'utf8');
+        if (content.length > 250 && !content.includes('Not yet generated')) return true;
+      } catch {}
+    }
+    return false;
+  }
+
   static saveLessonTab(
     courseId: string,
     lessonId: string,
@@ -161,7 +210,7 @@ export class CourseService {
     content: string,
     options?: { asNewVersion?: boolean }
   ): { success: boolean; versionId: string; filename: string } {
-    const courseDir = path.join(this.getCoursesDir(), courseId.toLowerCase());
+    const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) {
       return { success: false, versionId: tab, filename: '' };
     }
@@ -170,18 +219,7 @@ export class CourseService {
     const baseTab = tab.replace(/-\d+$/, ''); // 'summary', 'cheatsheet', or 'test'
 
     if (options?.asNewVersion && ['summary', 'cheatsheet', 'test'].includes(baseTab)) {
-      const files = fs.readdirSync(courseDir);
-      const regex = new RegExp(`^${lessonId.replace('.', '\\.')}\\.${baseTab}(?:-(\\d+))?\\.md$`, 'i');
-      let maxVersion = 1;
-      for (const f of files) {
-        const m = f.match(regex);
-        if (m) {
-          const num = m[1] ? parseInt(m[1], 10) : 1;
-          if (num > maxVersion) maxVersion = num;
-        }
-      }
-      const nextVersion = maxVersion + 1;
-      targetTab = `${baseTab}-${nextVersion}`;
+      targetTab = `${baseTab}-${this.latestVersionNumber(courseId, lessonId, baseTab) + 1}`;
     }
 
     const filename = `${lessonId}.${targetTab}.md`;

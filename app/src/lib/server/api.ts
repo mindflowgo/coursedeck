@@ -56,6 +56,27 @@ const MIME_TYPES: Record<string, string> = {
 
 type Tab = 'summary' | 'cheatsheet' | 'test';
 
+const GENERATION_TABS: readonly Tab[] = ['summary', 'cheatsheet', 'test'];
+
+/**
+ * Resolves the tabs an enqueue request targets: explicit `tabs` array, single
+ * `tab`, or the full default set. Returns null when any requested tab is not
+ * a generation tab — the queue would otherwise happily write
+ * `NN.NN.<anything>.md` files (including overwriting raw `*.lesson.md`).
+ */
+function parseRequestedTabs(body: Record<string, unknown>): Tab[] | null {
+  const raw: unknown[] = Array.isArray(body.tabs)
+    ? body.tabs
+    : body.tab !== undefined && body.tab !== null
+      ? [body.tab]
+      : [];
+  const list = raw.length > 0 ? raw : [...GENERATION_TABS];
+  const valid = list.every(
+    (t): t is Tab => typeof t === 'string' && (GENERATION_TABS as readonly string[]).includes(t)
+  );
+  return valid ? (list as Tab[]) : null;
+}
+
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
@@ -99,8 +120,15 @@ function openWithFileManager(targetDir: string): Promise<Response> {
 }
 
 export async function handleApiRequest(req: Request, url: URL): Promise<Response> {
-  const pathname = decodeURIComponent(url.pathname);
   const method = req.method.toUpperCase();
+
+  // Decode exactly once; subpaths below receive already-decoded values.
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    return error(400, 'Malformed percent-encoding in request path');
+  }
 
   try {
     // ---- /api/llm ----
@@ -176,8 +204,6 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           courseId,
           lessonId,
           lessonTitle,
-          tab,
-          tabs,
           asNewVersion,
           prompt,
           customPrompt,
@@ -193,9 +219,12 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             return error(400, 'courseId is required to enqueue tasks');
           }
 
+          const targetTabs = parseRequestedTabs(body);
+          if (!targetTabs) {
+            return error(400, "Invalid tab. Must be 'summary', 'cheatsheet', or 'test'");
+          }
+
           if (lessonId) {
-            const targetTabs: Tab[] =
-              (tabs as Tab[]) || (tab ? [tab as Tab] : ['summary', 'cheatsheet', 'test']);
             const items = targetTabs.map((t) => ({
               courseId: String(courseId),
               lessonId: String(lessonId),
@@ -216,7 +245,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           } else {
             const enqueued = queueManager.enqueueCourseMissing(
               String(courseId),
-              (tabs as Tab[]) || ['summary', 'cheatsheet', 'test'],
+              targetTabs,
               customConfig as LLMConfig | undefined
             );
             return json({
@@ -667,7 +696,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       // GET /api/courses/:course_id/assets/**
       const assetsMatch = subpath.match(/^assets\/(.+)$/);
       if (assetsMatch && method === 'GET') {
-        const assetRelativePath = decodeURIComponent(assetsMatch[1]);
+        // Already decoded once at the top of handleApiRequest — decoding here
+        // again would corrupt asset names containing a literal '%'.
+        const assetRelativePath = assetsMatch[1];
         const fullPath = CourseService.resolveAssetPath(courseId, assetRelativePath);
         if (!fullPath || !fs.existsSync(fullPath)) {
           return error(404, 'Asset not found');

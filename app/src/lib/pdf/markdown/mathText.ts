@@ -6,6 +6,8 @@
  * → "(−b ± √(b² − 4ac)) / 2a") using the DejaVu font's wide glyph coverage.
  */
 
+import { extractMathFromMarkdown } from '../../markdown/mathRenderer';
+
 const SUPERSCRIPTS: Record<string, string> = {
   '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
   '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾', 'n': 'ⁿ', 'i': 'ⁱ',
@@ -102,7 +104,7 @@ function readGroup(src: string, state: RenderState): string {
     if (!cmd) state.pos++;
     return src.slice(start, state.pos);
   }
-  return src[state.pos] ?? '';
+  return src[state.pos++] ?? '';
 }
 
 function skipSpaces(src: string, state: RenderState): void {
@@ -262,29 +264,25 @@ export type TextSegment = { kind: 'text' | 'math'; value: string; display?: bool
 
 export function splitMathSegments(input: string): TextSegment[] {
   const segments: TextSegment[] = [];
+  const { processedMarkdown, mathTokens } = extractMathFromMarkdown(input);
+  if (!mathTokens.length) {
+    return [{ kind: 'text', value: input }];
+  }
 
-  // Display math first: $$...$$
-  const displayParts = input.split(/\$\$([\s\S]+?)\$\$/g);
-  displayParts.forEach((part, i) => {
-    if (i % 2 === 1) {
-      segments.push({ kind: 'math', value: part, display: true });
-    } else if (part) {
-      // Inline math within the literal part
-      const inlineParts = part.split(/\$(?!\s)([^\$\n]+?)(?<!\s)\$(?!\d)/g);
-      inlineParts.forEach((piece, j) => {
-        if (j % 2 === 1) {
-          if (looksLikeLatex(piece)) {
-            segments.push({ kind: 'math', value: piece, display: false });
-          } else {
-            // Currency or prose: keep the dollars literally.
-            segments.push({ kind: 'text', value: `$${piece}$` });
-          }
-        } else if (piece) {
-          segments.push({ kind: 'text', value: piece });
-        }
-      });
+  const parts = processedMarkdown.split(/(%%%MATH_TOKEN_\d+%%%)/g);
+  for (const part of parts) {
+    if (!part) continue;
+    const tokenMatch = part.match(/^%%%MATH_TOKEN_(\d+)%%%$/);
+    if (tokenMatch) {
+      const idx = Number(tokenMatch[1]);
+      const token = mathTokens[idx];
+      if (token) {
+        segments.push({ kind: 'math', value: token.math, display: token.display });
+        continue;
+      }
     }
-  });
+    segments.push({ kind: 'text', value: part });
+  }
 
   return segments;
 }

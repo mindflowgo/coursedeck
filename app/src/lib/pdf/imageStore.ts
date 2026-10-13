@@ -4,6 +4,22 @@ import type { EmbeddedImage, ImageEmbedder, ImageSettler, ImageSpec } from './ty
 const PT_PER_PX = 0.75;
 const CONCURRENCY = 6;
 
+/**
+ * Formats the PDF spec can carry byte-for-byte. Everything else (SVG, GIF,
+ * WebP, AVIF, BMP…) has to be decoded and re-encoded to PNG, which is the
+ * only place a canvas is used in the whole export path.
+ */
+const DIRECT_TYPES = new Set(['image/png', 'image/jpeg']);
+
+/**
+ * Supersample factor for re-encoded assets. 2× the *display* size is ~192 dpi
+ * at print scale — crisp without embedding a full-size bitmap for something
+ * that renders at 24pt.
+ */
+const RASTER_SCALE = 2;
+/** Hard cap on either raster side, bounding memory on pathological assets. */
+const MAX_RASTER_PX = 4096;
+
 interface LoadJob {
   url: string;
   spec: ImageSpec;
@@ -11,14 +27,33 @@ interface LoadJob {
   placeholders: EmbeddedImage[];
 }
 
+interface DecodedSource {
+  blob: Blob;
+  width: number;
+  height: number;
+  /** Populated when the bytes had to be decoded through an <img>. */
+  element?: HTMLImageElement;
+}
+
+/**
+ * Session-level caches, shared by every export in the page session.
+ *
+ * - `sourceCache` avoids re-fetching and re-decoding the same asset.
+ * - `embedCache` avoids re-rasterizing the same asset at the same display
+ *   size, so re-exporting a document (or exporting a second tab that shares
+ *   icons) skips the canvas entirely.
+ */
+const sourceCache = new Map<string, Promise<DecodedSource>>();
+const embedCache = new Map<string, EmbeddedImage>();
+
 /**
  * Browser image pipeline for the PDF compiler.
  *
  * - PNG/JPEG bytes are embedded directly (no re-encode, no canvas).
- * - GIF/SVG/WebP are decoded once to PNG via a small canvas, because the
- *   PDF format only accepts raster images — this is the only canvas used
- *   anywhere in the export path, and it is per-asset and tiny.
- * - Results are cached per URL; failures degrade to a text placeholder.
+ * - GIF/SVG/WebP are decoded once and rasterized at their *display* size,
+ *   because the PDF format only accepts raster images. The canvas is
+ *   per-asset, sized to what actually lands on the page, and cached.
+ * - Failures degrade to a text placeholder.
  */
 export interface BrowserImageStore {
   embed(url: string, spec: ImageSpec, mode: 'block' | 'inline'): EmbeddedImage;
@@ -27,10 +62,11 @@ export interface BrowserImageStore {
 }
 
 export function createBrowserImageStore(): BrowserImageStore {
-  const cache = new Map<string, EmbeddedImage>();
   const jobs = new Map<string, LoadJob>();
   const pending: Promise<void>[] = [];
   let active = 0;
+  let resolvedCount = 0;
+  let failedCount = 0;
   const queue: (() => void)[] = [];
 
   function pump(): void {
@@ -50,10 +86,51 @@ export function createBrowserImageStore(): BrowserImageStore {
     });
   }
 
-  async function loadBlobMeta(url: string): Promise<{ blob: Blob; width: number; height: number }> {
+  /** Fetch + decode an asset once per session, memoized by URL. */
+  function loadSource(url: string): Promise<DecodedSource> {
+    let cached = sourceCache.get(url);
+    if (!cached) {
+      cached = fetchAndDecode(url).catch((err) => {
+        // Don't poison the cache with a transient failure.
+        sourceCache.delete(url);
+        throw err;
+      });
+      sourceCache.set(url, cached);
+    }
+    return cached;
+  }
+
+  async function fetchAndDecode(url: string): Promise<DecodedSource> {
     const response = await fetch(url, { credentials: 'same-origin' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const blob = await response.blob();
+
+    // Formats that get re-encoded need an <img> anyway — decode once and
+    // keep it, instead of decoding for dimensions and then again to draw.
+    if (!DIRECT_TYPES.has(blob.type)) {
+      try {
+        const element = await loadViaImgElement(blob);
+        return {
+          blob,
+          width: element.naturalWidth || 24,
+          height: element.naturalHeight || 24,
+          element
+        };
+      } catch (err) {
+        // A handful of bundled SVGs are stored quoted-printable encoded but
+        // served as `image/svg+xml`, so the browser rejects them and the
+        // figure silently disappears. Decode and retry before giving up.
+        const repaired = await tryRepairSvg(blob);
+        if (!repaired) throw err;
+        const element = await loadViaImgElement(repaired);
+        return {
+          blob: repaired,
+          width: element.naturalWidth || 24,
+          height: element.naturalHeight || 24,
+          element
+        };
+      }
+    }
 
     try {
       const bitmap = await createImageBitmap(blob);
@@ -61,18 +138,38 @@ export function createBrowserImageStore(): BrowserImageStore {
       bitmap.close();
       return meta;
     } catch {
-      // SVG and some GIFs cannot use createImageBitmap — fall back to <img>
-      const meta = await loadViaImgElement(blob);
-      return { blob, width: meta.width, height: meta.height };
+      // Some hosts lack createImageBitmap for certain inputs — fall back.
+      const element = await loadViaImgElement(blob);
+      return {
+        blob,
+        width: element.naturalWidth || 24,
+        height: element.naturalHeight || 24,
+        element
+      };
     }
   }
 
-  function loadViaImgElement(blob: Blob): Promise<{ width: number; height: number; element: HTMLImageElement }> {
+  /**
+   * Detects and reverses quoted-printable encoding on an SVG that failed to
+   * decode. Only applied on the failure path, and only when the document
+   * really looks quoted-printable, so a valid SVG is never rewritten.
+   */
+  async function tryRepairSvg(blob: Blob): Promise<Blob | null> {
+    if (!blob.type.includes('svg')) return null;
+    const text = await blob.text();
+    if (!looksQuotedPrintable(text)) return null;
+    return new Blob([decodeQuotedPrintable(text)], { type: 'image/svg+xml' });
+  }
+
+  function loadViaImgElement(blob: Blob): Promise<HTMLImageElement> {
     return new Promise((resolve, reject) => {
       const objectUrl = URL.createObjectURL(blob);
       const img = new Image();
       img.onload = () => {
-        resolve({ width: img.naturalWidth || 24, height: img.naturalHeight || 24, element: img });
+        // Safe to release the URL once the image has loaded; the decoded
+        // frame stays usable for later drawImage calls.
+        URL.revokeObjectURL(objectUrl);
+        resolve(img);
       };
       img.onerror = () => {
         URL.revokeObjectURL(objectUrl);
@@ -91,37 +188,54 @@ export function createBrowserImageStore(): BrowserImageStore {
     });
   }
 
+  /**
+   * Rasterize an already-decoded image at a size derived from where it will
+   * actually be placed on the page — not its natural resolution. Icons shown
+   * at 24pt become ~64px bitmaps instead of full-size artwork.
+   */
   async function rasterizeElement(
     img: HTMLImageElement,
-    widthPx: number,
-    heightPx: number
+    targetWidthPx: number,
+    targetHeightPx: number
   ): Promise<string> {
-    const scale = Math.min(2, Math.max(1, 96 * 2 / Math.max(1, Math.min(widthPx, heightPx) / PT_PER_PX || 96)));
     const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(widthPx * scale));
-    canvas.height = Math.max(1, Math.round(heightPx * scale));
+    canvas.width = targetWidthPx;
+    canvas.height = targetHeightPx;
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('no 2d context');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     return canvas.toDataURL('image/png');
   }
 
   async function runJob(job: LoadJob): Promise<void> {
     try {
-      const { blob, width, height } = await loadBlobMeta(job.url);
-      const isDirect = blob.type === 'image/png' || blob.type === 'image/jpeg';
+      const source = await loadSource(job.url);
+      const size = computeSize(job.spec, source.width, source.height, job.mode);
 
-      let data: string;
-      if (isDirect) {
-        data = await blobToDataUrl(blob);
-      } else {
-        const { element } = await loadViaImgElement(blob);
-        data = await rasterizeElement(element, width, height);
+      const key = embedKey(job.url, job.mode, size.width, size.height);
+      let resolved = embedCache.get(key);
+
+      if (!resolved) {
+        let data: string;
+        if (DIRECT_TYPES.has(source.blob.type)) {
+          data = await blobToDataUrl(source.blob);
+        } else {
+          const element = source.element ?? (await loadViaImgElement(source.blob));
+          const raster = rasterDimensions(
+            size.width,
+            size.height,
+            source.width,
+            source.height
+          );
+          data = await rasterizeElement(element, raster.width, raster.height);
+        }
+        resolved = { image: data, width: size.width, height: size.height };
+        embedCache.set(key, resolved);
       }
 
-      const size = computeSize(job.spec, width, height, job.mode);
-      const resolved: EmbeddedImage = { image: data, width: size.width, height: size.height };
-      cache.set(job.url, resolved);
+      resolvedCount++;
       for (const ph of job.placeholders) {
         ph.image = resolved.image;
         ph.width = resolved.width;
@@ -129,6 +243,7 @@ export function createBrowserImageStore(): BrowserImageStore {
       }
     } catch (err) {
       console.warn(`[PDF Export] Image failed to load: ${job.url}`, err);
+      failedCount++;
       for (const ph of job.placeholders) {
         ph.text = `[image unavailable${job.spec.alt ? `: ${job.spec.alt}` : ''}]`;
         ph.color = '#a8a29e';
@@ -141,19 +256,12 @@ export function createBrowserImageStore(): BrowserImageStore {
   return {
     embed(url: string, spec: ImageSpec, mode: 'block' | 'inline'): EmbeddedImage {
       const placeholder: EmbeddedImage = {};
-      const cached = cache.get(url);
-      if (cached) {
-        placeholder.image = cached.image;
-        placeholder.width = cached.width;
-        placeholder.height = cached.height;
-        return placeholder;
-      }
 
-      const key = url;
-      let job = jobs.get(key);
+      const jobKey = `${url}|${mode}|${spec.widthPt ?? ''}|${spec.widthPct ?? ''}|${spec.heightPt ?? ''}`;
+      let job = jobs.get(jobKey);
       if (!job) {
         job = { url, spec, mode, placeholders: [] };
-        jobs.set(key, job);
+        jobs.set(jobKey, job);
         const p = schedule(() => runJob(job!)).then(() => {
           active--;
           pump();
@@ -173,13 +281,64 @@ export function createBrowserImageStore(): BrowserImageStore {
         return jobs.size;
       },
       get resolved() {
-        return cache.size;
+        return resolvedCount;
       },
       get failed() {
-        return jobs.size - cache.size;
+        return failedCount;
       }
     }
   };
+}
+
+/** Heuristic: `=3D` (an encoded `=`) plus soft line breaks. */
+export function looksQuotedPrintable(text: string): boolean {
+  return text.slice(0, 400).includes('=3D') && /=\r?\n/.test(text);
+}
+
+export function decodeQuotedPrintable(text: string): string {
+  return text
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-Fa-f]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function embedKey(
+  url: string,
+  mode: 'block' | 'inline',
+  width: number,
+  height: number
+): string {
+  return `${url}|${mode}|${width.toFixed(2)}x${height.toFixed(2)}`;
+}
+
+/**
+ * Pixel dimensions for a re-encoded image.
+ *
+ * The bitmap is sized to where the image actually lands on the page — at most
+ * `RASTER_SCALE` (2×) the display size for print crispness — but never larger
+ * than the source's own resolution, so this can only ever shrink an embed
+ * relative to rasterizing at natural size. Pure, so it is unit-testable.
+ */
+export function rasterDimensions(
+  displayWidthPt: number,
+  displayHeightPt: number,
+  naturalWidthPx: number,
+  naturalHeightPx: number
+): { width: number; height: number } {
+  const displayPxW = Math.max(1, displayWidthPt / PT_PER_PX);
+  const displayPxH = Math.max(1, displayHeightPt / PT_PER_PX);
+  const scales = [RASTER_SCALE];
+  if (naturalWidthPx > 0) scales.push(naturalWidthPx / displayPxW);
+  if (naturalHeightPx > 0) scales.push(naturalHeightPx / displayPxH);
+  const scale = Math.max(1 / 64, Math.min(...scales));
+
+  let width = Math.max(1, Math.round(displayPxW * scale));
+  let height = Math.max(1, Math.round(displayPxH * scale));
+  const shrink = Math.max(width / MAX_RASTER_PX, height / MAX_RASTER_PX, 1);
+  if (shrink > 1) {
+    width = Math.max(1, Math.round(width / shrink));
+    height = Math.max(1, Math.round(height / shrink));
+  }
+  return { width, height };
 }
 
 function computeSize(

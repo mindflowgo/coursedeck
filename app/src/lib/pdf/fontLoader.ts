@@ -22,13 +22,30 @@ const FONT_FILES: Record<string, string> = {
   'DejaVuSansMono-Bold.ttf': monoBoldUrl
 };
 
+/**
+ * The total bundled font payload is ~3.3MB, so how it is encoded matters.
+ * `FileReader.readAsDataURL` is a native base64 encoder and avoids blocking
+ * the main thread on a character-at-a-time JS loop; the manual path stays as
+ * a fallback for environments without FileReader.
+ */
 async function fetchAsBase64(url: string): Promise<string> {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Failed to load PDF font asset: ${url} (${response.status})`);
   }
-  const buffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
+  const blob = await response.blob();
+
+  if (typeof FileReader !== 'undefined') {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error(`Failed to read PDF font asset: ${url}`));
+      reader.readAsDataURL(blob);
+    });
+    return dataUrl.slice(dataUrl.indexOf(',') + 1);
+  }
+
+  const bytes = new Uint8Array(await blob.arrayBuffer());
   let binary = '';
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {

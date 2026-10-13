@@ -2,6 +2,8 @@
   import { QuestionParser, type ParsedQuiz, type QuizQuestion } from '$lib/parser/questionParser';
   import CodeMirrorEditor from './CodeMirrorEditor.svelte';
   import { CheckCircle2, XCircle, RotateCcw, Edit3, PlayCircle, HelpCircle, Award } from 'lucide-svelte';
+  import DOMPurify from 'dompurify';
+  import { renderTextWithMath } from '$lib/markdown/mathRenderer';
 
   interface Props {
     testMarkdown: string;
@@ -9,6 +11,16 @@
   }
 
   let { testMarkdown }: Props = $props();
+
+  // Quiz text is plain text with embedded LaTeX (\(...\), $...$): render the math
+  // via KaTeX and escape everything else, then sanitize for {@html} injection.
+  function mathHtml(text: string): string {
+    const rendered = renderTextWithMath(text);
+    if (typeof window === 'undefined') return rendered;
+    const purify = typeof DOMPurify.sanitize === 'function' ? DOMPurify : (DOMPurify as any)(window);
+    if (!purify || typeof purify.sanitize !== 'function') return rendered;
+    return purify.sanitize(rendered, { ADD_TAGS: ['details', 'summary', 'mark'] });
+  }
 
   let userAnswers: Record<string, string> = $state({});
   let submitted: boolean = $state(false);
@@ -116,7 +128,7 @@
                 {/if}
               </div>
               <h3 class="text-sm font-medium text-stone-900 dark:text-stone-100 leading-snug">
-                {q.prompt}
+                {@html mathHtml(q.prompt)}
               </h3>
             </div>
 
@@ -172,7 +184,7 @@
                   {opt.letter}
                 </div>
                 <div class="leading-relaxed flex-1">
-                  {opt.text}
+                  {@html mathHtml(opt.text)}
                 </div>
               </button>
             {/each}
@@ -184,7 +196,7 @@
               <HelpCircle class="w-4 h-4 text-stone-400 dark:text-stone-500 shrink-0 mt-0.5" />
               <div>
                 <span class="font-semibold text-stone-900 dark:text-stone-100">Explanation:</span>
-                <span class="ml-1 leading-relaxed">{q.explanation}</span>
+                <span class="ml-1 leading-relaxed">{@html mathHtml(q.explanation)}</span>
               </div>
             </div>
           {/if}

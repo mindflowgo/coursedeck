@@ -64,5 +64,37 @@ When generating a course-wide practice test (via "Complete Course" scope -> Prac
 
 ### 3. Verification & Testing
 - **TypeScript Typecheck**: Ran `bun run check` / `svelte-check` — 0 errors, 0 warnings.
-- **Unit Tests**: Ran `bun test` — 14 passing tests across 2 files, including a dedicated test verifying custom prompt persistence against LLM-emitted frontmatter blocks.
+- **Unit Tests**: Ran `bun test` — 31 passing tests across 5 files, including dedicated tests verifying custom prompt persistence, cheatsheet math parsing, and currency guard isolation.
 - **Payload Verification**: Tested `buildAggregatedPayload` on courses (`baf3m`, `gwl3o`, empty course) verifying curated-only extraction and empty payload fallback handling.
+
+---
+
+## KaTeX Math & Formula Rendering Pipeline with Accounting Currency Protection
+
+### Problem
+1. When generating course cheatsheets (e.g. for MCR3U), formulas such as `Rational function (\frac{P(x)}{Q(x)}), (Q(x)\neq0)` and `Exponent division (\frac{x^m}{x^n}=x^{m-n})` were displayed as unrendered raw text with parentheses rather than formatted math notation.
+2. In CommonMark / Marked, `\(` escapes `(` (turning it into a literal parenthesis and stripping the backslash), corrupting LaTeX commands before rendering.
+3. Accounting courses (e.g. BAF3M) frequently use financial expressions like `$1500 and then $2500` or `$30,000 to $45,000`. Naive math delimiters (`$...$`) could mistakenly combine these into invalid math formulas, destroying currency strings.
+
+### Solution & Implementation
+1. **Created Pre-Parsing Math Pipeline (`app/src/lib/markdown/mathRenderer.ts`)**:
+   - `extractMathFromMarkdown(text)`: Extracts formulas **before** Marked touches them, substituting them with collision-proof `%%%MATH_TOKEN_N%%%` placeholders.
+   - Supports 5 distinct math notations:
+     - Display equations: `$$...$$`
+     - LaTeX display: `\[...\]`
+     - LaTeX inline: `\(...\)`
+     - Inline dollar math: `$...$` with strict currency guards (`isLikelyInlineMath`)
+     - Parenthesized LaTeX expressions: balanced `(...)` scanning that detects formulas with internal parentheses like `(\frac{P(x)}{Q(x)})`.
+   - **Strict Accounting Currency Guard (`isLikelyInlineMath`)**:
+     - Immediately rejects any string starting with digits or currency punctuation (`$1500`, `$45,000`).
+     - Detects English prose keywords (`and`, `then`, `revenue`, `assets`, `inventory`, `per hour`) and words $\ge 3$ characters without LaTeX symbols, guaranteeing currency amounts remain literal text.
+   - `restoreMathTokens(html, tokens)`: Renders extracted tokens using `katex.renderToString(..., { throwOnError: false })`.
+2. **Integrated into Markdown Viewer (`app/src/lib/components/MarkdownViewer.svelte`)**:
+   - Pre-extracts math tokens before `markedParser.parse()`, then restores rendered KaTeX HTML strings afterwards.
+   - Post-it notes also run through the same math pipeline.
+3. **Integrated into PDF Pipeline (`app/src/lib/pdf/markdown/mathText.ts`)**:
+   - `splitMathSegments(input)` now uses `extractMathFromMarkdown`, ensuring PDF exports render `\[...\]`, `\(...\)`, and parenthesized formulas into linear Unicode text while preserving financial currency.
+   - Fixed single-character exponent group consumption in `readGroup` (`^2` now correctly translates without duplicate characters).
+4. **Updated Prompt Templates (`data/prompts/`)**:
+   - Added explicit `## Math & Formula Notation:` guidelines to `course_cheatsheet.md`, `cheatsheet.md`, `course_summary.md`, `summary.md`, `course_test.md`, and `test.md`.
+   - Directs the LLM to write inline math with `$formula$`, display equations with `$$formula$$`, never use bare parentheses `(\frac{a}{b})`, and write currency values like `$1,500` normally.
