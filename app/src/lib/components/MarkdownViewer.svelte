@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Marked } from 'marked';
   import { extractMathFromMarkdown, restoreMathTokens } from '$lib/markdown/mathRenderer';
+  import { repairMarkdownTables } from '$lib/markdown/tableRepair';
   import DOMPurify from 'dompurify';
   import { getApiBaseUrl } from '$lib/api';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
@@ -177,7 +178,8 @@
         }
 
         const bodyMarkdown = cleanBlock.replace(/<!--\s*target:\s*[\s\S]*?-->/gi, '').trim();
-        const { processedMarkdown: noteMd, mathTokens: noteTokens } = extractMathFromMarkdown(bodyMarkdown);
+        const repairedBody = repairMarkdownTables(bodyMarkdown);
+        const { processedMarkdown: noteMd, mathTokens: noteTokens } = extractMathFromMarkdown(repairedBody);
         let bodyHtml = markedParser.parse(noteMd) as string;
         bodyHtml = restoreMathTokens(bodyHtml, noteTokens);
 
@@ -230,16 +232,19 @@
       }
     );
 
-    // 6. Pre-extract math formulas before markedParser so \(, \[, _, etc. are never mangled by CommonMark
+    // 6. Repair multiline tables so they conform to GFM single-line table specifications
+    cleaned = repairMarkdownTables(cleaned);
+
+    // 7. Pre-extract math formulas before markedParser so \(, \[, _, etc. are never mangled by CommonMark
     const { processedMarkdown: markdownWithoutMath, mathTokens } = extractMathFromMarkdown(cleaned);
 
-    // 7. Render Markdown via markedParser
+    // 8. Render Markdown via markedParser
     let html = markedParser.parse(markdownWithoutMath) as string;
 
-    // 8. Restore rendered KaTeX formulas
+    // 9. Restore rendered KaTeX formulas
     html = restoreMathTokens(html, mathTokens);
 
-    // 9. Inject rendered Post-It Notes
+    // 10. Inject rendered Post-It Notes
     html = html.replace(/<p>\s*%%%USERNOTE_(\d+)%%%\s*<\/p>/g, (_, idx) => userNotes[Number(idx)] || '');
     html = html.replace(/%%%USERNOTE_(\d+)%%%/g, (_, idx) => userNotes[Number(idx)] || '');
 

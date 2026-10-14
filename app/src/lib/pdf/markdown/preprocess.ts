@@ -5,8 +5,9 @@
  * GFM callouts and AI post-it extraction.
  *
  * Callouts and post-its are extracted into typed records and replaced with
- * `%%%PDFBOX_*%%%' markers that the block compiler resolves into styled boxes.
  */
+
+import { repairMarkdownTables } from '../../markdown/tableRepair';
 
 export interface ExtractedCallout {
   kind: 'callout';
@@ -52,7 +53,7 @@ export function normalizeMarkdown(raw: string, courseId: string): PreprocessedMa
     /> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>.*(?:\n|$))*)/gi,
     (_m, type: string, content: string) => {
       const body = content.replace(/^>\s?/gm, '');
-      boxes.push({ kind: 'callout', type: type.toLowerCase(), bodyMarkdown: body });
+      boxes.push({ kind: 'callout', type: type.toLowerCase(), bodyMarkdown: repairMarkdownTables(body) });
       return `\n\n%%%PDFBOX_${boxes.length - 1}%%%\n\n`;
     }
   );
@@ -71,10 +72,13 @@ export function normalizeMarkdown(raw: string, courseId: string): PreprocessedMa
       }
       const bodyMarkdown = block.replace(/<!--\s*target:\s*[\s\S]*?-->/gi, '').trim();
 
-      boxes.push({ kind: 'postit', query, targetText, bodyMarkdown });
+      boxes.push({ kind: 'postit', query, targetText, bodyMarkdown: repairMarkdownTables(bodyMarkdown) });
       return `\n\n%%%PDFBOX_${boxes.length - 1}%%%\n\n`;
     }
   );
+
+  // 6. Repair multiline tables so they conform to GFM single-line table specifications
+  md = repairMarkdownTables(md);
 
   return { markdown: md, boxes };
 }
