@@ -192,7 +192,7 @@
             </span>
           </div>
           <p class="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
-            {#if !courseId}{activeTask.courseId.toUpperCase()} · {/if}{activeTask.lessonId} — {activeTask.lessonTitle}
+            {#if !courseId}{activeTask.courseId.toUpperCase()} · {/if}{activeTask.tab === 'schedule' ? 'Course Schedule' : `${activeTask.lessonId} — ${activeTask.lessonTitle}`}
           </p>
         </div>
       {/if}
@@ -285,7 +285,7 @@
                   {/if}
 
                   <span class="truncate font-medium text-stone-700 dark:text-stone-300">
-                    {#if !courseId}{task.courseId.toUpperCase()} · {/if}{task.lessonId}
+                    {#if !courseId}{task.courseId.toUpperCase()} · {/if}{task.tab === 'schedule' ? 'Course Schedule' : task.lessonId}
                   </span>
 
                   <span class="uppercase text-[9px] font-semibold px-1 py-0.2 rounded bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 shrink-0">

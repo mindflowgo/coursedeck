@@ -1,7 +1,7 @@
 import type { Content } from 'pdfmake/build/pdfmake';
 
 /** Which study-workspace tab is being exported. */
-export type ExportTab = 'lesson' | 'summary' | 'cheatsheet' | 'test';
+export type ExportTab = 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule';
 
 export interface PdfExportOptions {
   courseCode: string;
@@ -26,6 +26,8 @@ export function tabBadgeLabel(tab: ExportTab): string {
       return 'Quick Reference Cheatsheet';
     case 'test':
       return 'Ontario Curriculum Practice Test';
+    case 'schedule':
+      return 'Study Schedule';
   }
 }
 

@@ -118,6 +118,22 @@
       isTesting = false;
     }
   }
+
+  function isPublicIp(urlStr: string): boolean {
+    try {
+      const clean = urlStr.trim();
+      if (!clean) return false;
+      const host = new URL(clean.startsWith('http') ? clean : `http://${clean}`).hostname;
+      const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (!match) return false;
+      const a = Number(match[1]);
+      const b = Number(match[2]);
+      if (a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
 </script>
 
 {#if isOpen}
@@ -168,6 +184,11 @@
             class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-950 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
           />
           <p class="text-[10px] text-stone-400 dark:text-stone-500">For free local AI with Ollama, run <code>ollama run llama3</code></p>
+          {#if isPublicIp(baseUrl)}
+            <p class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+              Note: Direct IP access to cloud APIs (like DeepSeek, OpenAI, Groq) is blocked by Cloudflare (error 1003). Use the domain name (e.g. <code>https://api.deepseek.com</code>) instead of an IP.
+            </p>
+          {/if}
         </div>
 
         <div class="grid grid-cols-2 gap-3">

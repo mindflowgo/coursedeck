@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { CourseService } from './courses';
+import { CourseService, type SchedulePayloadStats } from './courses';
 import { PromptService } from './prompts';
 import { LLMService, type LLMConfig } from './llm';
 import { queueManager } from './queue';
@@ -21,7 +21,9 @@ import {
   saveAppSettings
 } from './paths';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
-import { CourseIngest } from '../parser/courseIngest';
+import { CourseIngest, type CourseDocType, type CourseManifest } from '../parser/courseIngest';
+import { validateScheduleMarkdown } from '../parser/scheduleValidation';
+import { ScheduleParser } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
 import { createDataBackupZip, createDataBackupZipStream, restoreDataBackupZip } from './backup';
 
@@ -55,26 +57,46 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 type Tab = 'summary' | 'cheatsheet' | 'test';
+type QueueTab = 'summary' | 'cheatsheet' | 'test' | 'schedule';
 
-const GENERATION_TABS: readonly Tab[] = ['summary', 'cheatsheet', 'test'];
+/** Course-level document types accepted by /api/courses/:id/course-docs. */
+const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'cheatsheet', 'test', 'schedule'];
+
+interface ActiveCourseDocJob {
+  courseId: string;
+  type: CourseDocType;
+  status: 'generating' | 'completed' | 'failed';
+  startedAt: number;
+  result?: {
+    markdown: string;
+    usage?: any;
+    warnings?: string[];
+    debug?: any;
+  };
+  error?: string;
+}
+
+const activeCourseDocJobs = new Map<string, ActiveCourseDocJob>();
+
+const ALL_QUEUE_TABS: readonly QueueTab[] = ['summary', 'cheatsheet', 'test', 'schedule'];
+const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'cheatsheet', 'test'];
 
 /**
  * Resolves the tabs an enqueue request targets: explicit `tabs` array, single
  * `tab`, or the full default set. Returns null when any requested tab is not
- * a generation tab — the queue would otherwise happily write
- * `NN.NN.<anything>.md` files (including overwriting raw `*.lesson.md`).
+ * a recognized queue tab.
  */
-function parseRequestedTabs(body: Record<string, unknown>): Tab[] | null {
+function parseRequestedTabs(body: Record<string, unknown>): QueueTab[] | null {
   const raw: unknown[] = Array.isArray(body.tabs)
     ? body.tabs
     : body.tab !== undefined && body.tab !== null
       ? [body.tab]
       : [];
-  const list = raw.length > 0 ? raw : [...GENERATION_TABS];
+  const list = raw.length > 0 ? raw : [...DEFAULT_LESSON_TABS];
   const valid = list.every(
-    (t): t is Tab => typeof t === 'string' && (GENERATION_TABS as readonly string[]).includes(t)
+    (t): t is QueueTab => typeof t === 'string' && (ALL_QUEUE_TABS as readonly string[]).includes(t)
   );
-  return valid ? (list as Tab[]) : null;
+  return valid ? (list as QueueTab[]) : null;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -221,14 +243,14 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
           const targetTabs = parseRequestedTabs(body);
           if (!targetTabs) {
-            return error(400, "Invalid tab. Must be 'summary', 'cheatsheet', or 'test'");
+            return error(400, "Invalid tab. Must be 'summary', 'cheatsheet', 'test', or 'schedule'");
           }
 
-          if (lessonId) {
+          if (lessonId || targetTabs.includes('schedule')) {
             const items = targetTabs.map((t) => ({
               courseId: String(courseId),
-              lessonId: String(lessonId),
-              lessonTitle: String(lessonTitle || lessonId),
+              lessonId: t === 'schedule' ? 'schedule' : String(lessonId || ''),
+              lessonTitle: t === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
               tab: t,
               asNewVersion: Boolean(asNewVersion),
               customPrompt: (customPrompt || prompt) as string | undefined
@@ -243,9 +265,10 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               status: queueManager.getStatus(String(courseId))
             });
           } else {
+            const lessonTabs = targetTabs.filter((t): t is Tab => t !== 'schedule');
             const enqueued = queueManager.enqueueCourseMissing(
               String(courseId),
-              targetTabs,
+              lessonTabs,
               customConfig as LLMConfig | undefined
             );
             return json({
@@ -553,6 +576,25 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       return json({ courses: CourseService.listCourses() });
     }
 
+    // ---- /api/schedules ----
+    // Raw course.schedule.md per course; parsing stays client-side where the
+    // scheduleParser lives. Archived courses are excluded — their schedules
+    // stay on disk and reappear the moment the course is unarchived.
+    if (pathname === '/api/schedules' && method === 'GET') {
+      const schedules = CourseService.listCourses()
+        .filter((c) => !c.archived)
+        .map((c) => {
+          const markdown = CourseService.getCourseDocument(c.id, 'schedule');
+          return {
+            courseId: c.id,
+            courseTitle: c.title,
+            exists: Boolean(markdown && markdown.trim().length > 0),
+            markdown: markdown || ''
+          };
+        });
+      return json({ schedules });
+    }
+
     // ---- /api/courses/:course_id/** ----
     const courseMatch = pathname.match(/^\/api\/courses\/([^/]+)(?:\/(.*))?$/);
     if (courseMatch) {
@@ -580,36 +622,134 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         return openWithFileManager(courseDir);
       }
 
+      // PUT /api/courses/:course_id/meta  { title?, description?, archived? }
+      if (subpath === 'meta' && method === 'PUT') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+
+        const patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived'>> = {};
+        if (body.title !== undefined) {
+          if (typeof body.title !== 'string' || !body.title.trim()) {
+            return error(400, 'title must be a non-empty string');
+          }
+          patch.title = body.title.trim();
+        }
+        if (body.description !== undefined) {
+          if (typeof body.description !== 'string') {
+            return error(400, 'description must be a string');
+          }
+          patch.description = body.description.trim();
+        }
+        if (body.archived !== undefined) {
+          if (typeof body.archived !== 'boolean') {
+            return error(400, 'archived must be a boolean');
+          }
+          patch.archived = body.archived;
+        }
+        if (Object.keys(patch).length === 0) {
+          return error(400, "Nothing to update — provide 'title', 'description', or 'archived'");
+        }
+
+        if (!CourseService.getCourse(courseId)) {
+          return error(404, `Course ${courseId} not found`);
+        }
+        const updated = CourseService.updateCourseMeta(courseId, patch);
+        if (!updated) {
+          return error(500, `Failed to update metadata for course ${courseId}`);
+        }
+        return json({ success: true, course: CourseService.getCourse(courseId) });
+      }
+
       // GET|POST|PUT /api/courses/:course_id/course-docs
       if (subpath === 'course-docs') {
         const course = CourseService.getCourse(courseId);
         if (!course) return error(404, `Course '${courseId}' not found`);
 
         if (method === 'GET') {
-          const type = url.searchParams.get('type') as 'notes' | Tab | null;
+          const type = url.searchParams.get('type') as 'notes' | CourseDocType | Tab | null;
+          const isPreview = url.searchParams.get('preview') === 'true' || url.searchParams.get('preview') === '1';
+          const checkStatus = url.searchParams.get('status') === 'true' || url.searchParams.get('status') === '1';
+
+          if (type && checkStatus) {
+            if (type === 'schedule') {
+              const qStatus = queueManager.getStatus(courseId);
+              const isScheduleActive = qStatus.tasks.some(
+                (t) => t.tab === 'schedule' && (t.status === 'pending' || t.status === 'processing')
+              );
+              if (isScheduleActive) {
+                return json({ success: true, status: 'generating' });
+              }
+            }
+            const jobKey = `${courseId.toLowerCase()}:${type}`;
+            const job = activeCourseDocJobs.get(jobKey);
+            if (job) {
+              if (job.status === 'generating') {
+                return json({ success: true, status: 'generating', elapsedMs: Date.now() - job.startedAt });
+              }
+              if (job.status === 'completed' && job.result) {
+                activeCourseDocJobs.delete(jobKey);
+                return json({
+                  success: true,
+                  status: 'completed',
+                  cached: false,
+                  markdown: job.result.markdown,
+                  usage: job.result.usage,
+                  warnings: job.result.warnings,
+                  debug: job.result.debug
+                });
+              }
+              if (job.status === 'failed') {
+                const errMsg = job.error || `Failed to generate course ${type}`;
+                activeCourseDocJobs.delete(jobKey);
+                return json({ success: false, status: 'failed', error: errMsg }, 500);
+              }
+            }
+            const existing = CourseService.getCourseDocument(courseId, type as CourseDocType);
+            return json({
+              success: true,
+              status: 'idle',
+              exists: Boolean(existing),
+              markdown: existing || ''
+            });
+          }
 
           if (type === 'notes') {
             const markdown = CourseService.buildAggregatedNotes(courseId);
             return json({ success: true, markdown });
           }
-          if (type === 'summary' || type === 'cheatsheet' || type === 'test') {
-            const markdown = CourseService.getCourseDocument(courseId, type);
+          if (type === 'schedule' && isPreview) {
+            const scheduleStats: SchedulePayloadStats = { lessons: 0, assignments: 0, totalWords: 0, density: {} };
+            const payload = CourseService.buildSchedulePayload(courseId, scheduleStats);
+            return json({
+              success: true,
+              type: 'schedule',
+              preview: true,
+              payload,
+              stats: scheduleStats
+            });
+          }
+          if (type && (COURSE_DOC_TYPES as readonly string[]).includes(type)) {
+            const markdown = CourseService.getCourseDocument(courseId, type as CourseDocType);
             return json({ success: true, exists: Boolean(markdown), markdown: markdown || '' });
           }
           return json({
             success: true,
-            courseDocs: course.courseDocs || { summary: false, cheatsheet: false, test: false }
+            courseDocs: course.courseDocs || {
+              summary: false,
+              cheatsheet: false,
+              test: false,
+              schedule: false
+            }
           });
         }
 
         if (method === 'POST') {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-          const type = body.type as Tab | undefined;
+          const type = body.type as CourseDocType | undefined;
           const forceRegenerate = Boolean(body.forceRegenerate);
           const customPrompt = typeof body.customPrompt === 'string' ? body.customPrompt.trim() : undefined;
 
-          if (!type || !['summary', 'cheatsheet', 'test'].includes(type)) {
-            return error(400, "Invalid type. Must be 'summary', 'cheatsheet', or 'test'");
+          if (!type || !(COURSE_DOC_TYPES as readonly string[]).includes(type)) {
+            return error(400, "Invalid type. Must be 'summary', 'cheatsheet', 'test', or 'schedule'");
           }
 
           // 1. Cached document unless regeneration is forced
@@ -627,31 +767,65 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               PromptService.getPrompt(`course_${type}`) ?? PromptService.getPrompt(type);
             systemPrompt = promptItem ? promptItem.content : '';
           }
-
-          // 3. Aggregated lesson payload
-          const payload = CourseService.buildAggregatedPayload(courseId, type);
-          if (!payload || payload.trim().length < 50) {
+          if (!systemPrompt || systemPrompt.trim().length === 0) {
             return error(
               400,
-              "No curated lesson materials (.summary, .cheatsheet, or .test) found to generate a course-level " +
-                type +
-                ". Please generate some lesson summaries or study sheets first."
+              `Core prompt template for course ${type} is missing. Please add course_${type}.md in your prompts directory.`
             );
           }
 
-          // 4. Active LLM config
+          // 3. Active LLM config
           const config = (body.customConfig as LLMConfig) || LLMService.loadStoredConfig();
           if (!config || !config.baseUrl) {
             return error(400, 'Active LLM configuration is required. Please configure your LLM settings.');
           }
 
+          // Schedules are enqueued into the background queue to avoid blocking
+          if (type === 'schedule') {
+            const enqueued = queueManager.enqueue(
+              [
+                {
+                  courseId,
+                  lessonId: 'schedule',
+                  lessonTitle: 'Course Study Schedule',
+                  tab: 'schedule',
+                  customPrompt: systemPrompt
+                }
+              ],
+              config
+            );
+            return json({
+              success: true,
+              status: 'generating',
+              queued: true,
+              enqueued,
+              message: 'Course schedule generation enqueued in background AI queue'
+            });
+          }
+
+          // 4. Aggregated lesson payload for course summary / cheatsheet / test
+          const payload = CourseService.buildAggregatedPayload(courseId, type);
+          if (!payload || payload.trim().length < 50) {
+            return error(
+              400,
+              "No lesson materials found to generate a course-level " +
+                type +
+                ". Please add lesson content for this course first."
+            );
+          }
+
+          const customTimeout = typeof body.timeoutMs === 'number' && body.timeoutMs > 0 ? body.timeoutMs : undefined;
+          const timeoutMs = customTimeout || 180_000;
+
           console.log(
-            `[Course AI] Generating course.${type}.md for ${courseId.toUpperCase()} using model: ${config.model || 'default'}`
+            `[Course AI] Generating course.${type}.md for ${courseId.toUpperCase()} using model: ${config.model || 'default'} (timeout: ${Math.round(timeoutMs / 1000)}s)`
           );
 
-          // 5. Generate + save
-          try {
-            const result = await LLMService.generateResult(config, systemPrompt, payload, { timeoutMs: 180_000 });
+          const isAsync = body.async === true;
+          const jobKey = `${courseId.toLowerCase()}:${type}`;
+
+          const runGeneration = async () => {
+            const result = await LLMService.generateResult(config, systemPrompt, payload, { timeoutMs });
             const parsed = parseFrontmatter(result.completion.trim());
             const content = serializeWithFrontmatter(
               {
@@ -664,9 +838,58 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             );
             CourseService.saveCourseDocument(courseId, type, content);
             console.log(
-              `[Course AI] Saved course.${type}.md for ${courseId.toUpperCase()} (${content.length} chars)`
+              `[Course AI] Saved course.${type}.md for ${courseId.toUpperCase()} (${content.length.toLocaleString()} chars)`
             );
-            return json({ success: true, cached: false, markdown: content, usage: result.usage });
+
+            return {
+              success: true,
+              cached: false,
+              markdown: content,
+              usage: result.usage
+            };
+          };
+
+          if (isAsync) {
+            const existingJob = activeCourseDocJobs.get(jobKey);
+            if (existingJob && existingJob.status === 'generating' && Date.now() - existingJob.startedAt < 600_000) {
+              return json({ success: true, status: 'generating', message: 'Generation already in progress' });
+            }
+
+            activeCourseDocJobs.set(jobKey, {
+              courseId,
+              type,
+              status: 'generating',
+              startedAt: Date.now()
+            });
+
+            runGeneration()
+              .then((res) => {
+                activeCourseDocJobs.set(jobKey, {
+                  courseId,
+                  type,
+                  status: 'completed',
+                  startedAt: Date.now(),
+                  result: res
+                });
+              })
+              .catch((err) => {
+                console.error(`[Course AI] Background generation failed for course.${type}.md:`, err);
+                activeCourseDocJobs.set(jobKey, {
+                  courseId,
+                  type,
+                  status: 'failed',
+                  startedAt: Date.now(),
+                  error: err instanceof Error ? err.message : `Failed to generate course ${type}`
+                });
+              });
+
+            return json({ success: true, status: 'generating', message: 'Generation started in background' });
+          }
+
+          // 5. Synchronous generate + save
+          try {
+            const res = await runGeneration();
+            return json(res);
           } catch (err) {
             console.error(`[Course AI] Failed to generate course.${type}.md:`, err);
             return error(500, err instanceof Error ? err.message : `Failed to generate course ${type}`);
@@ -675,11 +898,11 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
         if (method === 'PUT') {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-          const type = body.type as Tab | undefined;
+          const type = body.type as CourseDocType | undefined;
           const content = body.content as string | undefined;
 
-          if (!type || !['summary', 'cheatsheet', 'test'].includes(type)) {
-            return error(400, "Invalid type. Must be 'summary', 'cheatsheet', or 'test'");
+          if (!type || !(COURSE_DOC_TYPES as readonly string[]).includes(type)) {
+            return error(400, "Invalid type. Must be 'summary', 'cheatsheet', 'test', or 'schedule'");
           }
           if (typeof content !== 'string') {
             return error(400, 'Invalid request: content string required');

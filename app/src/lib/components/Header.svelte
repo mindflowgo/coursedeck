@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { BookOpen, Sparkles, Settings, GraduationCap, ChevronRight } from 'lucide-svelte';
+  import { BookOpen, Sparkles, Settings, GraduationCap, ChevronRight, CalendarDays } from 'lucide-svelte';
   import AIQueuePopover from './AIQueuePopover.svelte';
 
   interface Props {
@@ -51,6 +51,14 @@
     >
       <BookOpen class="w-3.5 h-3.5" />
       <span>Courses</span>
+    </a>
+
+    <a
+      href="/schedules"
+      class="flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition {activePath.startsWith('/schedules') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+    >
+      <CalendarDays class="w-3.5 h-3.5" />
+      <span>Schedules</span>
     </a>
 
     <a

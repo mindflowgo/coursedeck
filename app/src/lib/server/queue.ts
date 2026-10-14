@@ -1,14 +1,16 @@
 import { LLMService, type LLMConfig } from './llm';
 import { PromptService } from './prompts';
-import { CourseService } from './courses';
+import { CourseService, type SchedulePayloadStats } from './courses';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
+import { validateScheduleMarkdown } from '../parser/scheduleValidation';
+import { ScheduleParser } from '../parser/scheduleParser';
 
 export interface GenerationTask {
-  id: string; // e.g. "gwl3o:01.01:summary"
+  id: string; // e.g. "gwl3o:01.01:summary" or "gwl3o:schedule"
   courseId: string;
   lessonId: string;
   lessonTitle: string;
-  tab: 'summary' | 'cheatsheet' | 'test';
+  tab: 'summary' | 'cheatsheet' | 'test' | 'schedule';
   asNewVersion?: boolean;
   customPrompt?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
@@ -81,6 +83,9 @@ class GenerationQueue {
   }
 
   private makeId(courseId: string, lessonId: string, tab: string, asNewVersion?: boolean): string {
+    if (tab === 'schedule') {
+      return `${courseId.toLowerCase()}:schedule`;
+    }
     if (asNewVersion) {
       return `${courseId.toLowerCase()}:${lessonId}:${tab}:new_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     }
@@ -93,9 +98,9 @@ class GenerationQueue {
   enqueue(
     items: Array<{
       courseId: string;
-      lessonId: string;
+      lessonId?: string;
       lessonTitle?: string;
-      tab: 'summary' | 'cheatsheet' | 'test';
+      tab: 'summary' | 'cheatsheet' | 'test' | 'schedule';
       asNewVersion?: boolean;
       customPrompt?: string;
     }>,
@@ -108,7 +113,9 @@ class GenerationQueue {
     }
 
     for (const item of items) {
-      const id = this.makeId(item.courseId, item.lessonId, item.tab, item.asNewVersion);
+      const lessonId = item.lessonId || (item.tab === 'schedule' ? 'schedule' : '');
+      const lessonTitle = item.lessonTitle || (item.tab === 'schedule' ? 'Course Schedule' : lessonId);
+      const id = this.makeId(item.courseId, lessonId, item.tab, item.asNewVersion);
       const existing = this.tasks.get(id);
 
       // If already pending or processing (and not a new version request), don't duplicate
@@ -119,8 +126,8 @@ class GenerationQueue {
       const task: GenerationTask = {
         id,
         courseId: item.courseId.toLowerCase(),
-        lessonId: item.lessonId,
-        lessonTitle: item.lessonTitle || item.lessonId,
+        lessonId,
+        lessonTitle,
         tab: item.tab,
         asNewVersion: item.asNewVersion,
         customPrompt: item.customPrompt,
@@ -325,83 +332,147 @@ class GenerationQueue {
         throw new Error('LLM not configured. Please open Settings or AI configuration modal to set up API endpoint.');
       }
 
-      const bundle = CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId);
-      if (!bundle || !bundle.lesson) {
-        throw new Error(`Lesson file not found for ${nextTask.courseId} / ${nextTask.lessonId}`);
-      }
-
-      // Load prompt template
-      let systemPrompt = nextTask.customPrompt;
-      if (!systemPrompt) {
-        let promptKey = nextTask.tab;
-        let promptItem = PromptService.getPrompt(promptKey);
-        if (!promptItem && nextTask.tab === 'test') {
-          promptItem = PromptService.getPrompt('test_kica');
+      if (nextTask.tab === 'schedule') {
+        let systemPrompt = nextTask.customPrompt;
+        if (!systemPrompt) {
+          const promptItem = PromptService.getPrompt('course_schedule');
+          systemPrompt = promptItem ? promptItem.content : '';
+        }
+        if (!systemPrompt || systemPrompt.trim().length === 0) {
+          throw new Error('Core prompt template for course schedule is missing. Please configure course_schedule.md in Prompts.');
         }
 
-        systemPrompt =
-          promptItem?.content ||
-          `You are an expert Ontario curriculum educator. Produce a high quality ${nextTask.tab} in Markdown format.`;
+        const scheduleStats = { lessons: 0, assignments: 0, totalWords: 0, density: {} };
+        const userPrompt = CourseService.buildSchedulePayload(nextTask.courseId, scheduleStats);
+        if (!userPrompt || userPrompt.trim().length < 50) {
+          throw new Error(`No lesson materials found to generate a schedule for ${nextTask.courseId.toUpperCase()}.`);
+        }
+
+        const effectiveConfig: LLMConfig = {
+          ...config,
+          model: config.model ? config.model.trim() : '',
+          sessionId: config.sessionId || `${nextTask.courseId}-schedule`
+        };
+
+        this.addLog(
+          'info',
+          `\n=================== [ILC AI Request: COURSE SCHEDULE] ===================\n` +
+          `Course:      ${nextTask.courseId.toUpperCase()}\n` +
+          `Endpoint:    ${effectiveConfig.baseUrl}\n` +
+          `Model:       ${effectiveConfig.model || '(server default)'}\n` +
+          `Session ID:  ${effectiveConfig.sessionId}\n` +
+          `Payload:     ${userPrompt.length.toLocaleString()} chars (~${Math.round(userPrompt.length / 4).toLocaleString()} tokens), ${scheduleStats.lessons} lessons, ${scheduleStats.assignments} assignments\n` +
+          `========================================================================`
+        );
+
+        const timeoutMs = 300_000;
+        const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt, { timeoutMs });
+        const parsed = parseFrontmatter(result.completion.trim());
+        const finalMarkdown = serializeWithFrontmatter(
+          {
+            ...parsed.frontmatter,
+            type: 'course_schedule',
+            updatedAt: new Date().toISOString().split('T')[0],
+            prompt: systemPrompt
+          },
+          parsed.body.trim()
+        );
+
+        CourseService.saveCourseDocument(nextTask.courseId, 'schedule', finalMarkdown);
+
+        const course = CourseService.getCourse(nextTask.courseId);
+        const validation = validateScheduleMarkdown(finalMarkdown, course);
+        const parsedSchedule = ScheduleParser.parseMarkdown(finalMarkdown);
+
+        nextTask.status = 'completed';
+        nextTask.completedAt = new Date().toISOString();
+        nextTask.tokensUsed = result.usage?.total_tokens;
+
+        const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
+        const warningsInfo = validation.warnings.length > 0 ? ` [${validation.warnings.length} warning(s)]` : '';
+        this.addLog(
+          'info',
+          `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalMarkdown.length.toLocaleString()} characters, ${parsedSchedule.events.length} events parsed${tokensInfo}${warningsInfo}\n`
+        );
+      } else {
+        const bundle = CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId);
+        if (!bundle || !bundle.lesson) {
+          throw new Error(`Lesson file not found for ${nextTask.courseId} / ${nextTask.lessonId}`);
+        }
+
+        // Load prompt template
+        let systemPrompt = nextTask.customPrompt;
+        if (!systemPrompt) {
+          let promptKey = nextTask.tab;
+          let promptItem = PromptService.getPrompt(promptKey);
+          if (!promptItem && nextTask.tab === 'test') {
+            promptItem = PromptService.getPrompt('test_kica');
+          }
+
+          systemPrompt =
+            promptItem?.content ||
+            `You are an expert Ontario curriculum educator. Produce a high quality ${nextTask.tab} in Markdown format.`;
+        }
+
+        const userPrompt = `Course: ${nextTask.courseId.toUpperCase()}\nLesson: ${nextTask.lessonTitle}\n\nFull Lesson Material:\n${bundle.lesson}`;
+
+        // Use the CURRENT active settings: clean model (blank if not specified) and session_id
+        const effectiveConfig: LLMConfig = {
+          ...config,
+          model: config.model ? config.model.trim() : '',
+          sessionId: config.sessionId || `${nextTask.courseId}-${nextTask.tab}`
+        };
+
+        const systemPreview = systemPrompt.length > 250 ? systemPrompt.slice(0, 250) + '...' : systemPrompt;
+        const userPreview = userPrompt.length > 250 ? userPrompt.slice(0, 250) + '...' : userPrompt;
+
+        this.addLog(
+          'info',
+          `\n=================== [ILC AI Request: ${nextTask.tab.toUpperCase()}] ===================\n` +
+          `Course:      ${nextTask.courseId.toUpperCase()} | Lesson: ${nextTask.lessonId} ("${nextTask.lessonTitle}")\n` +
+          `Endpoint:    ${effectiveConfig.baseUrl}\n` +
+          `Model:       ${effectiveConfig.model || '(server default)'}\n` +
+          `Session ID:  ${effectiveConfig.sessionId}\n` +
+          `Auth Header: ${effectiveConfig.apiKey ? (effectiveConfig.authHeaderType === 'api_key' ? 'api-key: ***' : 'Bearer ***') : 'None'}\n` +
+          `System Prompt Preview:\n${systemPreview}\n\n` +
+          `User Prompt Length: ${userPrompt.length.toLocaleString()} chars (~${Math.round(userPrompt.length / 4).toLocaleString()} tokens)\n` +
+          `User Prompt Preview:\n${userPreview}\n` +
+          `========================================================================`
+        );
+
+        const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt);
+        const parsed = parseFrontmatter(result.completion.trim());
+
+        // Serialize with YAML frontmatter. The version must match the filename
+        // saveLessonTab writes below: base overwrite = 1, new version = max + 1.
+        const version = nextTask.asNewVersion
+          ? CourseService.latestVersionNumber(nextTask.courseId, nextTask.lessonId, nextTask.tab) + 1
+          : 1;
+        const frontmatter = {
+          ...parsed.frontmatter,
+          type: nextTask.tab,
+          version,
+          updatedAt: new Date().toISOString().split('T')[0],
+          prompt: systemPrompt
+        };
+
+        const finalMarkdown = serializeWithFrontmatter(frontmatter, parsed.body.trim());
+
+        // Save to disk
+        CourseService.saveLessonTab(nextTask.courseId, nextTask.lessonId, nextTask.tab, finalMarkdown, {
+          asNewVersion: nextTask.asNewVersion
+        });
+
+        nextTask.status = 'completed';
+        nextTask.completedAt = new Date().toISOString();
+        nextTask.tokensUsed = result.usage?.total_tokens;
+
+        const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
+        this.addLog(
+          'info',
+          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters${tokensInfo}\n`
+        );
       }
-
-      const userPrompt = `Course: ${nextTask.courseId.toUpperCase()}\nLesson: ${nextTask.lessonTitle}\n\nFull Lesson Material:\n${bundle.lesson}`;
-
-      // Use the CURRENT active settings: clean model (blank if not specified) and session_id
-      const effectiveConfig: LLMConfig = {
-        ...config,
-        model: config.model ? config.model.trim() : '',
-        sessionId: config.sessionId || `${nextTask.courseId}-${nextTask.tab}`
-      };
-
-      const systemPreview = systemPrompt.length > 250 ? systemPrompt.slice(0, 250) + '...' : systemPrompt;
-      const userPreview = userPrompt.length > 250 ? userPrompt.slice(0, 250) + '...' : userPrompt;
-
-      this.addLog(
-        'info',
-        `\n=================== [ILC AI Request: ${nextTask.tab.toUpperCase()}] ===================\n` +
-        `Course:      ${nextTask.courseId.toUpperCase()} | Lesson: ${nextTask.lessonId} ("${nextTask.lessonTitle}")\n` +
-        `Endpoint:    ${effectiveConfig.baseUrl}\n` +
-        `Model:       ${effectiveConfig.model || '(server default)'}\n` +
-        `Session ID:  ${effectiveConfig.sessionId}\n` +
-        `Auth Header: ${effectiveConfig.apiKey ? (effectiveConfig.authHeaderType === 'api_key' ? 'api-key: ***' : 'Bearer ***') : 'None'}\n` +
-        `System Prompt Preview:\n${systemPreview}\n\n` +
-        `User Prompt Length: ${userPrompt.length.toLocaleString()} chars (~${Math.round(userPrompt.length / 4).toLocaleString()} tokens)\n` +
-        `User Prompt Preview:\n${userPreview}\n` +
-        `========================================================================`
-      );
-
-      const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt);
-      const parsed = parseFrontmatter(result.completion.trim());
-
-      // Serialize with YAML frontmatter. The version must match the filename
-      // saveLessonTab writes below: base overwrite = 1, new version = max + 1.
-      const version = nextTask.asNewVersion
-        ? CourseService.latestVersionNumber(nextTask.courseId, nextTask.lessonId, nextTask.tab) + 1
-        : 1;
-      const frontmatter = {
-        ...parsed.frontmatter,
-        type: nextTask.tab,
-        version,
-        updatedAt: new Date().toISOString().split('T')[0],
-        prompt: systemPrompt
-      };
-
-      const finalMarkdown = serializeWithFrontmatter(frontmatter, parsed.body.trim());
-
-      // Save to disk
-      CourseService.saveLessonTab(nextTask.courseId, nextTask.lessonId, nextTask.tab, finalMarkdown, {
-        asNewVersion: nextTask.asNewVersion
-      });
-
-      nextTask.status = 'completed';
-      nextTask.completedAt = new Date().toISOString();
-      nextTask.tokensUsed = result.usage?.total_tokens;
-
-      const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
-      this.addLog(
-        'info',
-        `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters${tokensInfo}\n`
-      );
     } catch (err: any) {
       nextTask.status = 'failed';
       nextTask.error = err?.message || 'Generation failed';

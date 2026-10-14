@@ -27,6 +27,38 @@ await (async () => {
     path.join(courseDir, '01.01.lesson.md'),
     '# Lesson\n\n![Big diagram](./assets/img/big_diagram.png)\n'
   );
+  // Minimal manifest so course-doc endpoints recognise the fixture course.
+  fs.writeFileSync(
+    path.join(courseDir, 'meta.json'),
+    JSON.stringify({
+      id: 'tst01',
+      title: 'Contract Fixture Course',
+      grade: '11',
+      level: 'U',
+      description: 'scratch fixture',
+      units: [
+        {
+          number: 1,
+          title: 'Unit One',
+          lessons: [
+            {
+              id: '01.01',
+              code: 'tst01_u1la1',
+              title: 'Lesson One',
+              unitNumber: 1,
+              lessonNumber: 1,
+              type: 'lesson',
+              hasFull: true,
+              hasSummary: false,
+              hasCheatsheet: false,
+              hasTest: false
+            }
+          ]
+        }
+      ],
+      updatedAt: '2026-10-13'
+    })
+  );
 })();
 
 let failures = 0;
@@ -233,6 +265,141 @@ try {
       'markdown ref rewritten with |50% spec',
       md.includes('![Big diagram|50%](./assets/img/big_diagram.jpg)')
     );
+  }
+
+  console.log('\nCourse schedules:');
+  {
+    const empty = await req('/api/schedules');
+    check(
+      'GET /api/schedules → {schedules[]} with courseId/exists/markdown',
+      empty.status === 200 &&
+        Array.isArray(empty.body.schedules) &&
+        empty.body.schedules.every(
+          (s: any) => 'courseId' in s && 'courseTitle' in s && 'exists' in s && 'markdown' in s
+        )
+    );
+
+    const initial = await req('/api/courses/tst01/course-docs?type=schedule');
+    check(
+      'course-docs GET ?type=schedule → {success, exists:false}',
+      initial.status === 200 && initial.body.success === true && initial.body.exists === false
+    );
+
+    const sample =
+      '# TST01 Study Schedule\n\n### 2026-01-05 · Mon\n- [ ] **Study** 01.01 — Lesson one (60m)\n';
+    const put = await req('/api/courses/tst01/course-docs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'schedule', content: sample })
+    });
+    check('course-docs PUT type=schedule → {success}', put.status === 200 && put.body.success === true);
+
+    const after = await req('/api/schedules');
+    const tst = after.body.schedules?.find((s: any) => s.courseId === 'tst01');
+    check('PUT schedule is reflected in /api/schedules', after.status === 200 && tst?.exists === true && tst.markdown.includes('- [ ] **Study** 01.01'));
+
+    const gen = await req('/api/courses/tst01/course-docs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'schedule', forceRegenerate: true })
+    });
+    check(
+      'course-docs POST type=schedule reaches LLM-config check (400 config required)',
+      gen.status === 400 && /LLM configuration/i.test(String(gen.body.message))
+    );
+
+    const bad = await req('/api/courses/tst01/course-docs', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'calendar', content: 'x' })
+    });
+    check('course-docs rejects unknown type → 400', bad.status === 400);
+  }
+
+  console.log('\nCourse metadata (rename / archive):');
+  {
+    const rename = await req('/api/courses/tst01/meta', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Renamed Fixture', description: 'renamed description' })
+    });
+    check(
+      'PUT /meta title+description → {success, course}',
+      rename.status === 200 && rename.body.success === true && rename.body.course?.title === 'Renamed Fixture'
+    );
+
+    const renamed = await req('/api/courses/tst01');
+    check(
+      'rename persisted, visible in GET /api/courses/:id',
+      renamed.body.course?.title === 'Renamed Fixture' &&
+        renamed.body.course?.description === 'renamed description' &&
+        Array.isArray(renamed.body.course?.units)
+    );
+
+    const blankTitle = await req('/api/courses/tst01/meta', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: '   ' })
+    });
+    check('PUT /meta with blank title → 400', blankTitle.status === 400);
+
+    const nothing = await req('/api/courses/tst01/meta', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    check('PUT /meta with no fields → 400', nothing.status === 400);
+
+    const arch = await req('/api/courses/tst01/meta', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived: true })
+    });
+    check(
+      'PUT /meta {archived:true} → {success, course.archived:true}',
+      arch.status === 200 && arch.body.success === true && arch.body.course?.archived === true
+    );
+
+    const metaPath = path.join(SCRATCH, 'courses', 'tst01', 'meta.json');
+    const metaOnDisk = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    check(
+      'archive persisted in meta.json, rename + units intact',
+      metaOnDisk.archived === true && metaOnDisk.title === 'Renamed Fixture' && Array.isArray(metaOnDisk.units)
+    );
+
+    const list = await req('/api/courses');
+    const entry = list.body.courses?.find((c: any) => c.id === 'tst01');
+    check('GET /api/courses still lists archived course with archived:true', entry?.archived === true);
+
+    const sched = await req('/api/schedules');
+    check(
+      'archived course excluded from /api/schedules',
+      sched.status === 200 && !sched.body.schedules?.some((s: any) => s.courseId === 'tst01')
+    );
+
+    const unarch = await req('/api/courses/tst01/meta', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ archived: false })
+    });
+    check(
+      'PUT /meta {archived:false} → restored, flag removed',
+      unarch.status === 200 && unarch.body.success === true && unarch.body.course?.archived === undefined
+    );
+
+    const metaAfter = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const schedAfter = await req('/api/schedules');
+    check(
+      'unarchived course back in /api/schedules, flag removed from meta.json',
+      metaAfter.archived === undefined && schedAfter.body.schedules?.some((s: any) => s.courseId === 'tst01')
+    );
+
+    const missing = await req('/api/courses/zzz9/meta', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Nope' })
+    });
+    check('PUT /meta unknown course → 404 {message}', missing.status === 404 && typeof missing.body.message === 'string');
   }
 
   console.log('\nURL decoding:');

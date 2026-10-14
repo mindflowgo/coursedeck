@@ -94,4 +94,99 @@ describe('CourseService tab version helpers', () => {
       ).toThrow();
     });
   });
+
+  describe('buildSchedulePayload', () => {
+    const schedCourse = 'tstsch';
+    const schedDir = path.join(scratch, 'courses', schedCourse);
+
+    const entry = (id: string, title: string, type: 'lesson' | 'assignment') => ({
+      id,
+      code: id,
+      title,
+      unitNumber: 1,
+      lessonNumber: 1,
+      type,
+      hasFull: true,
+      hasSummary: false,
+      hasCheatsheet: false,
+      hasTest: false
+    });
+
+    beforeAll(() => {
+      fs.mkdirSync(schedDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(schedDir, 'meta.json'),
+        JSON.stringify({
+          id: schedCourse,
+          title: 'Schedule Fixture Course',
+          grade: '11',
+          level: 'U',
+          description: 'fixture',
+          updatedAt: '2026-10-13',
+          units: [
+            {
+              number: 1,
+              title: 'Unit One',
+              lessons: [
+                entry('01.01', 'Plain intro lesson', 'lesson'),
+                entry('01.02', 'Dense formula lesson', 'lesson'),
+                entry('01.05_assign1', 'Assignment one', 'assignment')
+              ]
+            }
+          ]
+        })
+      );
+      fs.writeFileSync(
+        path.join(schedDir, '01.01.lesson.md'),
+        `# Intro\n\n${'plain narrative text about history and context here. '.repeat(12)}`
+      );
+      fs.writeFileSync(
+        path.join(schedDir, '01.02.lesson.md'),
+        `# Dense\n\n${'formula heavy content with worked examples and steps. '.repeat(20)}`
+      );
+      // High-density summary: bullets + math + bold terms in few words.
+      fs.writeFileSync(
+        path.join(schedDir, '01.02.summary.md'),
+        '## Formulas\n\n- $x^2$ first item\n- $\\\\frac{a}{b}$ second item\n- third item\n- fourth item\n\n**Term one** and **term two** matter.'
+      );
+    });
+
+    it('emits course statistics and full lesson inventory including assignments', () => {
+      const payload = CourseService.buildSchedulePayload(schedCourse);
+      expect(payload).toContain('Course Statistics');
+      expect(payload).toContain('Lesson 01.01 (LESSON)');
+      expect(payload).toContain('Lesson 01.02 (LESSON)');
+      expect(payload).toContain('Lesson 01.05_assign1 (ASSIGNMENT)');
+      expect(payload).toMatch(/Total lesson content/i);
+    });
+
+    it('reports per-lesson content size and summary density for pacing', () => {
+      const payload = CourseService.buildSchedulePayload(schedCourse);
+      expect(payload).toMatch(/Content: \d[\d,]* words/);
+      // The dense summary fixture must be rated high with its signal counts.
+      expect(payload).toContain('Summary density: high');
+      expect(payload).toMatch(/4 list items/);
+      expect(payload).toMatch(/2 key terms/);
+    });
+
+    it('fills an optional stats collector for API debug logging with itemized details', () => {
+      const stats: any = {
+        lessons: 0,
+        assignments: 0,
+        totalWords: 0,
+        density: {}
+      };
+      CourseService.buildSchedulePayload(schedCourse, stats);
+      expect(stats.lessons).toBe(2);
+      expect(stats.assignments).toBe(1);
+      expect(stats.totalWords).toBeGreaterThan(100);
+      expect(stats.density['high']).toBe(1);
+      expect(stats.items).toBeDefined();
+      expect(stats.items.length).toBe(3);
+      expect(stats.items[0].lessonId).toBe('01.01');
+      expect(stats.items[0].type).toBe('lesson');
+      expect(stats.payloadChars).toBeGreaterThan(0);
+      expect(stats.estimatedTokens).toBeGreaterThan(0);
+    });
+  });
 });

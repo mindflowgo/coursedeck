@@ -10,9 +10,13 @@
   import UploadModal from '$lib/components/UploadModal.svelte';
   import PromptCard, { type VersionItem } from '$lib/components/PromptCard.svelte';
   import ConfigureLLMModal from '$lib/components/ConfigureLLMModal.svelte';
+  import SchedulePreferencesModal from '$lib/components/SchedulePreferencesModal.svelte';
+  import ScheduleViewer from '$lib/components/ScheduleViewer.svelte';
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
   import { parseFrontmatter, serializeWithFrontmatter } from '$lib/parser/frontmatter';
+  import { validateScheduleMarkdown } from '$lib/parser/scheduleValidation';
+  import { ScheduleParser } from '$lib/parser/scheduleParser';
   import { formatUserNote, insertAnnotationAfterText, removeAnnotation } from '$lib/parser/annotationInserter';
   import type { CourseManifest } from '$lib/parser/courseIngest';
   import type { LessonContentBundle, LessonFileVersion } from '$lib/server/courses';
@@ -28,6 +32,8 @@
     Save,
     RotateCw,
     Download,
+    CalendarDays,
+    AlertTriangle,
     Layers,
     Loader2,
     Check,
@@ -42,11 +48,13 @@
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
   let selectedLessonId: string = $state('');
-  let activeTab: 'lesson' | 'summary' | 'cheatsheet' | 'test' = $state('lesson');
+  type PageTab = 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule';
+  let activeTab: PageTab = $state('lesson');
   let isEditing: boolean = $state(false);
   let isUploadModalOpen: boolean = $state(false);
   let uploadModalMode: 'add' | 'replace' = $state('add');
   let isLLMModalOpen: boolean = $state(false);
+  let isScheduleModalOpen: boolean = $state(false);
   let isGeneratingAI: boolean = $state(false);
 
   // Complete course scope states
@@ -71,14 +79,16 @@
     lesson: '',
     summary: '',
     cheatsheet: '',
-    test: ''
+    test: '',
+    schedule: ''
   });
 
   let originalContents: Record<string, string> = $state({
     lesson: '',
     summary: '',
     cheatsheet: '',
-    test: ''
+    test: '',
+    schedule: ''
   });
 
   let isLoadingCourse = $state(true);
@@ -107,6 +117,7 @@
     if (activeTab === 'summary') return 'Summary';
     if (activeTab === 'cheatsheet') return 'Cheatsheet';
     if (activeTab === 'test') return 'Practice Test';
+    if (activeTab === 'schedule') return 'Schedule';
     return isCourseScope ? 'Course Notes' : 'Notes';
   });
 
@@ -121,7 +132,7 @@
 
   let activeVersionId = $derived.by(() => {
     if (isCourseScope) return activeTab;
-    if (activeTab === 'lesson') return 'lesson';
+    if (activeTab === 'lesson' || activeTab === 'schedule') return 'lesson';
     return activeVersions[activeTab] || currentTabVersions[0]?.id || activeTab;
   });
 
@@ -165,7 +176,7 @@
     }
   }
 
-  async function loadCourseDocument(tab: 'lesson' | 'summary' | 'cheatsheet' | 'test') {
+  async function loadCourseDocument(tab: PageTab) {
     isLoadingCourseDoc = true;
     try {
       if (tab === 'lesson') {
@@ -182,6 +193,11 @@
           if (data.exists && data.markdown && data.markdown.trim().length > 0) {
             tabContents[tab] = data.markdown;
             originalContents[tab] = data.markdown;
+          } else if (tab === 'schedule') {
+            // Schedules need the preferences questionnaire first — show the
+            // intro panel instead of silently calling the LLM.
+            tabContents.schedule = '';
+            originalContents.schedule = '';
           } else {
             // Not yet generated: auto-trigger generation
             isLoadingCourseDoc = false;
@@ -197,19 +213,149 @@
     }
   }
 
-  async function generateCourseDocument(type: 'lesson' | 'summary' | 'cheatsheet' | 'test') {
-    if (type === 'lesson') return;
+  async function enqueueScheduleGeneration(promptWithPreferences: string) {
     const localConfig = getLocalLLMConfig();
     if (!localConfig?.baseUrl) {
       isLLMModalOpen = true;
       return;
     }
 
+    if (!promptWithPreferences || promptWithPreferences.trim().length === 0) {
+      alert(
+        'Core prompt template for course schedule is missing. Please add course_schedule.md in Prompts before generating.'
+      );
+      return;
+    }
+
+    // Show the user exactly what is being fed to the AI (browser console).
+    const marker = 'STUDENT PREFERENCES (authoritative):';
+    const markerAt = promptWithPreferences.indexOf(marker);
+    const templateChars = markerAt >= 0 ? markerAt + marker.length : promptWithPreferences.length;
+    const prefLines = markerAt >= 0 ? promptWithPreferences.slice(templateChars) : '';
+    const prefItems = prefLines
+      ? prefLines
+          .split('\n')
+          .map((l) => l.trim())
+          .filter(Boolean)
+      : [];
+
+    let schedulePreview: { payload?: string; stats?: any } | null = null;
+    try {
+      const previewRes = await apiFetch(`/api/courses/${courseId}/course-docs?type=schedule&preview=true`);
+      if (previewRes.ok) {
+        schedulePreview = await previewRes.json();
+      }
+    } catch (e) {
+      console.warn('[Schedule AI] Could not pre-fetch payload preview:', e);
+    }
+
+    const payloadChars = schedulePreview?.stats?.payloadChars ?? schedulePreview?.payload?.length ?? 0;
+    const payloadEstTokens = Math.round(payloadChars / 4);
+    const systemEstTokens = Math.round(promptWithPreferences.length / 4);
+    const totalEstTokens = systemEstTokens + payloadEstTokens;
+
+    console.group(
+      `[Schedule AI] Data being sent to AI for ${(courseId || '').toUpperCase()} (${(promptWithPreferences.length + payloadChars).toLocaleString()} chars, ~${totalEstTokens.toLocaleString()} tokens)`
+    );
+    console.log('Target Model & Endpoint:', {
+      model: localConfig.model || '(server default)',
+      provider: localConfig.provider || 'openai_compatible',
+      baseUrl: localConfig.baseUrl
+    });
+    console.log(`1. System Prompt (${promptWithPreferences.length.toLocaleString()} chars, ~${systemEstTokens.toLocaleString()} tokens):`, {
+      templateChars,
+      studentPreferences: prefItems.length > 0 ? prefItems : '(none — template only)'
+    });
+    console.log(`2. Course Payload (${payloadChars.toLocaleString()} chars, ~${payloadEstTokens.toLocaleString()} tokens):`, {
+      lessons: schedulePreview?.stats?.lessons,
+      assignments: schedulePreview?.stats?.assignments,
+      totalContentWords: schedulePreview?.stats?.totalWords,
+      densityMix: schedulePreview?.stats?.density
+    });
+    if (schedulePreview?.stats?.items && schedulePreview.stats.items.length > 0) {
+      console.log(`3. Itemized Course Breakdown (${schedulePreview.stats.items.length} items):`);
+      console.table(
+        schedulePreview.stats.items.map((it: any) => ({
+          'Lesson ID': it.lessonId,
+          'Unit': it.unitNumber,
+          'Title': it.lessonTitle,
+          'Kind': it.type,
+          'Words': it.words,
+          'Density': it.density || 'none',
+          'Excerpt Chars': it.excerptChars
+        }))
+      );
+    }
+    console.groupEnd();
+
+    try {
+      const res = await apiFetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'enqueue',
+          courseId,
+          tab: 'schedule',
+          lessonId: 'schedule',
+          lessonTitle: 'Course Study Schedule',
+          customPrompt: promptWithPreferences,
+          customConfig: localConfig
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || 'Failed to queue schedule generation');
+      }
+
+      const data = await res.json();
+      const count = data.enqueued?.length || 0;
+      if (count === 0) {
+        saveSuccessMessage = '⏳ Schedule is already queued or generating — watch the AI Queue for progress.';
+      } else {
+        saveSuccessMessage = '✨ Queued Course Schedule for background generation!';
+      }
+      setTimeout(() => {
+        saveSuccessMessage = '';
+      }, 4000);
+
+      await queueStatus.refresh();
+    } catch (err: any) {
+      alert('AI Schedule Queue Error: ' + (err?.message || 'Check your LLM configuration.'));
+    }
+  }
+
+  async function generateCourseDocument(type: PageTab, opts?: { customPrompt?: string }) {
+    if (type === 'lesson') return;
+
+    const promptKey = `course_${type}`;
+    const activePrompt =
+      opts?.customPrompt ||
+      parsedActiveTab.frontmatter.prompt ||
+      genericPrompts[promptKey] ||
+      genericPrompts[type] ||
+      '';
+
+    if (type === 'schedule') {
+      await enqueueScheduleGeneration(activePrompt);
+      return;
+    }
+
+    const localConfig = getLocalLLMConfig();
+    if (!localConfig?.baseUrl) {
+      isLLMModalOpen = true;
+      return;
+    }
+
+    if (!activePrompt || activePrompt.trim().length === 0) {
+      alert(
+        `Core prompt template for "${type}" is missing. Please add or verify ${promptKey}.md in the Prompts settings before generating.`
+      );
+      return;
+    }
+
     isGeneratingCourseDoc = true;
     try {
-      const promptKey = `course_${type}`;
-      const activePrompt = parsedActiveTab.frontmatter.prompt || genericPrompts[promptKey] || genericPrompts[type] || '';
-
       const res = await apiFetch(`/api/courses/${courseId}/course-docs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -217,7 +363,9 @@
           type,
           forceRegenerate: true,
           customPrompt: activePrompt,
-          customConfig: localConfig
+          customConfig: localConfig,
+          timeoutMs: 180_000,
+          async: true
         })
       });
 
@@ -235,8 +383,43 @@
         throw new Error(errorMsg);
       }
 
-      const data = await res.json();
-      const generatedMarkdown = data.markdown || '';
+      const initialData = await res.json();
+      let data = initialData;
+      let generatedMarkdown = initialData.markdown || '';
+
+      if (initialData.status === 'generating') {
+        const pollInterval = 1500;
+        const maxWaitMs = 360_000; // 6 minutes max
+        const startTime = Date.now();
+
+        while (true) {
+          await new Promise((r) => setTimeout(r, pollInterval));
+          if (Date.now() - startTime > maxWaitMs) {
+            throw new Error(`Generation timed out after 6 minutes`);
+          }
+
+          const pollRes = await apiFetch(`/api/courses/${courseId}/course-docs?type=${type}&status=true`);
+          if (!pollRes.ok) {
+            const errData = await pollRes.json().catch(() => ({}));
+            throw new Error(errData.error || errData.message || `Generation failed (HTTP ${pollRes.status})`);
+          }
+
+          const pollData = await pollRes.json();
+          if (pollData.status === 'completed') {
+            data = pollData;
+            generatedMarkdown = pollData.markdown || '';
+            break;
+          } else if (pollData.status === 'failed') {
+            throw new Error(pollData.error || `Failed to generate course ${type}`);
+          }
+          // Still generating, continue polling
+        }
+      }
+
+      console.log(`[Course AI] Generated course ${type}: ${generatedMarkdown.length} chars`, {
+        usage: data.usage
+      });
+
       tabContents[type] = generatedMarkdown;
       tabContents = { ...tabContents };
       originalContents[type] = generatedMarkdown;
@@ -248,7 +431,7 @@
 
       if (course) {
         if (!course.courseDocs) {
-          course.courseDocs = { summary: false, cheatsheet: false, test: false };
+          course.courseDocs = { summary: false, cheatsheet: false, test: false, schedule: false };
         }
         course.courseDocs[type] = true;
       }
@@ -266,7 +449,7 @@
     }
   }
 
-  function switchTab(tab: 'lesson' | 'summary' | 'cheatsheet' | 'test') {
+  function switchTab(tab: PageTab) {
     activeTab = tab;
     isEditing = false;
     if (isCourseScope) {
@@ -334,7 +517,7 @@
   }
 
   function handleSelectVersion(versionId: string) {
-    if (activeTab === 'lesson' || !lessonBundle) return;
+    if (activeTab === 'lesson' || activeTab === 'schedule' || !lessonBundle) return;
     activeVersions[activeTab] = versionId;
 
     let versionsList: LessonFileVersion[] = [];
@@ -350,7 +533,7 @@
   }
 
   async function handleCreateNewVersion() {
-    if (activeTab === 'lesson' || !selectedLessonId) return;
+    if (activeTab === 'lesson' || activeTab === 'schedule' || !selectedLessonId) return;
 
     const nextVer = (currentTabVersions.length > 0 ? Math.max(...currentTabVersions.map((v) => v.versionNumber)) : 0) + 1;
     const defaultPrompt = genericPrompts[activeTab] || '';
@@ -394,6 +577,40 @@
     }
   }
 
+  /** Checkbox toggle from ScheduleViewer: update content, persist via the course-doc PUT. */
+  async function handleScheduleToggle(updatedMarkdown: string) {
+    tabContents.schedule = updatedMarkdown;
+    tabContents = { ...tabContents };
+    await saveCurrentTab();
+  }
+
+  /** Regenerate the schedule through the preferences questionnaire. */
+  function handleScheduleRebuild() {
+    isScheduleModalOpen = true;
+  }
+
+  function handleScheduleGenerate(promptWithPreferences: string) {
+    enqueueScheduleGeneration(promptWithPreferences);
+  }
+
+  // Advisory schedule checks (coverage, unknown ids, dates) run against the
+  // current file — after generation AND after hand edits.
+  let scheduleWarningsDismissed = $state(false);
+  let scheduleWarnings = $derived.by(() => {
+    if (activeTab !== 'schedule' || !isCourseScope || !course) return [];
+    if (tabContents.schedule.trim().length === 0) return [];
+    try {
+      return validateScheduleMarkdown(tabContents.schedule, course).warnings;
+    } catch {
+      return [];
+    }
+  });
+
+  $effect(() => {
+    void tabContents.schedule;
+    scheduleWarningsDismissed = false;
+  });
+
   async function saveCurrentTab() {
     if (isCourseScope) {
       if (activeTab === 'lesson') return; // Notes cannot be edited
@@ -427,6 +644,7 @@
     }
 
     if (!selectedLessonId) return;
+    if (activeTab === 'schedule') return; // Schedule is course-scoped, never saved per-lesson
     isSaving = true;
 
     try {
@@ -581,15 +799,69 @@
 
   function startQueueFeedback(): void {
     releaseQueueWatch = queueStatus.acquire();
-    unsubscribeQueueFinished = queueStatus.onTaskFinished((task) => {
+    unsubscribeQueueFinished = queueStatus.onTaskFinished(async (task) => {
       if (task.courseId !== (courseId || '').toLowerCase()) return;
-      const label = task.tab.charAt(0).toUpperCase() + task.tab.slice(1);
+      const label = task.tab === 'schedule' ? 'Course Schedule' : (task.tab.charAt(0).toUpperCase() + task.tab.slice(1));
       if (task.status === 'completed') {
-        console.log(`[ILC AI Done] ${label} for ${task.lessonId} regenerated.`);
-        saveSuccessMessage = `✨ ${label} regenerated!`;
+        console.log(`[ILC AI Done] ${label} for ${task.lessonId} generated.`);
+        saveSuccessMessage = `✨ ${label} generated!`;
         setTimeout(() => {
           saveSuccessMessage = '';
         }, 3500);
+
+        if (task.tab === 'schedule') {
+          await loadCourseDocument('schedule');
+          if (course) {
+            if (!course.courseDocs) {
+              course.courseDocs = { summary: false, cheatsheet: false, test: false, schedule: false };
+            }
+            course.courseDocs.schedule = true;
+          }
+
+          const generatedMarkdown = tabContents.schedule;
+          if (generatedMarkdown && generatedMarkdown.trim().length > 0) {
+            const parsed = ScheduleParser.parseMarkdown(generatedMarkdown);
+            console.group(
+              `%c[Schedule AI] Generation complete: ${generatedMarkdown.length.toLocaleString()} chars (~${Math.round(generatedMarkdown.length / 4).toLocaleString()} tokens) | ${parsed.events.length} events parsed`,
+              'color: #059669; font-weight: bold;'
+            );
+            console.log('Result Summary:', {
+              outputChars: generatedMarkdown.length,
+              outputEstTokens: Math.round(generatedMarkdown.length / 4),
+              parsedEventsCount: parsed.events.length,
+              title: parsed.title,
+              summaryLine: parsed.summaryLine,
+              tokensUsed: task.tokensUsed
+            });
+
+            if (parsed.events.length > 0) {
+              console.groupCollapsed(`Itemized Schedule Events (${parsed.events.length} items):`);
+              console.table(
+                parsed.events.map((e) => ({
+                  Date: e.date,
+                  Day: e.dayLabel || '—',
+                  Type: e.type,
+                  Lesson: `${e.lessonId}${e.section ? `/${e.section}` : ''}`,
+                  Title: e.title,
+                  Duration: e.durationMin ? `${e.durationMin}m` : '—',
+                  Focus: e.description || '—'
+                }))
+              );
+              console.groupEnd();
+            } else {
+              console.warn(
+                '%c[Schedule AI] Warning: 0 checklist events were parsed from model output! Inspect full raw response below.',
+                'color: #dc2626; font-weight: bold;'
+              );
+            }
+
+            console.groupCollapsed('Full Raw LLM Response (click to expand):');
+            console.log(generatedMarkdown);
+            console.groupEnd();
+
+            console.groupEnd();
+          }
+        }
       } else if (task.status === 'failed') {
         console.error(`[ILC AI Failed] ${label} for ${task.lessonId}: ${task.error}`);
         saveSuccessMessage = `⚠️ ${label} generation failed`;
@@ -608,17 +880,29 @@
   }
 
   /**
-   * True while the active lesson+tab has a queued or processing generation
-   * task — drives the PromptCard's Generating... state (the annotation
-   * spinner state isGeneratingAI is a separate flow).
+   * True while the active lesson+tab (or course doc) has a queued or processing generation
+   * task — drives the PromptCard's Generating... state.
    */
   let isTabGenerating = $derived.by(() => {
     const s = queueStatus.status;
+    if (isCourseScope) {
+      const matchTab = (tab: string) => tab.replace(/-\d+$/, '') === activeTab;
+      const matches = (t: { courseId: string; tab: string }) =>
+        t.courseId === (courseId || '').toLowerCase() && matchTab(t.tab);
+      return Boolean(s.activeTask && matches(s.activeTask)) || s.tasks.some((t) => t.status === 'pending' && matches(t));
+    }
     const matchTab = (tab: string) => tab.replace(/-\d+$/, '') === activeTab;
     const matches = (t: { courseId: string; lessonId: string; tab: string }) =>
       t.courseId === (courseId || '').toLowerCase() &&
       t.lessonId === selectedLessonId &&
       matchTab(t.tab);
+    return Boolean(s.activeTask && matches(s.activeTask)) || s.tasks.some((t) => t.status === 'pending' && matches(t));
+  });
+
+  let isScheduleGenerating = $derived.by(() => {
+    const s = queueStatus.status;
+    const matches = (t: { courseId: string; tab: string }) =>
+      t.courseId === (courseId || '').toLowerCase() && t.tab === 'schedule';
     return Boolean(s.activeTask && matches(s.activeTask)) || s.tasks.some((t) => t.status === 'pending' && matches(t));
   });
 
@@ -780,6 +1064,9 @@
       const q = pendingAnnotationQuery;
       pendingAnnotationQuery = null;
       handleAnnotationSubmit(q.selectedText, q.query);
+    } else if (isCourseScope && activeTab === 'schedule') {
+      // Schedule generation always starts from the preferences questionnaire.
+      isScheduleModalOpen = true;
     } else if (isCourseScope && activeTab !== 'lesson') {
       generateCourseDocument(activeTab);
     } else {
@@ -808,16 +1095,17 @@
             courseCode: course.id,
             courseTitle: course.title,
             lessonId: 'Course',
-            lessonTitle: 'Complete Course Notes',
+            lessonTitle: 'Complete Course Lessons',
             tab: 'lesson',
-            tabDisplayName: 'Complete Notes',
+            tabDisplayName: 'Complete Lessons',
             rawMarkdown: tabContents.lesson
           });
         } else {
           const displayTitles: Record<string, { lessonTitle: string; tabDisplayName: string }> = {
             summary: { lessonTitle: 'Comprehensive Course Summary', tabDisplayName: 'Course Summary' },
             cheatsheet: { lessonTitle: 'Master Course Cheatsheet', tabDisplayName: 'Course Cheatsheet' },
-            test: { lessonTitle: 'Final Course Practice Exam', tabDisplayName: 'Course Practice Test' }
+            test: { lessonTitle: 'Final Course Practice Exam', tabDisplayName: 'Course Practice Test' },
+            schedule: { lessonTitle: 'Course Study Schedule', tabDisplayName: 'Course Schedule' }
           };
           const info = displayTitles[activeTab] || { lessonTitle: `Course ${tabDisplayName}`, tabDisplayName: `Course ${tabDisplayName}` };
           await exportDocumentToPdf({
@@ -905,18 +1193,30 @@
     await loadPrompts();
 
     const urlScope = $page.url.searchParams.get('scope');
+    const urlLesson = $page.url.searchParams.get('lesson');
     const urlTab = $page.url.searchParams.get('tab');
     if (urlTab) {
       if (urlTab === 'notes') activeTab = 'lesson';
-      else if (['lesson', 'summary', 'cheatsheet', 'test'].includes(urlTab)) {
-        activeTab = urlTab as any;
+      else if (['lesson', 'summary', 'cheatsheet', 'test', 'schedule'].includes(urlTab)) {
+        activeTab = urlTab as PageTab;
       }
+    }
+    if (activeTab === 'schedule') {
+      // Schedule is course-scoped only.
+      isCourseScope = true;
     }
 
     if (urlScope === 'course') {
       isCourseScope = true;
       await loadCourse();
       await loadCourseDocument(activeTab);
+    } else if (urlLesson) {
+      await loadCourse();
+      // Deep link from a schedule entry: open the lesson, optionally its tab.
+      const known = (course?.units || []).some((u) => u.lessons.some((l) => l.id === urlLesson));
+      if (known) {
+        selectLesson(urlLesson);
+      }
     } else {
       await loadCourse();
     }
@@ -954,8 +1254,12 @@
   courseId={course?.id}
   courseTitle={course?.title}
   lessonTitle={isCourseScope ? 'Complete Course' : currentLessonTitle}
-  onLessonUpdated={(lId) => {
-    if (!isCourseScope && lId === selectedLessonId) {
+  onLessonUpdated={(lId, tab) => {
+    if (tab === 'schedule' || lId === 'schedule') {
+      if (isCourseScope && activeTab === 'schedule') {
+        loadCourseDocument('schedule');
+      }
+    } else if (!isCourseScope && lId === selectedLessonId) {
       loadLesson(selectedLessonId);
     }
   }}
@@ -1029,7 +1333,7 @@
           class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
         >
           <BookOpen class="w-3.5 h-3.5" />
-          <span>Notes</span>
+          <span>Lessons</span>
         </button>
 
         <button
@@ -1055,6 +1359,16 @@
           <CheckCircle2 class="w-3.5 h-3.5" />
           <span>Practice Test</span>
         </button>
+
+        {#if isCourseScope}
+          <button
+            onclick={() => switchTab('schedule')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'schedule' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <CalendarDays class="w-3.5 h-3.5" />
+            <span>Schedule</span>
+          </button>
+        {/if}
       </div>
     </div>
 
@@ -1073,9 +1387,14 @@
             tabName={isCourseScope ? `Course ${tabDisplayName}` : tabDisplayName}
             versions={isCourseScope ? [] : currentTabVersions}
             activeVersionId={isCourseScope ? '' : activeVersionId}
-            isGenerating={isCourseScope ? isGeneratingCourseDoc : isTabGenerating}
+            isGenerating={isCourseScope ? (activeTab === 'schedule' ? isScheduleGenerating : isGeneratingCourseDoc) : isTabGenerating}
             onChangePrompt={handlePromptChange}
-            onRegenerate={isCourseScope ? () => generateCourseDocument(activeTab) : triggerAIGeneration}
+            onRegenerate={isCourseScope
+            ? activeTab === 'schedule'
+              ? // Schedule regeneration always starts from the (adjustable) survey.
+                () => (isScheduleModalOpen = true)
+              : () => generateCourseDocument(activeTab)
+            : triggerAIGeneration}
             onSelectVersion={isCourseScope ? undefined : handleSelectVersion}
             onCreateNewVersion={isCourseScope ? undefined : handleCreateNewVersion}
             onResetPrompt={() => handlePromptChange(defaultPromptForActiveTab)}
@@ -1147,7 +1466,7 @@
 
         <!-- Main Card -->
         <div class="relative bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-2xs group">
-          {#if isCourseScope && isGeneratingCourseDoc}
+          {#if isCourseScope && isGeneratingCourseDoc && activeTab !== 'schedule'}
             <div class="h-64 flex flex-col items-center justify-center space-y-3 p-8 text-center">
               <Loader2 class="w-7 h-7 animate-spin text-amber-500" />
               <div class="text-sm font-medium text-stone-800 dark:text-stone-200">
@@ -1177,6 +1496,85 @@
                   testMarkdown={parsedActiveTab.body}
                 />
               {/key}
+            </div>
+          {:else if activeTab === 'schedule' && isCourseScope}
+            <!-- Schedule: structured viewer or first-time intro -->
+            <div class="p-6 sm:p-10">
+              {#if isScheduleGenerating}
+                <div class="mb-5 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800/60 bg-blue-50/70 dark:bg-blue-950/40 flex items-center space-x-3 text-blue-900 dark:text-blue-200">
+                  <Loader2 class="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
+                  <div class="text-xs">
+                    <span class="font-semibold">Schedule is generating in the background...</span>
+                    <span class="text-blue-700 dark:text-blue-300 ml-1">You can continue browsing. The new schedule will appear here automatically when complete. Watch the AI Queue in the header for real-time progress.</span>
+                  </div>
+                </div>
+              {/if}
+
+              {#if tabContents.schedule.trim().length > 0}
+                {#if scheduleWarnings.length > 0 && !scheduleWarningsDismissed}
+                  <div class="mb-5 p-3.5 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50/70 dark:bg-amber-950/40">
+                    <div class="flex items-start justify-between gap-3">
+                      <div class="space-y-1.5">
+                        <div class="flex items-center space-x-2 text-amber-900 dark:text-amber-200">
+                          <AlertTriangle class="w-4 h-4 shrink-0" />
+                          <span class="text-xs font-semibold">Schedule check — {scheduleWarnings.length} {scheduleWarnings.length === 1 ? 'issue' : 'issues'} found</span>
+                        </div>
+                        <ul class="text-xs text-amber-800 dark:text-amber-300 leading-relaxed list-disc list-inside space-y-0.5">
+                          {#each scheduleWarnings as warning}
+                            <li>{warning}</li>
+                          {/each}
+                        </ul>
+                        <p class="text-[11px] text-amber-700/80 dark:text-amber-400/80">
+                          The schedule was saved anyway — consider "Rebuild with new preferences" or editing the markdown.
+                        </p>
+                      </div>
+                      <button
+                        onclick={() => (scheduleWarningsDismissed = true)}
+                        class="p-1 rounded-md text-amber-500 hover:text-amber-800 dark:hover:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition cursor-pointer shrink-0"
+                        title="Dismiss"
+                      >
+                        <X class="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+                <ScheduleViewer
+                  courseId={course.id}
+                  markdown={tabContents.schedule}
+                  onToggle={handleScheduleToggle}
+                  onRebuild={handleScheduleRebuild}
+                  onEditMarkdown={() => (isEditing = true)}
+                  isGenerating={isScheduleGenerating}
+                />
+              {:else}
+                <div class="max-w-lg mx-auto py-14 text-center space-y-4">
+                  <div class="mx-auto w-fit p-3 rounded-2xl bg-stone-900 dark:bg-stone-800 text-white dark:text-stone-200 shadow-2xs">
+                    {#if isScheduleGenerating}
+                      <Loader2 class="w-6 h-6 animate-spin text-amber-500" />
+                    {:else}
+                      <CalendarDays class="w-6 h-6" />
+                    {/if}
+                  </div>
+                  <div class="space-y-1.5">
+                    <h3 class="text-base font-semibold text-stone-900 dark:text-stone-100">
+                      {isScheduleGenerating ? 'Generating study schedule...' : 'Build a study schedule'}
+                    </h3>
+                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
+                      {isScheduleGenerating
+                        ? 'Your personalized study schedule is being generated in the background AI queue. Watch the header for progress.'
+                        : 'Answer a few questions about your available days and time, and the planner will lay out every lesson, review session, and assignment deadline across real dates.'}
+                    </p>
+                  </div>
+                  {#if !isScheduleGenerating}
+                    <button
+                      onclick={() => (isScheduleModalOpen = true)}
+                      class="px-4 py-2 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-sm cursor-pointer"
+                    >
+                      Build Schedule
+                    </button>
+                  {/if}
+                </div>
+              {/if}
             </div>
           {:else}
             <!-- Markdown Reader View -->
@@ -1225,5 +1623,13 @@
     isOpen={isLLMModalOpen}
     onClose={() => (isLLMModalOpen = false)}
     onConfigured={handleLLMConfigured}
+  />
+
+  <SchedulePreferencesModal
+    isOpen={isScheduleModalOpen}
+    onClose={() => (isScheduleModalOpen = false)}
+    onGenerate={handleScheduleGenerate}
+    promptTemplate={genericPrompts['course_schedule'] || ''}
+    courseTitle={course.title}
   />
 {/if}

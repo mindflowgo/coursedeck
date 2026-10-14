@@ -2,6 +2,7 @@
   import Header from '$lib/components/Header.svelte';
   import { onMount } from 'svelte';
   import { apiFetch, isTauriEnvironment } from '$lib/api';
+  import { confirmDialog } from '$lib/dialog';
   import {
     Settings,
     Server,
@@ -173,6 +174,22 @@
     }
   }
 
+  function isPublicIp(urlStr: string): boolean {
+    try {
+      const clean = urlStr.trim();
+      if (!clean) return false;
+      const host = new URL(clean.startsWith('http') ? clean : `http://${clean}`).hostname;
+      const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+      if (!match) return false;
+      const a = Number(match[1]);
+      const b = Number(match[2]);
+      if (a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function reparseAllCourses() {
     isReparsing = true;
     reparseResult = '';
@@ -323,8 +340,12 @@
     }
   }
 
-  function resetStorageToDefault() {
-    if (confirm('Reset course data location back to the default system folder?')) {
+  async function resetStorageToDefault() {
+    const confirmed = await confirmDialog(
+      'Reset course data location back to the default system folder?',
+      'Reset Data Location'
+    );
+    if (confirmed) {
       saveNewPath('');
     }
   }
@@ -447,7 +468,11 @@
     const file = input?.files?.[0];
     if (!file) return;
 
-    if (!confirm(`Restore course data from "${file.name}"?\n\nThis will extract courses and prompts into your active data directory.`)) {
+    const confirmed = await confirmDialog(
+      `Restore course data from "${file.name}"?\n\nThis will extract courses and prompts into your active data directory.`,
+      'Restore Backup'
+    );
+    if (!confirmed) {
       input.value = '';
       return;
     }
@@ -821,6 +846,11 @@
             placeholder="http://localhost:11434/v1"
             class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
           />
+          {#if isPublicIp(baseUrl)}
+            <p class="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-medium">
+              Note: Direct IP access to cloud APIs (like DeepSeek, OpenAI, Groq) is blocked by Cloudflare (error 1003). Use the domain name (e.g. <code>https://api.deepseek.com</code>) instead of an IP.
+            </p>
+          {/if}
         </div>
 
         <div>

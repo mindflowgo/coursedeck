@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getPromptsDir, assertPromptId, safeJoin } from './paths';
+import { getPromptsDir, getDefaultDataDir, assertPromptId, safeJoin } from './paths';
 
 export interface PromptItem {
   id: string; // e.g. "summary", "cheatsheet", "test_kica"
@@ -10,45 +10,100 @@ export interface PromptItem {
 }
 
 export class PromptService {
+  /** Resolves potential fallback locations for prompt templates if not in the active prompts directory. */
+  private static getFallbackDirs(): string[] {
+    const candidates = [
+      path.join(getDefaultDataDir(), 'prompts'),
+      path.resolve(process.cwd(), 'data', 'prompts'),
+      path.resolve(process.cwd(), '..', 'data', 'prompts')
+    ];
+    return candidates.filter((d) => fs.existsSync(d));
+  }
+
   static listPrompts(): PromptItem[] {
-    const dir = getPromptsDir();
-    if (!fs.existsSync(dir)) return [];
+    const activeDir = getPromptsDir();
+    const promptMap = new Map<string, PromptItem>();
 
-    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
-    const prompts: PromptItem[] = [];
-
-    for (const f of files) {
-      const id = f.replace(/\.md$/, '');
-      const fullPath = path.join(dir, f);
-      const content = fs.readFileSync(fullPath, 'utf8');
-      const titleMatch = content.match(/^#\s+(.*)/m);
-      const title = titleMatch ? titleMatch[1].trim() : id;
-
-      prompts.push({
-        id,
-        title,
-        filename: f,
-        content
-      });
+    // 1. Load any defaults first from fallback directories
+    for (const fallbackDir of this.getFallbackDirs()) {
+      try {
+        const files = fs.readdirSync(fallbackDir).filter((f) => f.endsWith('.md'));
+        for (const f of files) {
+          const id = f.replace(/\.md$/, '');
+          if (!promptMap.has(id)) {
+            const content = fs.readFileSync(path.join(fallbackDir, f), 'utf8');
+            const titleMatch = content.match(/^#\s+(.*)/m);
+            promptMap.set(id, {
+              id,
+              title: titleMatch ? titleMatch[1].trim() : id,
+              filename: f,
+              content
+            });
+          }
+        }
+      } catch {}
     }
 
-    return prompts;
+    // 2. Active directory takes precedence and overrides defaults with user edits
+    if (fs.existsSync(activeDir)) {
+      try {
+        const files = fs.readdirSync(activeDir).filter((f) => f.endsWith('.md'));
+        for (const f of files) {
+          const id = f.replace(/\.md$/, '');
+          const fullPath = path.join(activeDir, f);
+          const content = fs.readFileSync(fullPath, 'utf8');
+          const titleMatch = content.match(/^#\s+(.*)/m);
+          promptMap.set(id, {
+            id,
+            title: titleMatch ? titleMatch[1].trim() : id,
+            filename: f,
+            content
+          });
+        }
+      } catch {}
+    }
+
+    return Array.from(promptMap.values());
   }
 
   static getPrompt(id: string): PromptItem | null {
     const safeId = assertPromptId(id);
-    const dir = getPromptsDir();
-    const fullPath = safeJoin(dir, `${safeId}.md`);
-    if (!fs.existsSync(fullPath)) return null;
+    const activeDir = getPromptsDir();
+    const fullPath = safeJoin(activeDir, `${safeId}.md`);
 
-    const content = fs.readFileSync(fullPath, 'utf8');
-    const titleMatch = content.match(/^#\s+(.*)/m);
-    return {
-      id: safeId,
-      title: titleMatch ? titleMatch[1].trim() : safeId,
-      filename: `${safeId}.md`,
-      content
-    };
+    // 1. Check user/active prompts dir
+    if (fs.existsSync(fullPath)) {
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const titleMatch = content.match(/^#\s+(.*)/m);
+      return {
+        id: safeId,
+        title: titleMatch ? titleMatch[1].trim() : safeId,
+        filename: `${safeId}.md`,
+        content
+      };
+    }
+
+    // 2. Check fallback dirs
+    for (const fallbackDir of this.getFallbackDirs()) {
+      const fbPath = path.join(fallbackDir, `${safeId}.md`);
+      if (fs.existsSync(fbPath)) {
+        const content = fs.readFileSync(fbPath, 'utf8');
+        const titleMatch = content.match(/^#\s+(.*)/m);
+        // Auto-seed into activeDir so user has it locally
+        try {
+          fs.mkdirSync(activeDir, { recursive: true });
+          fs.writeFileSync(fullPath, content, 'utf8');
+        } catch {}
+        return {
+          id: safeId,
+          title: titleMatch ? titleMatch[1].trim() : safeId,
+          filename: `${safeId}.md`,
+          content
+        };
+      }
+    }
+
+    return null;
   }
 
   static savePrompt(id: string, content: string): boolean {

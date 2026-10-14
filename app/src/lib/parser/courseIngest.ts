@@ -34,12 +34,20 @@ export interface CourseManifest {
   description: string;
   units: CourseManifestUnit[];
   updatedAt: string;
+  /** True when the course is archived — hidden from listings, still openable. */
+  archived?: boolean;
   path?: string;
-  courseDocs?: {
-    summary: boolean;
-    cheatsheet: boolean;
-    test: boolean;
-  };
+  courseDocs?: CourseDocsFlags;
+}
+
+/** Course-level documents stored as `course.<type>.md` in the course folder. */
+export type CourseDocType = 'summary' | 'cheatsheet' | 'test' | 'schedule';
+
+export interface CourseDocsFlags {
+  summary: boolean;
+  cheatsheet: boolean;
+  test: boolean;
+  schedule: boolean;
 }
 
 export interface IngestOptions {
@@ -314,7 +322,8 @@ export class CourseIngest {
         existingManifest?.description ||
         'Comprehensive ILC course study notes, summaries, cheatsheets, and interactive practice questions.',
       units,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      archived: existingManifest?.archived
     };
 
     fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');

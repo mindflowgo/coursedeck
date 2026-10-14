@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { CourseManifest } from '../parser/courseIngest';
+import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
 import { parseFrontmatter } from '../parser/frontmatter';
+import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
 import {
   assertCourseId,
   assertLessonId,
@@ -19,6 +20,33 @@ export interface LessonFileVersion {
   versionNumber: number; // 1, 2, 3...
   label: string; // "v1", "v2", ...
   content: string;
+}
+
+export interface SchedulePayloadItem {
+  unitNumber: number;
+  unitTitle: string;
+  lessonId: string;
+  lessonTitle: string;
+  type: 'lesson' | 'assignment';
+  words: number;
+  density: string | null;
+  conceptsPer100Words?: number;
+  excerptChars: number;
+}
+
+/** Summary of what went into a schedule-generation payload (debug logging). */
+export interface SchedulePayloadStats {
+  lessons: number;
+  assignments: number;
+  totalWords: number;
+  /** Count per density rating, plus 'none' for lessons without a summary. */
+  density: Record<string, number>;
+  /** Itemized breakdown of all lessons and assignments included in the payload. */
+  items?: SchedulePayloadItem[];
+  /** Total characters in the assembled payload. */
+  payloadChars?: number;
+  /** Estimated tokens in the assembled payload. */
+  estimatedTokens?: number;
 }
 
 export interface LessonContentBundle {
@@ -60,14 +88,15 @@ export class CourseService {
       if (fs.existsSync(metaPath)) {
         try {
           const content = fs.readFileSync(metaPath, 'utf8');
-          const manifest: CourseManifest = JSON.parse(content);
-          manifest.path = courseFolder;
-          manifest.courseDocs = {
-            summary: fs.existsSync(path.join(courseFolder, 'course.summary.md')),
-            cheatsheet: fs.existsSync(path.join(courseFolder, 'course.cheatsheet.md')),
-            test: fs.existsSync(path.join(courseFolder, 'course.test.md'))
-          };
-          manifests.push(manifest);
+        const manifest: CourseManifest = JSON.parse(content);
+        manifest.path = courseFolder;
+        manifest.courseDocs = {
+          summary: fs.existsSync(path.join(courseFolder, 'course.summary.md')),
+          cheatsheet: fs.existsSync(path.join(courseFolder, 'course.cheatsheet.md')),
+          test: fs.existsSync(path.join(courseFolder, 'course.test.md')),
+          schedule: fs.existsSync(path.join(courseFolder, 'course.schedule.md'))
+        };
+        manifests.push(manifest);
         } catch (e) {
           console.error(`Failed to read meta.json for ${dirName}:`, e);
         }
@@ -89,7 +118,8 @@ export class CourseService {
       manifest.courseDocs = {
         summary: fs.existsSync(path.join(courseFolder, 'course.summary.md')),
         cheatsheet: fs.existsSync(path.join(courseFolder, 'course.cheatsheet.md')),
-        test: fs.existsSync(path.join(courseFolder, 'course.test.md'))
+        test: fs.existsSync(path.join(courseFolder, 'course.test.md')),
+        schedule: fs.existsSync(path.join(courseFolder, 'course.schedule.md'))
       };
       return manifest;
     } catch {
@@ -99,6 +129,40 @@ export class CourseService {
 
   static getManifest(courseId: string): CourseManifest | null {
     return this.getCourse(courseId);
+  }
+
+  /**
+   * Patch editable meta.json fields (title, description, archived). Only the
+   * provided fields are touched; the rest of the manifest is preserved
+   * verbatim. Unarchiving deletes the flag entirely so active manifests stay
+   * clean. Returns the updated manifest, or null when the course or its
+   * meta.json cannot be read.
+   */
+  static updateCourseMeta(
+    courseId: string,
+    patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived'>>
+  ): CourseManifest | null {
+    const courseFolder = this.courseDir(courseId);
+    const metaPath = safeJoin(courseFolder, 'meta.json');
+    if (!fs.existsSync(metaPath)) return null;
+
+    try {
+      const manifest: CourseManifest = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (patch.title !== undefined) manifest.title = patch.title;
+      if (patch.description !== undefined) manifest.description = patch.description;
+      if (patch.archived !== undefined) {
+        if (patch.archived) {
+          manifest.archived = true;
+        } else {
+          delete manifest.archived;
+        }
+      }
+      fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');
+      return manifest;
+    } catch (e) {
+      console.error(`Failed to update meta.json for ${courseId}:`, e);
+      return null;
+    }
   }
 
   static getLessonContent(courseId: string, lessonId: string): LessonContentBundle | null {
@@ -240,16 +304,16 @@ export class CourseService {
     return fs.statSync(fullPath).isFile() ? fullPath : null;
   }
 
-  static getCourseDocumentPath(courseId: string, type: 'summary' | 'cheatsheet' | 'test'): string {
+  static getCourseDocumentPath(courseId: string, type: CourseDocType): string {
     return safeJoin(this.courseDir(courseId), `course.${type}.md`);
   }
 
-  static getCourseDocument(courseId: string, type: 'summary' | 'cheatsheet' | 'test'): string | null {
+  static getCourseDocument(courseId: string, type: CourseDocType): string | null {
     const filePath = this.getCourseDocumentPath(courseId, type);
     return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
   }
 
-  static saveCourseDocument(courseId: string, type: 'summary' | 'cheatsheet' | 'test', content: string): boolean {
+  static saveCourseDocument(courseId: string, type: CourseDocType, content: string): boolean {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) {
       fs.mkdirSync(courseDir, { recursive: true });
@@ -527,5 +591,134 @@ export class CourseService {
     }
 
     return lines.join('');
+  }
+
+  /**
+   * Payload for the course-schedule prompt: the COMPLETE unit/lesson
+   * inventory (including assignments — the schedule must plan work sessions
+   * and submission targets for them) plus per-lesson effort signals —
+   * content word count and the information density of the latest curated
+   * summary — and budgeted summary excerpts. Inventory lines are always
+   * complete; only the excerpts respect the total budget.
+   *
+   * When `stats` is provided it is filled with a summary of what went into
+   * the payload — used by the API for debug logging ( surfaced in the
+   * browser console so the user can see exactly what the AI received ).
+   */
+  static buildSchedulePayload(
+    courseId: string,
+    stats?: SchedulePayloadStats
+  ): string {
+    const course = this.getCourse(courseId);
+    const courseDir = this.courseDir(courseId);
+    if (!course || !fs.existsSync(courseDir)) return '';
+
+    const files = fs.readdirSync(courseDir);
+    const lines: string[] = [];
+    lines.push(`# Course: ${course.id.toUpperCase()} — ${course.title}\n\n`);
+    if (course.description) {
+      lines.push(`> ${course.description}\n\n`);
+    }
+
+    // First pass: per-lesson word counts for the statistics header.
+    const allLessons = course.units.flatMap((u) => u.lessons);
+    let totalWords = 0;
+    for (const lesson of allLessons) {
+      const lessonFile = safeJoin(courseDir, `${lesson.id}.lesson.md`);
+      if (fs.existsSync(lessonFile)) {
+        totalWords += countWords(fs.readFileSync(lessonFile, 'utf8'));
+      }
+    }
+    const contentLessons = allLessons.filter((l) => l.type === 'lesson').length;
+    const assignments = allLessons.filter((l) => l.type === 'assignment').length;
+    lines.push(`## Course Statistics\n`);
+    lines.push(`- Content lessons: ${contentLessons} · assignments: ${assignments}`);
+    lines.push(
+      `- Total lesson content: ${totalWords.toLocaleString()} words (rough pace guide: ~100 words per study minute including practice — adjust using each lesson's density below)`
+    );
+    lines.push('');
+
+    if (stats) {
+      stats.lessons = contentLessons;
+      stats.assignments = assignments;
+      stats.totalWords = totalWords;
+    }
+
+    const items: SchedulePayloadItem[] = [];
+    let excerptBudget = 20_000;
+    let currentUnit = -1;
+    let processedCount = 0;
+
+    for (const unit of course.units) {
+      for (const lesson of unit.lessons) {
+        processedCount++;
+        if (unit.number !== currentUnit) {
+          currentUnit = unit.number;
+          lines.push(`\n## Unit ${unit.number}: ${unit.title}\n\n`);
+        }
+
+        const kind = lesson.type === 'assignment' ? ' (ASSIGNMENT)' : ' (LESSON)';
+        lines.push(`### Lesson ${lesson.id}${kind}: ${lesson.title}\n\n`);
+
+        // Effort signals: raw content size + summary information density.
+        const lessonFile = safeJoin(courseDir, `${lesson.id}.lesson.md`);
+        const lessonWords = fs.existsSync(lessonFile)
+          ? countWords(fs.readFileSync(lessonFile, 'utf8'))
+          : 0;
+        const summaryBody =
+          this.findLatestCuratedContent(courseDir, files, lesson.id, 'summary') ??
+          this.findLatestCuratedContent(courseDir, files, lesson.id, 'cheatsheet');
+        const density = summaryBody ? computeSummaryDensity(summaryBody) : null;
+
+        if (density) {
+          lines.push(
+            `Content: ${lessonWords.toLocaleString()} words · Summary density: ${density.density} ` +
+              `(${density.words} summary words, ${density.mathTokens} formula tokens, ` +
+              `${density.listItems} list items, ${density.boldTerms} key terms, ${density.headings} headings — ` +
+              `${density.conceptsPer100Words} concepts per 100 words)\n\n`
+          );
+          if (stats) {
+            stats.density[density.density] = (stats.density[density.density] || 0) + 1;
+          }
+        } else {
+          lines.push(`Content: ${lessonWords.toLocaleString()} words · Summary: none generated yet\n\n`);
+          if (stats) {
+            stats.density['none'] = (stats.density['none'] || 0) + 1;
+          }
+        }
+
+        let excerptChars = 0;
+        if (summaryBody && excerptBudget > 0) {
+          const remainingLessons = Math.max(1, allLessons.length - processedCount + 1);
+          const perLessonMax = Math.max(300, Math.min(500, Math.floor(excerptBudget / remainingLessons)));
+          const budgeted = this.budgetLessonContent(summaryBody, Math.min(perLessonMax, excerptBudget));
+          excerptBudget -= budgeted.length;
+          excerptChars = budgeted.length;
+          lines.push(budgeted);
+          lines.push('\n\n');
+        }
+
+        items.push({
+          unitNumber: unit.number,
+          unitTitle: unit.title,
+          lessonId: lesson.id,
+          lessonTitle: lesson.title,
+          type: lesson.type,
+          words: lessonWords,
+          density: density ? density.density : null,
+          conceptsPer100Words: density ? density.conceptsPer100Words : undefined,
+          excerptChars
+        });
+      }
+    }
+
+    const payloadText = lines.join('');
+    if (stats) {
+      stats.items = items;
+      stats.payloadChars = payloadText.length;
+      stats.estimatedTokens = Math.round(payloadText.length / 4);
+    }
+
+    return payloadText;
   }
 }

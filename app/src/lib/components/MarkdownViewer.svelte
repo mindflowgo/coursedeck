@@ -4,6 +4,7 @@
   import DOMPurify from 'dompurify';
   import { getApiBaseUrl } from '$lib/api';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
+  import { confirmDialog } from '$lib/dialog';
 
   interface Props {
     markdown: string;
@@ -397,9 +398,11 @@
       e.stopPropagation();
       const query = delBtn.getAttribute('data-query') || '';
       const target = delBtn.getAttribute('data-target') || '';
-      if (confirm('Delete this AI study note?')) {
-        onDeleteNote?.(target, query);
-      }
+      confirmDialog('Delete this AI study note?', 'Delete Study Note').then((confirmed) => {
+        if (confirmed) {
+          onDeleteNote?.(target, query);
+        }
+      });
       return;
     }
 

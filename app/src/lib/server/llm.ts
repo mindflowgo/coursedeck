@@ -78,6 +78,13 @@ export class LLMService {
       'Content-Type': 'application/json'
     };
 
+    try {
+      const parsedUrl = new URL(primaryUrl);
+      if (parsedUrl.hostname && !/^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)$/i.test(parsedUrl.hostname)) {
+        headers['Host'] = parsedUrl.host;
+      }
+    } catch {}
+
     // Use passed key or fallback to stored key
     const rawKey = (config.apiKey && config.apiKey.trim()) || LLMService.loadStoredConfig()?.apiKey || '';
     if (rawKey.trim()) {
@@ -214,18 +221,21 @@ export class LLMService {
           return { status: result.status, statusText: result.statusText, bodyText: result.bodyText };
         } catch (err: any) {
           const timedOut = /timed out after/i.test(String(err?.message || ''));
+          if (timedOut) {
+            // Do NOT retry on timeout — repeating an expensive request that already exceeded
+            // the full deadline multiplies delay without fixing slow model generation.
+            throw new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`);
+          }
           if (attempt < maxRetries) {
             attempt++;
             const waitMs = attempt * 1500;
             console.warn(
-              `[LLM API] ${timedOut ? `Timed out after ${Math.round(timeoutMs / 1000)}s` : `Network error (${err?.message || err})`}. Retrying in ${waitMs}ms (attempt ${attempt}/${maxRetries})...`
+              `[LLM API] Network error (${err?.message || err}). Retrying in ${waitMs}ms (attempt ${attempt}/${maxRetries})...`
             );
             await new Promise((r) => setTimeout(r, waitMs));
             continue;
           }
-          throw timedOut
-            ? new Error(`LLM request timed out after ${Math.round(timeoutMs / 1000)}s`)
-            : new Error(`LLM request failed after ${attempt + 1} attempt(s): ${err?.message || err}`);
+          throw new Error(`LLM request failed after ${attempt + 1} attempt(s): ${err?.message || err}`);
         } finally {
           clearTimeout(abortTimer);
           if (deadlineTimer) clearTimeout(deadlineTimer);
@@ -253,6 +263,11 @@ export class LLMService {
 
     if (res.status < 200 || res.status >= 300) {
       console.error(`[LLM API Error Body] ${res.bodyText.slice(0, 500)}`);
+      if (res.bodyText.includes('Direct IP access is not allowed')) {
+        throw new Error(
+          `LLM Error (${res.status}): Direct IP access is not allowed by Cloudflare. Check your LLM Base URL in Settings — use the provider's domain name (e.g. https://api.deepseek.com) instead of a direct IP address.`
+        );
+      }
       throw new Error(`LLM Error (${res.status}): ${res.bodyText.slice(0, 500)}`);
     }
 
