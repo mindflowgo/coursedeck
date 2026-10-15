@@ -136,16 +136,15 @@
   }
 </script>
 
-<div class="min-h-screen bg-stone-50 dark:bg-stone-950">
-  <Header
-    onLessonUpdated={(_lId, tab) => {
-      if (tab === 'schedule') {
-        loadSchedules();
-      }
-    }}
-  />
+<Header
+  onLessonUpdated={(_lId, tab) => {
+    if (tab === 'schedule') {
+      loadSchedules();
+    }
+  }}
+/>
 
-  <main class="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+<main class="flex-1 overflow-y-auto px-4 sm:px-6 py-8 max-w-5xl mx-auto w-full space-y-6">
     <!-- Page header + view toggle -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center space-x-2.5">
@@ -331,4 +330,3 @@
       </div>
     {/if}
   </main>
-</div>
