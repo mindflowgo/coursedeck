@@ -13,39 +13,29 @@ import { CourseService } from './courses';
 const courseId = 'tstvc';
 const courseDir = path.join(scratch, 'courses', courseId);
 
-describe('CourseService tab version helpers', () => {
+describe('CourseService tab file helpers', () => {
   beforeAll(() => {
     fs.mkdirSync(courseDir, { recursive: true });
   });
 
-  describe('latestVersionNumber', () => {
-    it('returns 1 when no tab files exist', () => {
-      expect(CourseService.latestVersionNumber(courseId, '01.99', 'summary')).toBe(1);
-    });
-
-    it('counts the base file as version 1', () => {
-      fs.writeFileSync(path.join(courseDir, '02.01.cheatsheet.md'), 'x'.repeat(300));
-      expect(CourseService.latestVersionNumber(courseId, '02.01', 'cheatsheet')).toBe(1);
-    });
-
-    it('returns the highest -N version across all versioned files', () => {
-      fs.writeFileSync(path.join(courseDir, '02.02.summary.md'), 'x'.repeat(300));
-      fs.writeFileSync(path.join(courseDir, '02.02.summary-2.md'), 'y'.repeat(300));
-      fs.writeFileSync(path.join(courseDir, '02.02.summary-5.md'), 'z'.repeat(300));
-      expect(CourseService.latestVersionNumber(courseId, '02.02', 'summary')).toBe(5);
-    });
-
-    it('ignores other lessons and other tabs', () => {
-      fs.writeFileSync(path.join(courseDir, '02.03.test.md'), 'x'.repeat(300));
-      expect(CourseService.latestVersionNumber(courseId, '02.02', 'summary')).toBe(5);
-      expect(CourseService.latestVersionNumber(courseId, '02.03', 'summary')).toBe(1);
+  describe('getLessonContent', () => {
+    it('discovers built-in and custom tabs keyed by slug, ignoring other lessons and files', () => {
+      fs.writeFileSync(path.join(courseDir, '01.01.lesson.md'), '# Lesson body');
+      fs.writeFileSync(path.join(courseDir, '01.01.summary.md'), '# Summary');
+      fs.writeFileSync(path.join(courseDir, '01.01.assignment.md'), '# Assignment');
+      fs.writeFileSync(path.join(courseDir, '01.02.summary.md'), '# Other lesson summary');
+      fs.writeFileSync(path.join(courseDir, 'meta.json'), '{}');
+      const bundle = CourseService.getLessonContent(courseId, '01.01');
+      expect(bundle?.lesson).toBe('# Lesson body');
+      expect(bundle?.tabs['summary']).toBe('# Summary');
+      expect(bundle?.tabs['assignment']).toBe('# Assignment');
+      expect(Object.keys(bundle?.tabs || {})).not.toContain('lesson');
     });
   });
 
   describe('hasLessonTabContent', () => {
-    it('treats versioned-only content as present', () => {
-      // Lesson with only a -2 version file (the enqueueCourseMissing blind spot)
-      fs.writeFileSync(path.join(courseDir, '03.01.test-2.md'), 'real generated content\n'.repeat(20));
+    it('treats real generated base files as present', () => {
+      fs.writeFileSync(path.join(courseDir, '03.01.test.md'), 'real generated content\n'.repeat(20));
       expect(CourseService.hasLessonTabContent(courseId, '03.01', 'test')).toBe(true);
     });
 
@@ -68,30 +58,37 @@ describe('CourseService tab version helpers', () => {
   });
 
   describe('saveLessonTab', () => {
-    it('writes the next version filename when asNewVersion', () => {
-      fs.writeFileSync(path.join(courseDir, '04.01.summary.md'), 'x'.repeat(300));
-      const result = CourseService.saveLessonTab(courseId, '04.01', 'summary', 'new content', {
-        asNewVersion: true
-      });
-      expect(result.success).toBe(true);
-      expect(result.versionId).toBe('summary-2');
-      expect(fs.existsSync(path.join(courseDir, '04.01.summary-2.md'))).toBe(true);
-    });
-
-    it('overwrites the base file when not asNewVersion', () => {
+    it('always writes the base file, including for custom tabs', () => {
       fs.writeFileSync(path.join(courseDir, '04.02.summary.md'), 'old');
-      const result = CourseService.saveLessonTab(courseId, '04.02', 'summary', 'fresh', {});
+      const result = CourseService.saveLessonTab(courseId, '04.02', 'summary', 'fresh');
       expect(result.success).toBe(true);
-      expect(result.versionId).toBe('summary');
+      expect(result.filename).toBe('04.02.summary.md');
       expect(fs.readFileSync(path.join(courseDir, '04.02.summary.md'), 'utf8')).toBe('fresh');
-      // No stray version files created
       expect(fs.existsSync(path.join(courseDir, '04.02.summary-2.md'))).toBe(false);
+
+      const custom = CourseService.saveLessonTab(courseId, '04.02', 'assignment', 'work');
+      expect(custom.success).toBe(true);
+      expect(fs.readFileSync(path.join(courseDir, '04.02.assignment.md'), 'utf8')).toBe('work');
     });
 
     it('rejects course ids that try to escape the data dir', () => {
-      expect(() =>
-        CourseService.saveLessonTab('../evil', '01.01', 'summary', 'nope', {})
-      ).toThrow();
+      expect(() => CourseService.saveLessonTab('../evil', '01.01', 'summary', 'nope')).toThrow();
+    });
+  });
+
+  describe('deleteLessonTab', () => {
+    it('removes the tab file and reports false when absent', () => {
+      fs.writeFileSync(path.join(courseDir, '05.01.assignment.md'), 'bye');
+      expect(CourseService.deleteLessonTab(courseId, '05.01', 'assignment')).toBe(true);
+      expect(fs.existsSync(path.join(courseDir, '05.01.assignment.md'))).toBe(false);
+      expect(CourseService.deleteLessonTab(courseId, '05.01', 'assignment')).toBe(false);
+    });
+
+    it('leaves sibling tabs untouched', () => {
+      fs.writeFileSync(path.join(courseDir, '05.02.summary.md'), 'keep');
+      fs.writeFileSync(path.join(courseDir, '05.02.assignment.md'), 'delete me');
+      CourseService.deleteLessonTab(courseId, '05.02', 'assignment');
+      expect(fs.existsSync(path.join(courseDir, '05.02.summary.md'))).toBe(true);
     });
   });
 
@@ -187,6 +184,29 @@ describe('CourseService tab version helpers', () => {
       expect(stats.items[0].type).toBe('lesson');
       expect(stats.payloadChars).toBeGreaterThan(0);
       expect(stats.estimatedTokens).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Course document helpers', () => {
+    it('discovers custom and built-in course docs from disk', () => {
+      fs.writeFileSync(path.join(courseDir, 'course.summary.md'), '# Course Summary');
+      fs.writeFileSync(path.join(courseDir, 'course.resources.md'), '# Extra Resources');
+
+      const flags = CourseService.discoverCourseDocs(courseDir);
+      expect(flags.summary).toBe(true);
+      expect(flags.cheatsheet).toBe(false);
+      expect(flags['resources']).toBe(true);
+    });
+
+    it('saves and reads custom course documents', () => {
+      expect(CourseService.hasCourseDocument(courseId, 'glossary')).toBe(false);
+
+      const saved = CourseService.saveCourseDocument(courseId, 'glossary', '# Course Glossary\nKey terms here');
+      expect(saved).toBe(true);
+      expect(CourseService.hasCourseDocument(courseId, 'glossary')).toBe(true);
+
+      const content = CourseService.getCourseDocument(courseId, 'glossary');
+      expect(content).toContain('Key terms here');
     });
   });
 });

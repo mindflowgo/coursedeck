@@ -2,9 +2,13 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { theme } from '$lib/theme.svelte';
+  import { initNavHistory } from '$lib/navHistory';
 
   onMount(() => {
     theme.init();
+    // Record the session's history base eagerly so the Header back button
+    // knows whether real in-app history exists behind the current entry.
+    initNavHistory();
   });
 
   let { children } = $props();

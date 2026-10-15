@@ -10,8 +10,7 @@ export interface GenerationTask {
   courseId: string;
   lessonId: string;
   lessonTitle: string;
-  tab: 'summary' | 'cheatsheet' | 'test' | 'schedule';
-  asNewVersion?: boolean;
+  tab: string;
   customPrompt?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
@@ -82,12 +81,9 @@ class GenerationQueue {
     }
   }
 
-  private makeId(courseId: string, lessonId: string, tab: string, asNewVersion?: boolean): string {
+  private makeId(courseId: string, lessonId: string, tab: string): string {
     if (tab === 'schedule') {
       return `${courseId.toLowerCase()}:schedule`;
-    }
-    if (asNewVersion) {
-      return `${courseId.toLowerCase()}:${lessonId}:${tab}:new_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     }
     return `${courseId.toLowerCase()}:${lessonId}:${tab}`;
   }
@@ -100,8 +96,7 @@ class GenerationQueue {
       courseId: string;
       lessonId?: string;
       lessonTitle?: string;
-      tab: 'summary' | 'cheatsheet' | 'test' | 'schedule';
-      asNewVersion?: boolean;
+      tab: string;
       customPrompt?: string;
     }>,
     customConfig?: LLMConfig
@@ -115,11 +110,11 @@ class GenerationQueue {
     for (const item of items) {
       const lessonId = item.lessonId || (item.tab === 'schedule' ? 'schedule' : '');
       const lessonTitle = item.lessonTitle || (item.tab === 'schedule' ? 'Course Schedule' : lessonId);
-      const id = this.makeId(item.courseId, lessonId, item.tab, item.asNewVersion);
+      const id = this.makeId(item.courseId, lessonId, item.tab);
       const existing = this.tasks.get(id);
 
-      // If already pending or processing (and not a new version request), don't duplicate
-      if (existing && (existing.status === 'pending' || existing.status === 'processing') && !item.asNewVersion) {
+      // If already pending or processing, don't duplicate
+      if (existing && (existing.status === 'pending' || existing.status === 'processing')) {
         continue;
       }
 
@@ -129,7 +124,6 @@ class GenerationQueue {
         lessonId,
         lessonTitle,
         tab: item.tab,
-        asNewVersion: item.asNewVersion,
         customPrompt: item.customPrompt,
         status: 'pending',
         createdAt: new Date().toISOString()
@@ -442,16 +436,9 @@ class GenerationQueue {
 
         const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt);
         const parsed = parseFrontmatter(result.completion.trim());
-
-        // Serialize with YAML frontmatter. The version must match the filename
-        // saveLessonTab writes below: base overwrite = 1, new version = max + 1.
-        const version = nextTask.asNewVersion
-          ? CourseService.latestVersionNumber(nextTask.courseId, nextTask.lessonId, nextTask.tab) + 1
-          : 1;
         const frontmatter = {
           ...parsed.frontmatter,
           type: nextTask.tab,
-          version,
           updatedAt: new Date().toISOString().split('T')[0],
           prompt: systemPrompt
         };
@@ -459,9 +446,7 @@ class GenerationQueue {
         const finalMarkdown = serializeWithFrontmatter(frontmatter, parsed.body.trim());
 
         // Save to disk
-        CourseService.saveLessonTab(nextTask.courseId, nextTask.lessonId, nextTask.tab, finalMarkdown, {
-          asNewVersion: nextTask.asNewVersion
-        });
+        CourseService.saveLessonTab(nextTask.courseId, nextTask.lessonId, nextTask.tab, finalMarkdown);
 
         nextTask.status = 'completed';
         nextTask.completedAt = new Date().toISOString();

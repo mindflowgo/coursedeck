@@ -15,8 +15,6 @@ export function buildDocDefinition(options: PdfExportOptions, body: Content[]): 
   });
 
   const badge = tabBadgeLabel(options.tab);
-  const versionText =
-    options.version !== undefined && options.version !== '' ? `v${options.version} • ` : '';
 
   const doc: TDocumentDefinitions = {
     pageSize: 'A4',
@@ -113,7 +111,7 @@ export function buildDocDefinition(options: PdfExportOptions, body: Content[]): 
             stack: [
               { text: options.courseTitle, bold: true, fontSize: 10, color: COLORS.muted },
               {
-                text: `${versionText}${options.tabDisplayName} • ${dateStr}`,
+                text: `${options.tabDisplayName} • ${dateStr}`,
                 fontSize: 8,
                 color: COLORS.faint,
                 margin: [0, 2, 0, 0]

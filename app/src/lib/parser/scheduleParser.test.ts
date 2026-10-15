@@ -207,20 +207,35 @@ describe('eventHref', () => {
     lineIndex: 0
   };
 
-  it('links known tabs with &tab=', () => {
+  it('links known tabs with a section path', () => {
     expect(eventHref('mcr3u', { ...base, section: 'summary' })).toBe(
-      '/courses/mcr3u?lesson=01.05_assign1&tab=summary'
+      '/courses/mcr3u/01.05_assign1/summary'
     );
   });
 
-  it('links free-form sections and bare refs to the lesson', () => {
+  it('links custom tab sections (created on visit), including assignment', () => {
     expect(eventHref('mcr3u', { ...base, section: 'research' })).toBe(
-      '/courses/mcr3u?lesson=01.05_assign1'
+      '/courses/mcr3u/01.05_assign1/research'
     );
-    expect(eventHref('mcr3u', base)).toBe('/courses/mcr3u?lesson=01.05_assign1');
+    expect(eventHref('mcr3u', { ...base, section: 'assignment' })).toBe(
+      '/courses/mcr3u/01.05_assign1/assignment'
+    );
+  });
+
+  it('links non-slug sections and bare refs to the lesson', () => {
+    expect(eventHref('mcr3u', { ...base, section: 'hand-in' })).toBe(
+      '/courses/mcr3u/01.05_assign1'
+    );
+    expect(eventHref('mcr3u', base)).toBe('/courses/mcr3u/01.05_assign1');
   });
 
   it('lowercases the course id for URL safety', () => {
-    expect(eventHref('MCR3U', base)).toBe('/courses/mcr3u?lesson=01.05_assign1');
+    expect(eventHref('MCR3U', base)).toBe('/courses/mcr3u/01.05_assign1');
+  });
+
+  it('handles course-scoped schedule and docs', () => {
+    expect(eventHref('mcr3u', { lessonId: 'schedule' })).toBe('/courses/mcr3u/course/schedule');
+    expect(eventHref('mcr3u', { lessonId: 'course', section: 'test' })).toBe('/courses/mcr3u/course/test');
+    expect(eventHref('mcr3u', { lessonId: 'course' })).toBe('/courses/mcr3u/course');
   });
 });

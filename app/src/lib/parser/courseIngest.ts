@@ -48,6 +48,7 @@ export interface CourseDocsFlags {
   cheatsheet: boolean;
   test: boolean;
   schedule: boolean;
+  [key: string]: boolean;
 }
 
 export interface IngestOptions {

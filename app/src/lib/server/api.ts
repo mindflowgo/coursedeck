@@ -57,7 +57,6 @@ const MIME_TYPES: Record<string, string> = {
 };
 
 type Tab = 'summary' | 'cheatsheet' | 'test';
-type QueueTab = 'summary' | 'cheatsheet' | 'test' | 'schedule';
 
 /** Course-level document types accepted by /api/courses/:id/course-docs. */
 const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'cheatsheet', 'test', 'schedule'];
@@ -78,26 +77,7 @@ interface ActiveCourseDocJob {
 
 const activeCourseDocJobs = new Map<string, ActiveCourseDocJob>();
 
-const ALL_QUEUE_TABS: readonly QueueTab[] = ['summary', 'cheatsheet', 'test', 'schedule'];
 const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'cheatsheet', 'test'];
-
-/**
- * Resolves the tabs an enqueue request targets: explicit `tabs` array, single
- * `tab`, or the full default set. Returns null when any requested tab is not
- * a recognized queue tab.
- */
-function parseRequestedTabs(body: Record<string, unknown>): QueueTab[] | null {
-  const raw: unknown[] = Array.isArray(body.tabs)
-    ? body.tabs
-    : body.tab !== undefined && body.tab !== null
-      ? [body.tab]
-      : [];
-  const list = raw.length > 0 ? raw : [...DEFAULT_LESSON_TABS];
-  const valid = list.every(
-    (t): t is QueueTab => typeof t === 'string' && (ALL_QUEUE_TABS as readonly string[]).includes(t)
-  );
-  return valid ? (list as QueueTab[]) : null;
-}
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -226,7 +206,6 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           courseId,
           lessonId,
           lessonTitle,
-          asNewVersion,
           prompt,
           customPrompt,
           customConfig
@@ -241,20 +220,31 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             return error(400, 'courseId is required to enqueue tasks');
           }
 
-          const targetTabs = parseRequestedTabs(body);
-          if (!targetTabs) {
-            return error(400, "Invalid tab. Must be 'summary', 'cheatsheet', 'test', or 'schedule'");
-          }
+          const singleTab = typeof body.tab === 'string' ? body.tab : undefined;
+          const bulkTabs = Array.isArray(body.tabs) ? (body.tabs as unknown[]) : undefined;
 
-          if (lessonId || targetTabs.includes('schedule')) {
-            const items = targetTabs.map((t) => ({
-              courseId: String(courseId),
-              lessonId: t === 'schedule' ? 'schedule' : String(lessonId || ''),
-              lessonTitle: t === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
-              tab: t,
-              asNewVersion: Boolean(asNewVersion),
-              customPrompt: (customPrompt || prompt) as string | undefined
-            }));
+          if (singleTab !== undefined) {
+            // One tab for one lesson — any valid tab slug, custom tabs included.
+            // The schedule is a queue-only pseudo-tab for the whole course.
+            try {
+              assertTab(singleTab);
+            } catch {
+              return error(400, `Invalid tab: ${JSON.stringify(singleTab)}`);
+            }
+            if (!lessonId && singleTab !== 'schedule') {
+              return error(400, 'lessonId is required to generate a lesson tab');
+            }
+
+            const items = [
+              {
+                courseId: String(courseId),
+                lessonId: singleTab === 'schedule' ? 'schedule' : String(lessonId),
+                lessonTitle:
+                  singleTab === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
+                tab: singleTab,
+                customPrompt: (customPrompt || prompt) as string | undefined
+              }
+            ];
             const enqueued = queueManager.enqueue(items, customConfig as LLMConfig | undefined);
             return json({
               success: true,
@@ -264,19 +254,51 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               skipped: items.length - enqueued.length,
               status: queueManager.getStatus(String(courseId))
             });
-          } else {
-            const lessonTabs = targetTabs.filter((t): t is Tab => t !== 'schedule');
-            const enqueued = queueManager.enqueueCourseMissing(
-              String(courseId),
-              lessonTabs,
-              customConfig as LLMConfig | undefined
+          }
+
+          // Bulk: fixed lesson tabs only — either all tabs for one lesson
+          // (lessonId given, e.g. after a chapter replace) or a scan across
+          // the whole course for missing ones.
+          const requested: unknown[] =
+            bulkTabs && bulkTabs.length > 0 ? bulkTabs : [...DEFAULT_LESSON_TABS];
+          const valid = requested.every(
+            (t): t is Tab =>
+              typeof t === 'string' && (DEFAULT_LESSON_TABS as readonly string[]).includes(t)
+          );
+          if (!valid) {
+            return error(
+              400,
+              "Invalid tabs. Bulk generation supports 'summary', 'cheatsheet', and 'test'"
             );
+          }
+          const lessonTabs = requested as Tab[];
+
+          if (lessonId) {
+            const items = lessonTabs.map((t) => ({
+              courseId: String(courseId),
+              lessonId: String(lessonId),
+              lessonTitle: String(lessonTitle || lessonId),
+              tab: t
+            }));
+            const enqueued = queueManager.enqueue(items, customConfig as LLMConfig | undefined);
             return json({
               success: true,
               enqueued,
+              skipped: items.length - enqueued.length,
               status: queueManager.getStatus(String(courseId))
             });
           }
+
+          const enqueued = queueManager.enqueueCourseMissing(
+            String(courseId),
+            lessonTabs,
+            customConfig as LLMConfig | undefined
+          );
+          return json({
+            success: true,
+            enqueued,
+            status: queueManager.getStatus(String(courseId))
+          });
         }
 
         if (action === 'pause') {
@@ -314,6 +336,44 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           assertPromptId(String(id));
           const success = PromptService.savePrompt(String(id), content);
           if (!success) return error(500, 'Failed to save prompt');
+        } catch (err) {
+          if (err instanceof PathValidationError) {
+            return error(400, err.message);
+          }
+          throw err;
+        }
+        return json({ success: true });
+      }
+      if (method === 'DELETE') {
+        const urlId = url.searchParams.get('id');
+        let id = urlId;
+        if (!id) {
+          try {
+            const body = (await req.json()) as Record<string, unknown>;
+            id = body.id ? String(body.id) : null;
+          } catch {}
+        }
+        if (!id) {
+          return error(400, 'Invalid request: id required');
+        }
+        try {
+          const safeId = assertPromptId(String(id));
+          const STANDARD_BUILTINS = [
+            'course_summary',
+            'course_cheatsheet',
+            'course_schedule',
+            'course_test',
+            'summary',
+            'cheatsheet',
+            'test',
+            'test_kica',
+            'lesson'
+          ];
+          if (STANDARD_BUILTINS.includes(safeId.toLowerCase())) {
+            return error(403, 'Standard prompt templates cannot be deleted');
+          }
+          const success = PromptService.deletePrompt(safeId);
+          if (!success) return error(404, 'Prompt not found or could not be deleted');
         } catch (err) {
           if (err instanceof PathValidationError) {
             return error(400, err.message);
@@ -713,7 +773,17 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
 
           if (type === 'notes') {
+            const startedAt = performance.now();
             const markdown = CourseService.buildAggregatedNotes(courseId);
+            const builtMs = performance.now() - startedAt;
+            const body = JSON.stringify({ success: true, markdown });
+            const serializedMs = performance.now() - startedAt - builtMs;
+            console.log(
+              `[PERF][server] course-docs notes: build=${builtMs.toFixed(1)}ms ` +
+                `serialize=${serializedMs.toFixed(1)}ms ` +
+                `chars=${markdown.length.toLocaleString()} ` +
+                `bytes=${new TextEncoder().encode(body).byteLength.toLocaleString()}`
+            );
             return json({ success: true, markdown });
           }
           if (type === 'schedule' && isPreview) {
@@ -727,9 +797,12 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               stats: scheduleStats
             });
           }
-          if (type && (COURSE_DOC_TYPES as readonly string[]).includes(type)) {
-            const markdown = CourseService.getCourseDocument(courseId, type as CourseDocType);
-            return json({ success: true, exists: Boolean(markdown), markdown: markdown || '' });
+          if (type) {
+            const markdown = CourseService.getCourseDocument(courseId, type);
+            if (markdown !== null) {
+              return json({ success: true, exists: true, markdown });
+            }
+            return json({ success: true, exists: false, markdown: '' });
           }
           return json({
             success: true,
@@ -898,19 +971,21 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
         if (method === 'PUT') {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-          const type = body.type as CourseDocType | undefined;
+          const tab = typeof body.type === 'string' ? body.type : '';
           const content = body.content as string | undefined;
 
-          if (!type || !(COURSE_DOC_TYPES as readonly string[]).includes(type)) {
-            return error(400, "Invalid type. Must be 'summary', 'cheatsheet', 'test', or 'schedule'");
+          try {
+            assertTab(tab);
+          } catch {
+            return error(400, "Invalid type. Must be a valid tab slug");
           }
           if (typeof content !== 'string') {
             return error(400, 'Invalid request: content string required');
           }
 
-          const success = CourseService.saveCourseDocument(courseId, type, content);
+          const success = CourseService.saveCourseDocument(courseId, tab, content);
           if (!success) {
-            return error(500, `Failed to save course ${type}`);
+            return error(500, `Failed to save course ${tab}`);
           }
           return json({ success: true });
         }
@@ -947,7 +1022,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
         if (method === 'PUT') {
           const body = (await req.json()) as Record<string, unknown>;
-          const { tab, content, asNewVersion } = body;
+          const { tab, content } = body;
           try {
             assertTab(tab);
           } catch {
@@ -956,13 +1031,22 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           if (typeof content !== 'string') {
             return error(400, 'Invalid request: content string required');
           }
-          const result = CourseService.saveLessonTab(courseId, lessonId, tab as string, content, {
-            asNewVersion: Boolean(asNewVersion)
-          });
+          const result = CourseService.saveLessonTab(courseId, lessonId, tab as string, content);
           if (!result.success) {
             return error(500, `Failed to save ${tab} for lesson ${lessonId}`);
           }
           return json(result);
+        }
+
+        if (method === 'DELETE') {
+          const tab = url.searchParams.get('tab');
+          try {
+            assertTab(tab);
+          } catch {
+            return error(400, 'Invalid or missing tab query parameter');
+          }
+          const removed = CourseService.deleteLessonTab(courseId, lessonId, tab as string);
+          return json({ success: true, removed });
         }
       }
     }

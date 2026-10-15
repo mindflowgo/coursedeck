@@ -95,7 +95,7 @@
   }
 
   function openCourseSchedule(courseId: string) {
-    goto(`/courses/${courseId}?scope=course&tab=schedule`);
+    goto(`/courses/${courseId.toLowerCase()}/course/schedule`);
   }
 
   // ---- Week view: every dated event in [today, today+7] across courses ----
@@ -232,12 +232,18 @@
                       {/if}
                     </button>
                     <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide shrink-0 {scheduleTypeClasses(event.type)}">{event.type}</span>
-                    <span class="text-sm {event.done ? 'line-through text-stone-400' : 'text-stone-900 dark:text-stone-100'} truncate">{event.title}</span>
-                    <a
-                      href={eventHref(course.courseId, event)}
-                      class="font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition shrink-0"
-                      title="Open lesson"
-                    >{event.lessonId}</a>
+                    <button
+                      type="button"
+                      onclick={() => goto(eventHref(course.courseId, event))}
+                      class="text-sm font-medium hover:underline hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer text-left truncate {event.done ? 'line-through text-stone-400 dark:text-stone-500' : 'text-stone-900 dark:text-stone-100'}"
+                      title="Open {event.lessonId}{event.section ? ` (${event.section})` : ''}"
+                    >{event.title}</button>
+                    <button
+                      type="button"
+                      onclick={() => goto(eventHref(course.courseId, event))}
+                      class="font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition shrink-0 cursor-pointer"
+                      title="Open {event.lessonId}{event.section ? ` (${event.section})` : ''}"
+                    >{event.lessonId}{event.section ? `/${event.section}` : ''}</button>
                     {#if event.durationMin}
                       <span class="text-[10px] text-stone-400 whitespace-nowrap shrink-0">{event.durationMin}m</span>
                     {/if}
@@ -258,10 +264,11 @@
           <div class="rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4 shadow-2xs">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
-                <a
-                  href="/courses/{course.courseId}"
-                  class="text-sm font-semibold text-stone-900 dark:text-stone-100 hover:underline truncate block"
-                >{course.courseTitle}</a>
+                <button
+                  type="button"
+                  onclick={() => goto(`/courses/${course.courseId}`)}
+                  class="text-sm font-semibold text-stone-900 dark:text-stone-100 hover:underline truncate block text-left cursor-pointer"
+                >{course.courseTitle}</button>
                 <p class="text-[11px] text-stone-400 uppercase tracking-wide font-mono">{course.courseId}</p>
               </div>
               {#if course.exists}

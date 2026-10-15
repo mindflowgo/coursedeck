@@ -102,7 +102,7 @@ function answerKeyContent(quiz: ParsedQuiz): Content[] {
       quiz.questions.slice(i, i + perRow).map((q) => ({
         text: [
           { text: `Q${q.number}  `, color: COLORS.muted },
-          { text: q.correctAnswer, bold: true, color: COLORS.answerGreen }
+          { text: q.correctAnswer || '—', bold: true, color: q.correctAnswer ? COLORS.answerGreen : COLORS.muted }
         ],
         alignment: 'center' as const,
         fontSize: 9.5
@@ -136,7 +136,7 @@ function answerKeyContent(quiz: ParsedQuiz): Content[] {
           {
             text: [
               { text: 'Correct Answer: ', color: COLORS.muted },
-              { text: q.correctAnswer, bold: true, color: COLORS.answerGreen }
+              { text: q.correctAnswer || '—', bold: true, color: q.correctAnswer ? COLORS.answerGreen : COLORS.muted }
             ],
             fontSize: 9,
             margin: [0, 1, 0, 0]

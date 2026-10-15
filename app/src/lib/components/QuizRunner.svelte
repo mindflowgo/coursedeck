@@ -40,7 +40,7 @@
   let score = $derived.by(() => {
     if (!submitted) return 0;
     return parsedQuiz.questions.reduce((acc, q) => {
-      return acc + (userAnswers[q.number] === q.correctAnswer ? 1 : 0);
+      return acc + (q.correctAnswer && userAnswers[q.number] === q.correctAnswer ? 1 : 0);
     }, 0);
   });
 
@@ -111,7 +111,7 @@
       <!-- Questions List -->
       {#each parsedQuiz.questions as q, index}
         {@const userPick = userAnswers[q.number]}
-        {@const isCorrect = userPick === q.correctAnswer}
+        {@const isCorrect = Boolean(q.correctAnswer) && userPick === q.correctAnswer}
 
         <div class="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 shadow-2xs space-y-4">
           <!-- Question Header -->
@@ -134,7 +134,11 @@
 
             {#if submitted}
               <div class="shrink-0 ml-3">
-                {#if isCorrect}
+                {#if !q.correctAnswer}
+                  <span class="text-xs font-medium text-amber-600 dark:text-amber-400">
+                    No Answer Key
+                  </span>
+                {:else if isCorrect}
                   <div class="flex items-center space-x-1 text-emerald-600 dark:text-emerald-400 text-xs font-semibold">
                     <CheckCircle2 class="w-5 h-5" />
                     <span>Correct</span>
@@ -153,7 +157,7 @@
           <div class="space-y-2">
             {#each q.options as opt}
               {@const isSelected = userPick === opt.letter}
-              {@const isOptionCorrect = opt.letter === q.correctAnswer}
+              {@const isOptionCorrect = Boolean(q.correctAnswer) && opt.letter === q.correctAnswer}
 
               <button
                 onclick={() => selectOption(q.number, opt.letter)}

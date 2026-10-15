@@ -1,4 +1,5 @@
 import { parseFrontmatter } from './frontmatter';
+import { TAB_SLUG_PATTERN } from '../tabs';
 
 export interface ScheduleEvent {
   done: boolean;
@@ -50,7 +51,17 @@ const ENTRY_RE =
 /** Trailing `(60m)`, `(60 min)`, `(1h)`, `(1.5h)`, `(2 hrs)` on the title. */
 const DURATION_RE = /\((\d+(?:\.\d+)?)\s*(m(?:in(?:ute)?s?)?|h(?:(?:ou)?rs?)?)\)\s*$/i;
 
-const KNOWN_TABS = ['summary', 'cheatsheet', 'test'];
+/** Course-level document tabs only — custom tabs never exist at course scope. */
+const COURSE_DOC_TABS = ['summary', 'cheatsheet', 'test'];
+
+/**
+ * Sections that resolve to a lesson tab page: built-in tabs and any custom
+ * tab slug (assignment, research, …). Dashed or otherwise non-slug sections
+ * stay free-form labels.
+ */
+export function isLinkableSection(section: string): boolean {
+  return TAB_SLUG_PATTERN.test(section);
+}
 
 export class ScheduleParser {
   static parseMarkdown(markdown: string): ParsedSchedule {
@@ -287,18 +298,34 @@ export function toggleEventDone(markdown: string, lineIndex: number): string {
 }
 
 /**
- * Deep link for an event: known tabs open the lesson with that tab selected;
- * bare refs and free-form sections open the lesson content.
+ * Deep link for an event:
+ * Produces /courses/{courseId}/{lessonId}/{section} for linkable sections
+ * (built-in or custom tabs — visiting one creates the tab if absent),
+ * /courses/{courseId}/{lessonId} when section is omitted or free-form,
+ * and /courses/{courseId}/course/{section} for course-level events.
  */
 export function eventHref(
   courseId: string,
   event: Pick<ScheduleEvent, 'lessonId' | 'section'>
 ): string {
-  const base = `/courses/${courseId.toLowerCase()}?lesson=${encodeURIComponent(event.lessonId)}`;
-  if (event.section && KNOWN_TABS.includes(event.section)) {
-    return `${base}&tab=${event.section}`;
+  const cId = (courseId || '').toLowerCase();
+  const rawLesson = (event.lessonId || '').trim();
+
+  if (rawLesson.toLowerCase() === 'schedule') {
+    return `/courses/${cId}/course/schedule`;
   }
-  return base;
+
+  if (rawLesson.toLowerCase() === 'course') {
+    const sec =
+      event.section && COURSE_DOC_TABS.includes(event.section) ? `/${event.section}` : '';
+    return `/courses/${cId}/course${sec}`;
+  }
+
+  const lesson = encodeURIComponent(rawLesson);
+  if (event.section && isLinkableSection(event.section)) {
+    return `/courses/${cId}/${lesson}/${event.section}`;
+  }
+  return `/courses/${cId}/${lesson}`;
 }
 
 /** Convenience re-export so callers can round-trip like other parsers. */

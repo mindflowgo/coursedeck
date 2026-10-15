@@ -15,7 +15,11 @@ export async function confirmDialog(message: string, title?: string): Promise<bo
   }
 
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-    return window.confirm(message);
+    try {
+      return await window.confirm(message);
+    } catch (e) {
+      console.warn('window.confirm failed:', e);
+    }
   }
 
   return true;

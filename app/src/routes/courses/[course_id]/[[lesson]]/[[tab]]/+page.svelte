@@ -2,13 +2,14 @@
   import { apiFetch } from '$lib/api';
   import { queueStatus } from '$lib/queueStatus.svelte';
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import Header from '$lib/components/Header.svelte';
   import LessonSelector from '$lib/components/LessonSelector.svelte';
   import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
   import CodeMirrorEditor from '$lib/components/CodeMirrorEditor.svelte';
   import QuizRunner from '$lib/components/QuizRunner.svelte';
   import UploadModal from '$lib/components/UploadModal.svelte';
-  import PromptCard, { type VersionItem } from '$lib/components/PromptCard.svelte';
+  import PromptCard from '$lib/components/PromptCard.svelte';
   import ConfigureLLMModal from '$lib/components/ConfigureLLMModal.svelte';
   import SchedulePreferencesModal from '$lib/components/SchedulePreferencesModal.svelte';
   import ScheduleViewer from '$lib/components/ScheduleViewer.svelte';
@@ -18,9 +19,18 @@
   import { validateScheduleMarkdown } from '$lib/parser/scheduleValidation';
   import { ScheduleParser } from '$lib/parser/scheduleParser';
   import { formatUserNote, insertAnnotationAfterText, removeAnnotation } from '$lib/parser/annotationInserter';
-  import type { CourseManifest } from '$lib/parser/courseIngest';
-  import type { LessonContentBundle, LessonFileVersion } from '$lib/server/courses';
-  import { onMount, onDestroy } from 'svelte';
+  import type { CourseManifest, CourseManifestLesson } from '$lib/parser/courseIngest';
+  import type { LessonContentBundle } from '$lib/server/courses';
+  import {
+    isCustomTabSlug,
+    isTabSlug,
+    isCourseTab,
+    customTabDisplayName,
+    validateTabName,
+    slugifyTabName,
+    starterPromptForTab
+  } from '$lib/tabs';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import {
     BookOpen,
     FileText,
@@ -44,11 +54,14 @@
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
+  import { afterPaint, installPerfObservers, perf } from '$lib/perf';
 
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
   let selectedLessonId: string = $state('');
-  type PageTab = 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule';
+  // Tab slugs: built-ins (lesson/summary/cheatsheet/test), course-scope
+  // schedule, and per-lesson custom tabs discovered from tab files on disk.
+  type PageTab = string;
   let activeTab: PageTab = $state('lesson');
   let isEditing: boolean = $state(false);
   let isUploadModalOpen: boolean = $state(false);
@@ -67,12 +80,35 @@
   let lessonBundle: LessonContentBundle | null = $state(null);
   let genericPrompts: Record<string, string> = $state({});
 
-  // Active version IDs for versioned tabs
-  let activeVersions: Record<'summary' | 'cheatsheet' | 'test', string> = $state({
-    summary: 'summary',
-    cheatsheet: 'cheatsheet',
-    test: 'test'
+  // Custom tabs discovered from this lesson's tab files on disk
+  let customTabs = $derived.by(() => {
+    if (!lessonBundle) return [];
+    return Object.keys(lessonBundle.tabs)
+      .filter((slug) => isCustomTabSlug(slug))
+      .sort();
   });
+
+  // Custom course tabs discovered from course.*.md files on disk
+  let courseCustomTabs = $derived.by(() => {
+    const docs = course?.courseDocs;
+    if (!docs) return [];
+    return Object.keys(docs)
+      .filter((slug) => isCustomTabSlug(slug) && Boolean(docs[slug]))
+      .sort();
+  });
+
+  function hasCourseDoc(tab: string): boolean {
+    if (tab === 'lesson') return true;
+    if (['summary', 'cheatsheet', 'test', 'schedule'].includes(tab)) return true;
+    const docs = course?.courseDocs;
+    return Boolean(docs && docs[tab]);
+  }
+
+  // New-tab modal state
+  let isNewTabModalOpen = $state(false);
+  let newTabName = $state('');
+  let newTabError = $state('');
+  let isCreatingTab = $state(false);
 
   // Current tab contents (raw markdown including frontmatter)
   let tabContents: Record<string, string> = $state({
@@ -118,22 +154,8 @@
     if (activeTab === 'cheatsheet') return 'Cheatsheet';
     if (activeTab === 'test') return 'Practice Test';
     if (activeTab === 'schedule') return 'Schedule';
+    if (isCustomTabSlug(activeTab)) return customTabDisplayName(activeTab);
     return isCourseScope ? 'Course Notes' : 'Notes';
-  });
-
-  // Current list of versions for active tab
-  let currentTabVersions = $derived.by((): VersionItem[] => {
-    if (isCourseScope || !lessonBundle || activeTab === 'lesson') return [];
-    if (activeTab === 'summary') return lessonBundle.summaries;
-    if (activeTab === 'cheatsheet') return lessonBundle.cheatsheets;
-    if (activeTab === 'test') return lessonBundle.tests;
-    return [];
-  });
-
-  let activeVersionId = $derived.by(() => {
-    if (isCourseScope) return activeTab;
-    if (activeTab === 'lesson' || activeTab === 'schedule') return 'lesson';
-    return activeVersions[activeTab] || currentTabVersions[0]?.id || activeTab;
   });
 
   // Check if current tab has unsaved changes
@@ -157,14 +179,14 @@
     }
   }
 
-  async function loadCourse(selectTargetLessonId?: string) {
+  async function loadCourse(selectTargetLessonId?: string, opts?: { skipAutoLesson?: boolean }) {
     isLoadingCourse = true;
     try {
       const res = await apiFetch(`/api/courses/${courseId}`);
       if (res.ok) {
         const data = await res.json();
         course = data.course;
-        if (!isCourseScope && course && course.units.length > 0 && course.units[0].lessons.length > 0) {
+        if (!opts?.skipAutoLesson && !isCourseScope && course && course.units.length > 0 && course.units[0].lessons.length > 0) {
           const target = selectTargetLessonId || selectedLessonId || course.units[0].lessons[0].id;
           await loadLesson(target);
         }
@@ -178,13 +200,39 @@
 
   async function loadCourseDocument(tab: PageTab) {
     isLoadingCourseDoc = true;
+    const startedAt = performance.now();
     try {
       if (tab === 'lesson') {
         const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=notes`);
+        const fetchMs = performance.now() - startedAt;
         if (res.ok) {
           const data = await res.json();
+          const parsedMs = performance.now() - startedAt;
           tabContents.lesson = data.markdown || '';
           originalContents.lesson = tabContents.lesson;
+          const stateMs = performance.now() - startedAt;
+          perf(
+            'course-notes-load',
+            {
+              tab,
+              fetchMs: +fetchMs.toFixed(1),
+              jsonParseMs: +(parsedMs - fetchMs).toFixed(1),
+              stateSetMs: +stateMs.toFixed(1),
+              chars: (data.markdown || '').length,
+              contentLength: Number(res.headers.get('content-length') || 0)
+            },
+            `[PERF][course-notes-load] fetch=${fetchMs.toFixed(0)}ms jsonParse=${(parsedMs - fetchMs).toFixed(0)}ms ` +
+              `stateSet=${stateMs.toFixed(0)}ms chars=${(data.markdown || '').length.toLocaleString()}`
+          );
+          afterPaint(() => {
+            const visibleMs = performance.now() - startedAt;
+            perf(
+              'course-notes-visible',
+              { tab, visibleMs: +visibleMs.toFixed(1), chars: (data.markdown || '').length },
+              `[PERF][course-notes-visible] aggregate painted ${visibleMs.toFixed(0)}ms after the request started ` +
+                `(of which ${(visibleMs - stateMs).toFixed(0)}ms was markdown render + layout + paint)`
+            );
+          });
         }
       } else {
         const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=${tab}`);
@@ -198,10 +246,19 @@
             // intro panel instead of silently calling the LLM.
             tabContents.schedule = '';
             originalContents.schedule = '';
-          } else {
-            // Not yet generated: auto-trigger generation
+          } else if (['summary', 'cheatsheet', 'test'].includes(tab)) {
+            // Built-in course doc not yet generated: auto-trigger generation
             isLoadingCourseDoc = false;
             await generateCourseDocument(tab);
+            return;
+          } else {
+            // Custom course tab does not exist on disk: safely fall back to lesson
+            activeTab = 'lesson';
+            await loadCourseDocument('lesson');
+            const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course`;
+            if ($page.url.pathname !== targetUrl) {
+              nav(targetUrl, { replace: true });
+            }
             return;
           }
         }
@@ -326,7 +383,7 @@
   }
 
   async function generateCourseDocument(type: PageTab, opts?: { customPrompt?: string }) {
-    if (type === 'lesson') return;
+    if (type === 'lesson' || !['summary', 'cheatsheet', 'test', 'schedule'].includes(type)) return;
 
     const promptKey = `course_${type}`;
     const activePrompt =
@@ -433,7 +490,7 @@
         if (!course.courseDocs) {
           course.courseDocs = { summary: false, cheatsheet: false, test: false, schedule: false };
         }
-        course.courseDocs[type] = true;
+        (course.courseDocs as unknown as Record<string, boolean>)[type] = true;
       }
 
       saveSuccessMessage = `✨ Generated course ${tabDisplayName}!`;
@@ -449,65 +506,134 @@
     }
   }
 
+  /**
+   * goto wrapper that traces every in-app navigation ([NAV] in the console).
+   * User-initiated navigations PUSH a history entry (so the Header back
+   * button can retrace them); mechanical rewrites — syncRoute's URL
+   * canonicalization and not-found fallbacks — pass { replace: true } so
+   * they never add redundant entries.
+   */
+  function nav(targetUrl: string, opts?: { replace?: boolean }) {
+    const replace = opts?.replace === true;
+    console.log(
+      `[NAV] goto ${targetUrl} ${replace ? '(replace)' : '(push)'} (from ${$page.url.pathname}${$page.url.search})`
+    );
+    goto(targetUrl, { replaceState: replace, noScroll: true, keepFocus: true });
+  }
+
   function switchTab(tab: PageTab) {
+    console.log(`[NAV] switchTab "${tab}" | scope=${isCourseScope} lesson=${selectedLessonId}`);
+    if (isCourseScope && !hasCourseDoc(tab)) {
+      console.log(`[NAV] switchTab: "${tab}" has no course doc → falling back to lesson`);
+      tab = 'lesson';
+    }
     activeTab = tab;
     isEditing = false;
+    const tabSuffix = tab !== 'lesson' ? `/${tab}` : '';
     if (isCourseScope) {
       loadCourseDocument(tab);
+      const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course${tabSuffix}`;
+      if ($page.url.pathname !== targetUrl) {
+        nav(targetUrl);
+      }
+    } else {
+      if (selectedLessonId) {
+        const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(selectedLessonId)}${tabSuffix}`;
+        if ($page.url.pathname !== targetUrl) {
+          nav(targetUrl);
+        }
+      }
     }
   }
 
-  function selectLesson(lessonId: string) {
+  async function selectLesson(lessonId: string) {
+    console.log(
+      `[NAV] selectLesson "${lessonId}" | from "${selectedLessonId}" | tab=${activeTab} scope=${isCourseScope} editing=${isEditing}`
+    );
     isCourseScope = false;
     isEditing = false;
-    loadLesson(lessonId);
+    // Schedule is course-only; custom tabs are checked against file existence in loadLesson.
+    if (activeTab === 'schedule') {
+      activeTab = 'lesson';
+    }
+    await loadLesson(lessonId);
+    console.log(`[NAV] selectLesson loaded → tab=${activeTab}`);
+    const targetTab = activeTab;
+    const tabSuffix = targetTab && targetTab !== 'lesson' ? `/${targetTab}` : '';
+    const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(lessonId)}${tabSuffix}`;
+    if ($page.url.pathname !== targetUrl) {
+      nav(targetUrl);
+    } else {
+      console.log(`[NAV] selectLesson: URL already ${targetUrl}, no goto needed`);
+    }
   }
 
   function selectCourseMode() {
+    console.log(`[NAV] selectCourseMode | from lesson=${selectedLessonId} tab=${activeTab}`);
     isCourseScope = true;
     isEditing = false;
+    if (!hasCourseDoc(activeTab)) {
+      activeTab = 'lesson';
+    }
     loadCourseDocument(activeTab);
+    const targetTab = activeTab;
+    const tabSuffix = targetTab && targetTab !== 'lesson' ? `/${targetTab}` : '';
+    const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course${tabSuffix}`;
+    if ($page.url.pathname !== targetUrl) {
+      nav(targetUrl);
+    }
   }
 
-  async function loadLesson(lessonId: string, retainVersionTab?: { tab: 'summary' | 'cheatsheet' | 'test'; versionId: string }) {
+  /** Monotonic token for loadLesson calls — the newest invocation wins. */
+  let lessonLoadSeq = 0;
+
+  /** Loose lesson-ref equality tolerating zero-padding ("1.2" ≡ "01.02"). */
+  function sameLessonRef(a: string | undefined, b: string): boolean {
+    if (!a) return false;
+    const norm = (s: string) => {
+      const m = s.toLowerCase().match(/^(\d+)\.(\d+)(.*)$/);
+      return m ? `${m[1].padStart(2, '0')}.${m[2].padStart(2, '0')}${m[3]}` : s.toLowerCase();
+    };
+    return norm(a) === norm(b);
+  }
+
+  async function loadLesson(lessonId: string) {
+    const seq = ++lessonLoadSeq;
+    console.log(`[NAV] loadLesson "${lessonId}" …`);
     selectedLessonId = lessonId;
     isLoadingLesson = true;
     try {
       const res = await apiFetch(`/api/courses/${courseId}/${lessonId}`);
+
+      // A stale run (e.g. syncRoute captured before a user click) may still
+      // be mid-fetch when the user navigates. Discard its result when a newer
+      // load has started AND the URL no longer points at this lesson —
+      // otherwise it would clobber the freshly loaded lesson's content.
+      if (seq !== lessonLoadSeq && !sameLessonRef($page.params.lesson, lessonId)) {
+        console.log(`[NAV] loadLesson "${lessonId}" result discarded (superseded by a newer load)`);
+        return;
+      }
+
       if (res.ok) {
         const data: LessonContentBundle = await res.json();
         lessonBundle = data;
+        selectedLessonId = lessonId;
 
-        // Set or retain active version IDs
-        const summaryVer = retainVersionTab?.tab === 'summary'
-          ? retainVersionTab.versionId
-          : (data.summaries.find((v) => v.id === activeVersions.summary)?.id || data.summaries[0]?.id || 'summary');
-
-        const cheatsheetVer = retainVersionTab?.tab === 'cheatsheet'
-          ? retainVersionTab.versionId
-          : (data.cheatsheets.find((v) => v.id === activeVersions.cheatsheet)?.id || data.cheatsheets[0]?.id || 'cheatsheet');
-
-        const testVer = retainVersionTab?.tab === 'test'
-          ? retainVersionTab.versionId
-          : (data.tests.find((v) => v.id === activeVersions.test)?.id || data.tests[0]?.id || 'test');
-
-        activeVersions = {
-          summary: summaryVer,
-          cheatsheet: cheatsheetVer,
-          test: testVer
-        };
-
-        const activeSummaryContent = data.summaries.find((v) => v.id === summaryVer)?.content || data.summary || '';
-        const activeCheatsheetContent = data.cheatsheets.find((v) => v.id === cheatsheetVer)?.content || data.cheatsheet || '';
-        const activeTestContent = data.tests.find((v) => v.id === testVer)?.content || data.test || '';
+        // A custom tab that has no file for this lesson cannot stay active
+        // (e.g. after switching lessons or deleting the file).
+        if (isCustomTabSlug(activeTab) && !data.tabs[activeTab]) {
+          console.log(`[NAV] loadLesson: active tab "${activeTab}" has no file here → falling back to lesson`);
+          activeTab = 'lesson';
+        }
 
         tabContents = {
           lesson: data.lesson || '',
-          summary: activeSummaryContent,
-          cheatsheet: activeCheatsheetContent,
-          test: activeTestContent
+          ...data.tabs
         };
         originalContents = { ...tabContents };
+        console.log(`[NAV] loadLesson "${lessonId}" ✓ tabs=[${Object.keys(data.tabs).join(', ') || 'none'}]`);
+      } else {
+        console.warn(`[NAV] loadLesson "${lessonId}" failed: HTTP ${res.status}`);
       }
     } catch (e) {
       console.error('Failed to load lesson:', e);
@@ -516,64 +642,113 @@
     }
   }
 
-  function handleSelectVersion(versionId: string) {
-    if (activeTab === 'lesson' || activeTab === 'schedule' || !lessonBundle) return;
-    activeVersions[activeTab] = versionId;
-
-    let versionsList: LessonFileVersion[] = [];
-    if (activeTab === 'summary') versionsList = lessonBundle.summaries;
-    else if (activeTab === 'cheatsheet') versionsList = lessonBundle.cheatsheets;
-    else if (activeTab === 'test') versionsList = lessonBundle.tests;
-
-    const found = versionsList.find((v) => v.id === versionId);
-    if (found) {
-      tabContents[activeTab] = found.content;
-      originalContents[activeTab] = found.content;
-    }
-  }
-
-  async function handleCreateNewVersion() {
-    if (activeTab === 'lesson' || activeTab === 'schedule' || !selectedLessonId) return;
-
-    const nextVer = (currentTabVersions.length > 0 ? Math.max(...currentTabVersions.map((v) => v.versionNumber)) : 0) + 1;
-    const defaultPrompt = genericPrompts[activeTab] || '';
-
-    let placeholderBody = `# ${currentLessonTitle} - ${tabDisplayName} (v${nextVer})\n\nClick "Re-generate with AI" above to generate study material using this prompt.`;
-    if (activeTab === 'test') {
-      placeholderBody = `# ${currentLessonTitle} - Practice Test (v${nextVer})\n\n## Questions\n01) [Knowledge & Understanding] Placeholder question.\n<Multiple-Choice>\n- [ ] Option A\n- [ ] Option B\n\n--\n\n## Answers\n01) A - (explanation) Placeholder answer. Click "Re-generate with AI" to generate curriculum questions.\n`;
-    }
-
-    const newContent = serializeWithFrontmatter(
-      {
-        prompt: defaultPrompt,
-        type: activeTab,
-        version: nextVer,
-        updatedAt: new Date().toISOString().split('T')[0]
-      },
-      placeholderBody
-    );
-
+  /**
+   * Creates a custom tab file for the current lesson (`<lesson>.<slug>.md`)
+   * with a starter prompt in its frontmatter, seeds the shared prompt
+   * template on first use, then selects the new tab.
+   */
+  async function createCustomTab(slug: string, displayName: string): Promise<boolean> {
+    if (!selectedLessonId || isCreatingTab) return false;
+    isCreatingTab = true;
     try {
+      const prompt = genericPrompts[slug]?.trim() || starterPromptForTab(displayName);
+      const content = serializeWithFrontmatter(
+        {
+          prompt,
+          type: slug,
+          updatedAt: new Date().toISOString().split('T')[0]
+        },
+        `# ${currentLessonTitle || selectedLessonId} — ${displayName}\n\n*Empty tab — use the prompt above to generate content with AI, or click Edit to write it manually.*\n`
+      );
+
       const res = await apiFetch(`/api/courses/${courseId}/${selectedLessonId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tab: activeTab,
-          content: newContent,
-          asNewVersion: true
-        })
+        body: JSON.stringify({ tab: slug, content })
       });
-
-      if (res.ok) {
-        const result = await res.json();
-        await loadLesson(selectedLessonId, { tab: activeTab, versionId: result.versionId });
-        saveSuccessMessage = `Created v${nextVer}!`;
-        setTimeout(() => {
-          saveSuccessMessage = '';
-        }, 2000);
+      if (!res.ok) {
+        throw new Error((await res.text().catch(() => '')) || `Failed to create ${displayName} tab`);
       }
-    } catch (e) {
-      console.error('Failed to create new version:', e);
+
+      // Seed the shared prompt template so other lessons with this tab name
+      // (and the Prompts settings page) reuse it.
+      if (!genericPrompts[slug]) {
+        const seedRes = await apiFetch('/api/prompts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: slug, content: prompt })
+        });
+        if (seedRes.ok) {
+          genericPrompts = { ...genericPrompts, [slug]: prompt };
+        }
+      }
+
+      await loadLesson(selectedLessonId);
+      activeTab = slug;
+      const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(selectedLessonId)}/${slug}`;
+      if ($page.url.pathname !== targetUrl) {
+        nav(targetUrl);
+      }
+      saveSuccessMessage = `Created ${displayName} tab!`;
+      setTimeout(() => {
+        saveSuccessMessage = '';
+      }, 2500);
+      return true;
+    } catch (e: any) {
+      console.error('Failed to create tab:', e);
+      alert(e?.message || `Failed to create ${displayName} tab`);
+      return false;
+    } finally {
+      isCreatingTab = false;
+    }
+  }
+
+  function openNewTabModal() {
+    newTabName = '';
+    newTabError = '';
+    isNewTabModalOpen = true;
+  }
+
+  function handleCreateTabFromModal() {
+    const existing = Object.keys(lessonBundle?.tabs || {});
+    const validation = validateTabName(newTabName, existing);
+    if (!validation.ok) {
+      newTabError = validation.error;
+      return;
+    }
+    isNewTabModalOpen = false;
+    const { slug } = validation;
+    createCustomTab(slug, customTabDisplayName(slug));
+  }
+
+  async function handleDeleteCustomTab(slug: string) {
+    if (!selectedLessonId || !isCustomTabSlug(slug)) return;
+    const name = customTabDisplayName(slug);
+    if (!confirm(`Delete the "${name}" tab for lesson ${selectedLessonId}? This removes ${selectedLessonId}.${slug}.md from disk.`)) {
+      return;
+    }
+    try {
+      const res = await apiFetch(`/api/courses/${courseId}/${selectedLessonId}?tab=${slug}`, {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        throw new Error((await res.text().catch(() => '')) || `Failed to delete ${name} tab`);
+      }
+      const wasActive = activeTab === slug;
+      await loadLesson(selectedLessonId);
+      if (wasActive && activeTab === 'lesson') {
+        const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(selectedLessonId)}`;
+        if ($page.url.pathname !== targetUrl) {
+          nav(targetUrl);
+        }
+      }
+      saveSuccessMessage = `Deleted ${name} tab`;
+      setTimeout(() => {
+        saveSuccessMessage = '';
+      }, 2500);
+    } catch (e: any) {
+      console.error('Failed to delete tab:', e);
+      alert(e?.message || `Failed to delete ${name} tab`);
     }
   }
 
@@ -648,14 +823,12 @@
     isSaving = true;
 
     try {
-      const targetTab = activeTab === 'lesson' ? 'lesson' : activeVersions[activeTab];
       const res = await apiFetch(`/api/courses/${courseId}/${selectedLessonId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tab: targetTab,
-          content: tabContents[activeTab],
-          asNewVersion: false
+          tab: activeTab,
+          content: tabContents[activeTab]
         })
       });
 
@@ -665,7 +838,7 @@
         setTimeout(() => {
           saveSuccessMessage = '';
         }, 2000);
-        // Silently reload lesson bundle to sync versions
+        // Silently reload lesson bundle to sync tab discovery
         const reloadRes = await apiFetch(`/api/courses/${courseId}/${selectedLessonId}`);
         if (reloadRes.ok) {
           lessonBundle = await reloadRes.json();
@@ -716,7 +889,7 @@
     };
   }
 
-  async function triggerAIGeneration(asNewVersion: boolean = false) {
+  async function triggerAIGeneration() {
     if (activeTab === 'lesson') return;
 
     const localConfig = getLocalLLMConfig();
@@ -732,7 +905,6 @@
       console.log(`- Course: ${(courseId || '').toUpperCase()} | Lesson: ${selectedLessonId} (${currentLessonTitle})`);
       console.log(`- Endpoint: ${localConfig.baseUrl}`);
       console.log(`- Model: ${localConfig.model || '(server default)'}`);
-      console.log(`- Mode: ${asNewVersion ? 'Save as new version' : 'Overwrite current'}`);
       console.log(`- System Prompt: "${activeSystemPrompt.slice(0, 120)}..."`);
 
       const res = await apiFetch('/api/queue', {
@@ -744,7 +916,6 @@
           lessonId: selectedLessonId,
           lessonTitle: currentLessonTitle,
           tab: activeTab,
-          asNewVersion,
           customPrompt: activeSystemPrompt,
           customConfig: localConfig
         })
@@ -772,9 +943,7 @@
 
       console.log(`[ILC AI Enqueue Success] ${tabDisplayName} task added to background queue (task id: ${data.enqueued[0].id}).`);
 
-      saveSuccessMessage = asNewVersion
-        ? `✨ Queued new version of ${tabDisplayName}!`
-        : `✨ Queued ${tabDisplayName} for generation!`;
+      saveSuccessMessage = `✨ Queued ${tabDisplayName} for generation!`;
 
       setTimeout(() => {
         saveSuccessMessage = '';
@@ -886,16 +1055,14 @@
   let isTabGenerating = $derived.by(() => {
     const s = queueStatus.status;
     if (isCourseScope) {
-      const matchTab = (tab: string) => tab.replace(/-\d+$/, '') === activeTab;
       const matches = (t: { courseId: string; tab: string }) =>
-        t.courseId === (courseId || '').toLowerCase() && matchTab(t.tab);
+        t.courseId === (courseId || '').toLowerCase() && t.tab === activeTab;
       return Boolean(s.activeTask && matches(s.activeTask)) || s.tasks.some((t) => t.status === 'pending' && matches(t));
     }
-    const matchTab = (tab: string) => tab.replace(/-\d+$/, '') === activeTab;
     const matches = (t: { courseId: string; lessonId: string; tab: string }) =>
       t.courseId === (courseId || '').toLowerCase() &&
       t.lessonId === selectedLessonId &&
-      matchTab(t.tab);
+      t.tab === activeTab;
     return Boolean(s.activeTask && matches(s.activeTask)) || s.tasks.some((t) => t.status === 'pending' && matches(t));
   });
 
@@ -1070,7 +1237,7 @@
     } else if (isCourseScope && activeTab !== 'lesson') {
       generateCourseDocument(activeTab);
     } else {
-      triggerAIGeneration(false);
+      triggerAIGeneration();
     }
   }
 
@@ -1120,7 +1287,6 @@
         }
       } else {
         if (!selectedLessonId) return;
-        const activeVer = currentTabVersions.find((v) => v.id === activeVersionId);
         const exportTabName = activeTab === 'lesson' ? 'Course Notes' : tabDisplayName || activeTab;
 
         await exportDocumentToPdf({
@@ -1130,7 +1296,6 @@
           lessonTitle: currentLessonTitle || selectedLessonId,
           tab: activeTab,
           tabDisplayName: exportTabName,
-          version: activeVer?.versionNumber,
           rawMarkdown: tabContents[activeTab]
         });
       }
@@ -1189,41 +1354,214 @@
     }
   }
 
+  let isRouteSyncing = false;
+
+  function parseTabName(t?: string | null): PageTab | null {
+    if (!t) return null;
+    const clean = t.toLowerCase().trim();
+    if (clean === 'notes') return 'lesson';
+    if (['lesson', 'summary', 'cheatsheet', 'test', 'schedule'].includes(clean)) {
+      return clean;
+    }
+    // Custom tabs: any valid slug (created on visit if the lesson lacks it)
+    if (isTabSlug(clean)) return clean;
+    return null;
+  }
+
+  function findLesson(lessons: CourseManifestLesson[], requested: string): CourseManifestLesson | undefined {
+    if (!requested) return undefined;
+    const clean = requested.toLowerCase().trim();
+
+    // 1. Exact ID match (e.g. "01.02" or "01.06_assign1")
+    const exact = lessons.find((l) => l.id.toLowerCase() === clean);
+    if (exact) return exact;
+
+    // 2. Normalized zero-padded ID (e.g. "1.2" -> "01.02", "1.02" -> "01.02")
+    const normParts = clean.split('.');
+    if (normParts.length === 2 && !isNaN(Number(normParts[0])) && !isNaN(Number(normParts[1]))) {
+      const padded = `${normParts[0].padStart(2, '0')}.${normParts[1].padStart(2, '0')}`;
+      const normMatch = lessons.find((l) => l.id.toLowerCase() === padded);
+      if (normMatch) return normMatch;
+    }
+
+    // 3. Activity code match (e.g. "u1la2" or "baf3m_u1la2")
+    const codeMatch = lessons.find(
+      (l) => l.code && (l.code.toLowerCase() === clean || l.code.toLowerCase().endsWith(`_${clean}`))
+    );
+    if (codeMatch) return codeMatch;
+
+    // 4. Title match (e.g. "1.2 Types of business organizations")
+    const titleMatch = lessons.find((l) => {
+      const t = l.title.toLowerCase();
+      return t === clean || t.startsWith(clean + ' ') || t.startsWith(clean + ':');
+    });
+    if (titleMatch) return titleMatch;
+
+    return undefined;
+  }
+
+  /** Sentinel thrown inside syncRoute when the route moves on mid-flight. */
+  const ROUTE_MOVED_ON = { sentinel: 'route-moved-on' };
+
+  async function syncRoute() {
+    if (isRouteSyncing || !courseId) {
+      console.log(`[NAV] syncRoute skipped (syncing=${isRouteSyncing}, courseId=${JSON.stringify(courseId)})`);
+      return;
+    }
+    isRouteSyncing = true;
+
+    // This run is authoritative for the route captured below. If the user
+    // navigates while we await course/lesson loads, our decisions are stale:
+    // acting on them would rewrite the URL back to the OLD route (the
+    // "lesson won't switch" bug). Abort instead; the effect re-runs for the
+    // new route, and if that run was blocked by the lock we re-run here.
+    const syncParams = { lesson: $page.params.lesson, tab: $page.params.tab, search: $page.url.search };
+    const routeMovedOn = () =>
+      $page.params.lesson !== syncParams.lesson ||
+      $page.params.tab !== syncParams.tab ||
+      $page.url.search !== syncParams.search;
+
+    console.log(
+      `[NAV] syncRoute | params=${syncParams.lesson || '—'}/${syncParams.tab || '—'}${syncParams.search} | selected=${selectedLessonId} tab=${activeTab} scope=${isCourseScope}`
+    );
+
+    let aborted = false;
+    try {
+      if (!course || course.id.toLowerCase() !== courseId.toLowerCase()) {
+        await loadCourse(undefined, { skipAutoLesson: true });
+        if (routeMovedOn()) throw ROUTE_MOVED_ON;
+      }
+      if (!course) return;
+
+      const pLesson = $page.params.lesson;
+      const pTab = $page.params.tab;
+      const qScope = $page.url.searchParams.get('scope');
+      const qLesson = $page.url.searchParams.get('lesson');
+      const qTab = $page.url.searchParams.get('tab');
+
+      const isTargetCourse =
+        pLesson === 'course' ||
+        pLesson === 'schedule' ||
+        qScope === 'course' ||
+        qTab === 'schedule';
+
+      if (isTargetCourse) {
+        let targetTab: PageTab = 'lesson';
+        if (pLesson === 'schedule' || qTab === 'schedule') {
+          targetTab = 'schedule';
+        } else {
+          const parsed = parseTabName(pTab) || parseTabName(qTab) || 'lesson';
+          targetTab = hasCourseDoc(parsed) ? parsed : 'lesson';
+        }
+
+        const scopeChanged = !isCourseScope;
+        const tabChanged = activeTab !== targetTab;
+
+        isCourseScope = true;
+        activeTab = targetTab;
+
+        if (scopeChanged || tabChanged || !tabContents[targetTab]) {
+          await loadCourseDocument(targetTab);
+          if (routeMovedOn()) throw ROUTE_MOVED_ON;
+        }
+
+        const canonical = `/courses/${courseId.toLowerCase()}/course/${targetTab}`;
+        if ($page.url.pathname !== canonical || $page.url.search) {
+          nav(canonical, { replace: true });
+        }
+      } else {
+        const allLessons = (course.units || []).flatMap((u) => u.lessons);
+        const requestedLesson = pLesson || qLesson || '';
+        const foundLesson = findLesson(allLessons, requestedLesson);
+        const targetLesson = foundLesson ? foundLesson.id : (allLessons[0]?.id || '');
+        if (!foundLesson && requestedLesson) {
+          console.log(`[NAV] syncRoute: lesson "${requestedLesson}" not found in manifest → falling back to "${targetLesson}"`);
+        }
+
+        // A user-initiated switch (selectLesson) loads the lesson first and
+        // gotos when it settles — so while that load is in flight the URL
+        // still shows OUR (older) params. Loading or rewriting the URL now
+        // would fight the user's pick. Stand down; their goto re-triggers us.
+        if (isLoadingLesson && selectedLessonId && selectedLessonId !== targetLesson) {
+          console.log(
+            `[NAV] syncRoute standing down — switch to "${selectedLessonId}" already in flight (params still target "${targetLesson}")`
+          );
+          return;
+        }
+
+        let targetTab: PageTab = parseTabName(pTab) || parseTabName(qTab) || 'lesson';
+        if (targetTab === 'schedule') {
+          targetTab = 'lesson';
+        }
+
+        const scopeChanged = isCourseScope;
+        const lessonChanged = selectedLessonId !== targetLesson;
+        console.log(
+          `[NAV] syncRoute lesson branch | target="${targetLesson}" targetTab=${targetTab} lessonChanged=${lessonChanged} scopeChanged=${scopeChanged}`
+        );
+
+        isCourseScope = false;
+        activeTab = targetTab;
+
+        if (scopeChanged || lessonChanged || !selectedLessonId) {
+          if (targetLesson) {
+            await loadLesson(targetLesson);
+            if (routeMovedOn()) throw ROUTE_MOVED_ON;
+          }
+        }
+
+        // A URL naming a custom tab the lesson doesn't have yet (schedule
+        // deep link, bookmark) creates the tab file so it can be used.
+        if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs[targetTab]) {
+          await createCustomTab(targetTab, customTabDisplayName(targetTab));
+          if (routeMovedOn()) throw ROUTE_MOVED_ON;
+        }
+
+        if (targetLesson) {
+          const tabSuffix = targetTab !== 'lesson' ? `/${targetTab}` : '';
+          const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}${tabSuffix}`;
+          if ($page.url.pathname !== canonical || $page.url.search) {
+            nav(canonical, { replace: true });
+          }
+        }
+      }
+    } catch (e) {
+      if (e === ROUTE_MOVED_ON) {
+        aborted = true;
+        console.log('[NAV] syncRoute aborted — route changed while loading');
+      } else {
+        throw e;
+      }
+    } finally {
+      isRouteSyncing = false;
+    }
+    if (aborted) {
+      console.log('[NAV] syncRoute re-running for the new route');
+      syncRoute();
+    }
+  }
+
+  $effect(() => {
+    const c = courseId;
+    const l = $page.params.lesson;
+    const t = $page.params.tab;
+    const qs = $page.url.search;
+    void c;
+    void l;
+    void t;
+    void qs;
+
+    // untrack: syncRoute's preamble reads $state (selectedLessonId, activeTab)
+    // — tracking those would re-run this effect (with STALE params) on every
+    // state change, spawning the racing syncRoutes that reverted navigation.
+    // The effect must fire for route changes only.
+    untrack(() => syncRoute());
+  });
+
   onMount(async () => {
+    installPerfObservers();
     await loadPrompts();
-
-    const urlScope = $page.url.searchParams.get('scope');
-    const urlLesson = $page.url.searchParams.get('lesson');
-    const urlTab = $page.url.searchParams.get('tab');
-    if (urlTab) {
-      if (urlTab === 'notes') activeTab = 'lesson';
-      else if (['lesson', 'summary', 'cheatsheet', 'test', 'schedule'].includes(urlTab)) {
-        activeTab = urlTab as PageTab;
-      }
-    }
-    if (activeTab === 'schedule') {
-      // Schedule is course-scoped only.
-      isCourseScope = true;
-    }
-
-    if (urlScope === 'course') {
-      isCourseScope = true;
-      await loadCourse();
-      await loadCourseDocument(activeTab);
-    } else if (urlLesson) {
-      await loadCourse();
-      // Deep link from a schedule entry: open the lesson, optionally its tab.
-      const known = (course?.units || []).some((u) => u.lessons.some((l) => l.id === urlLesson));
-      if (known) {
-        selectLesson(urlLesson);
-      }
-    } else {
-      await loadCourse();
-    }
-
     startQueueFeedback();
-    // Load the PDF engine and fonts while the browser is idle, so the first
-    // export doesn't pay the cold-start cost on the click.
     schedulePdfPrewarm();
     if (typeof window !== 'undefined') {
       window.addEventListener('popstate', handlePopState);
@@ -1251,8 +1589,9 @@
 <svelte:window onkeydown={handleKeydown} />
 
 <Header
-  courseId={course?.id}
+  courseId={course?.id || courseId}
   courseTitle={course?.title}
+  lessonId={isCourseScope ? '' : selectedLessonId}
   lessonTitle={isCourseScope ? 'Complete Course' : currentLessonTitle}
   onLessonUpdated={(lId, tab) => {
     if (tab === 'schedule' || lId === 'schedule') {
@@ -1272,7 +1611,11 @@
 {:else if !course}
   <div class="flex-1 flex flex-col items-center justify-center space-y-3">
     <p class="text-sm text-stone-500">Course not found.</p>
-    <a href="/" class="text-xs text-stone-900 font-medium underline">Return to courses</a>
+    <button
+      type="button"
+      onclick={() => nav('/')}
+      class="text-xs text-stone-900 font-medium underline cursor-pointer"
+    >Return to courses</button>
   </div>
 {:else}
   <div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
@@ -1283,6 +1626,7 @@
         <LessonSelector
           {course}
           {selectedLessonId}
+          {activeTab}
           isCourseMode={isCourseScope}
           onSelectLesson={(id) => selectLesson(id)}
           onSelectCourseMode={() => selectCourseMode()}
@@ -1360,6 +1704,35 @@
           <span>Practice Test</span>
         </button>
 
+        {#if !isCourseScope}
+          {#each customTabs as slug (slug)}
+            <div class="relative group/tab">
+              <button
+                onclick={() => switchTab(slug)}
+                class="flex items-center px-3 py-1 rounded-md transition {activeTab === slug ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+                title="Custom tab — {selectedLessonId}.{slug}.md"
+              >
+                <span>{customTabDisplayName(slug)}</span>
+              </button>
+              <button
+                onclick={() => handleDeleteCustomTab(slug)}
+                class="absolute -top-1 -right-1 hidden group-hover/tab:flex items-center justify-center w-3.5 h-3.5 rounded-full bg-stone-300 dark:bg-stone-600 text-stone-700 dark:text-stone-200 hover:bg-red-400 dark:hover:bg-red-500 hover:text-white transition cursor-pointer"
+                title="Delete {customTabDisplayName(slug)} tab for this lesson"
+              >
+                <X class="w-2 h-2" />
+              </button>
+            </div>
+          {/each}
+
+          <button
+            onclick={openNewTabModal}
+            class="flex items-center justify-center w-7 py-1 rounded-md text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 transition cursor-pointer"
+            title="Create a new tab for this lesson (e.g. Assignment)"
+          >
+            <Plus class="w-3.5 h-3.5" />
+          </button>
+        {/if}
+
         {#if isCourseScope}
           <button
             onclick={() => switchTab('schedule')}
@@ -1368,6 +1741,18 @@
             <CalendarDays class="w-3.5 h-3.5" />
             <span>Schedule</span>
           </button>
+
+          {#each courseCustomTabs as slug (slug)}
+            <div class="relative group/tab">
+              <button
+                onclick={() => switchTab(slug)}
+                class="flex items-center px-3 py-1 rounded-md transition {activeTab === slug ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+                title="Custom course tab — course.{slug}.md"
+              >
+                <span>{customTabDisplayName(slug)}</span>
+              </button>
+            </div>
+          {/each}
         {/if}
       </div>
     </div>
@@ -1379,14 +1764,12 @@
           <Loader2 class="w-6 h-6 animate-spin text-stone-300" />
         </div>
       {:else}
-        <!-- Prompt Card with Version Switcher for Summary, Cheatsheet, Test (when not editing raw markdown) -->
+        <!-- Prompt Card for generated tabs (when not editing raw markdown) -->
         {#if activeTab !== 'lesson' && !isEditing}
           <PromptCard
             prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
             defaultPrompt={defaultPromptForActiveTab}
             tabName={isCourseScope ? `Course ${tabDisplayName}` : tabDisplayName}
-            versions={isCourseScope ? [] : currentTabVersions}
-            activeVersionId={isCourseScope ? '' : activeVersionId}
             isGenerating={isCourseScope ? (activeTab === 'schedule' ? isScheduleGenerating : isGeneratingCourseDoc) : isTabGenerating}
             onChangePrompt={handlePromptChange}
             onRegenerate={isCourseScope
@@ -1395,8 +1778,6 @@
                 () => (isScheduleModalOpen = true)
               : () => generateCourseDocument(activeTab)
             : triggerAIGeneration}
-            onSelectVersion={isCourseScope ? undefined : handleSelectVersion}
-            onCreateNewVersion={isCourseScope ? undefined : handleCreateNewVersion}
             onResetPrompt={() => handlePromptChange(defaultPromptForActiveTab)}
           />
         {/if}
@@ -1632,4 +2013,74 @@
     promptTemplate={genericPrompts['course_schedule'] || ''}
     courseTitle={course.title}
   />
+
+  <!-- New custom tab modal -->
+  {#if isNewTabModalOpen}
+    <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
+      <div class="bg-white dark:bg-stone-900 rounded-xl border border-stone-200 dark:border-stone-800 shadow-xl max-w-sm w-full p-5 space-y-4">
+        <div class="space-y-1">
+          <div class="flex items-center space-x-2">
+            <div class="p-1 rounded-md bg-stone-900 dark:bg-stone-800 text-white dark:text-stone-200">
+              <Plus class="w-3.5 h-3.5" />
+            </div>
+            <h3 class="text-sm font-semibold text-stone-900 dark:text-stone-100">
+              New tab for lesson {selectedLessonId}
+            </h3>
+          </div>
+          <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
+            A custom tab just for this lesson, saved as markdown with its own prompt.
+          </p>
+        </div>
+
+        <div class="space-y-1.5">
+          <label for="new-tab-name" class="text-[11px] font-semibold text-stone-500 dark:text-stone-400 uppercase tracking-wider">
+            Tab name
+          </label>
+          <input
+            id="new-tab-name"
+            type="text"
+            bind:value={newTabName}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleCreateTabFromModal();
+              } else if (e.key === 'Escape') {
+                isNewTabModalOpen = false;
+              }
+            }}
+            placeholder="e.g. Assignment"
+            class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950 text-xs text-stone-800 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100 transition"
+          />
+          <p class="text-[11px] text-stone-400 dark:text-stone-500 font-mono">
+            {selectedLessonId}.{slugifyTabName(newTabName) || '…'}.md
+          </p>
+          {#if newTabError}
+            <p class="text-[11px] text-red-600 dark:text-red-400">{newTabError}</p>
+          {/if}
+        </div>
+
+        <div class="flex justify-end items-center space-x-2 pt-2 border-t border-stone-100 dark:border-stone-800">
+          <button
+            onclick={() => (isNewTabModalOpen = false)}
+            class="px-3 py-1.5 rounded-lg text-xs font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            onclick={handleCreateTabFromModal}
+            disabled={isCreatingTab || !newTabName.trim()}
+            class="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 disabled:opacity-50 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer"
+          >
+            {#if isCreatingTab}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+              <span>Creating...</span>
+            {:else}
+              <Plus class="w-3.5 h-3.5" />
+              <span>Create</span>
+            {/if}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 {/if}

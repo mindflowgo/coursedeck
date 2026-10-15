@@ -6,6 +6,79 @@
   import { getApiBaseUrl } from '$lib/api';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
   import { confirmDialog } from '$lib/dialog';
+  import { onMount } from 'svelte';
+  import {
+    afterPaint,
+    assetReport,
+    contentSignature,
+    perf,
+    stagesSummary,
+    stagesTotal,
+    timeStage,
+    type PerfStage
+  } from '$lib/perf';
+
+  /** Last markdown fed to the pipeline, kept for the `__ilcMarkedProbe` diagnostic. */
+  let lastMarkdownForProbe = '';
+
+  /**
+   * Bisects marked's own cost in whatever runtime this runs in. marked is pure
+   * JS, so the same input costs the same everywhere unless something about the
+   * runtime is off; comparing lexing against HTML generation, and real content
+   * against synthetic content of the same size, says which.
+   *
+   * Run `__ilcMarkedProbe()` in the console of a slow environment, or
+   * `__ilcMarkedProbe('some markdown')` to test specific content.
+   */
+  function installMarkedProbe(): void {
+    if (typeof window === 'undefined') return;
+
+    (window as unknown as Record<string, unknown>).__ilcMarkedProbe = (text?: string) => {
+      const input = text ?? lastMarkdownForProbe;
+      const results: Record<string, unknown> = { inputChars: input.length };
+      const t = <T>(label: string, fn: () => T): T => {
+        const t0 = performance.now();
+        const out = fn();
+        results[label] = +(performance.now() - t0).toFixed(1);
+        return out;
+      };
+
+      const tokens = t('lexer', () => markedParser.lexer(input));
+      t('parser', () => markedParser.parser(tokens));
+      // A second pass distinguishes a one-off stall from a persistent cost.
+      t('lexer_again', () => markedParser.lexer(input));
+
+      const filler = 'Lorem ipsum dolor sit amet, consectetur adipiscing elit. ';
+      const plain = filler.repeat(Math.ceil(input.length / filler.length)).slice(0, input.length);
+      results.syntheticChars = plain.length;
+      t('lexer_synthetic_plaintext', () => markedParser.lexer(plain));
+
+      const tableUnit = '| a | b | c |\n| --- | --- | --- |\n';
+      const table = tableUnit.repeat(Math.ceil(input.length / tableUnit.length)).slice(0, input.length);
+      t('lexer_synthetic_tables', () => markedParser.lexer(table));
+
+      results.userAgent = navigator.userAgent;
+      results.cores = navigator.hardwareConcurrency;
+      results.deviceMemory = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? null;
+
+      // DevTools-open probe: an inspected object triggers this getter.
+      let devtoolsOpen = false;
+      try {
+        const el = new Image();
+        Object.defineProperty(el, 'id', {
+          get() {
+            devtoolsOpen = true;
+            return 'probe';
+          }
+        });
+        console.log(el);
+      } catch {}
+      results.devtoolsOpen = devtoolsOpen;
+
+      perf('marked-probe', results, '[PERF][marked-probe] see object for the breakdown');
+      return results;
+    };
+  }
 
   interface Props {
     markdown: string;
@@ -125,46 +198,68 @@
     }
   });
 
+  /**
+   * Counter + signature of the last render. A single view showing several
+   * runs for the same signature means the pipeline is being re-run on
+   * unchanged input, which is invisible from the outside but multiplies the
+   * per-render cost.
+   */
+  let renderCount = 0;
+  let lastSignature = '';
+
   let renderedHtml = $derived.by(() => {
     if (!markdown) return '';
 
+    const stages: PerfStage[] = [];
+    const startedAt = performance.now();
+    const signature = contentSignature(markdown);
+    renderCount += 1;
+    lastMarkdownForProbe = markdown;
+
     // 1. Strip YAML frontmatter
-    let cleaned = markdown.replace(/^---[\s\S]*?---\s*/, '');
-
-    // 2. Normalize Pandoc/Markdown-it attribute syntax: ![alt](url){width=300px} -> ![alt|width=300px](url)
-    cleaned = cleaned.replace(
-      /!\[(.*?)\]\((.*?)\)\{([^}]+)\}/g,
-      (match, alt, url, attr) => `![${alt}|${attr.trim()}](${url})`
+    let cleaned = timeStage(stages, 'frontmatter', () =>
+      markdown.replace(/^---[\s\S]*?---\s*/, '')
     );
 
-    // 3. Rewrite image and document paths to point to API route
-    const apiBase = getApiBaseUrl();
-    cleaned = cleaned.replace(
-      /(?:src|href)=["'](?:\.\/)?assets\/(.*?)["']/gi,
-      `src="${apiBase}/api/courses/${courseId}/assets/$1"`
-    );
-    cleaned = cleaned.replace(
-      /!\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi,
-      `![$1](${apiBase}/api/courses/${courseId}/assets/$2)`
-    );
-    cleaned = cleaned.replace(
-      /\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi,
-      `[$1](${apiBase}/api/courses/${courseId}/assets/$2)`
-    );
+    // 2 + 3. Normalize Pandoc/Markdown-it attribute syntax and rewrite
+    // asset paths to the API route.
+    cleaned = timeStage(stages, 'asset-paths', () => {
+      let out = cleaned.replace(
+        /!\[(.*?)\]\((.*?)\)\{([^}]+)\}/g,
+        (match, alt, url, attr) => `![${alt}|${attr.trim()}](${url})`
+      );
+
+      const apiBase = getApiBaseUrl();
+      out = out.replace(
+        /(?:src|href)=["'](?:\.\/)?assets\/(.*?)["']/gi,
+        `src="${apiBase}/api/courses/${courseId}/assets/$1"`
+      );
+      out = out.replace(
+        /!\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi,
+        `![$1](${apiBase}/api/courses/${courseId}/assets/$2)`
+      );
+      out = out.replace(
+        /\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi,
+        `[$1](${apiBase}/api/courses/${courseId}/assets/$2)`
+      );
+      return out;
+    });
 
     // 4. Process GFM Callouts: > [!NOTE], > [!TIP], > [!IMPORTANT], > [!WARNING], > [!CAUTION]
-    cleaned = cleaned.replace(
-      /> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>.*(?:\n|$))*)/gi,
-      (match, type, content) => {
-        const cleanType = type.toLowerCase();
-        const body = content.replace(/^>\s?/gm, '');
-        return `<div class="callout callout-${cleanType}">\n\n${body}\n\n</div>\n\n`;
-      }
+    cleaned = timeStage(stages, 'callouts', () =>
+      cleaned.replace(
+        /> \[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*\n((?:>.*(?:\n|$))*)/gi,
+        (match, type, content) => {
+          const cleanType = type.toLowerCase();
+          const body = content.replace(/^>\s?/gm, '');
+          return `<div class="callout callout-${cleanType}">\n\n${body}\n\n</div>\n\n`;
+        }
+      )
     );
 
     // 5. Process GFM AI Post-It Notes: > [!USERNOTE] <query>\n> <!-- target: "..." -->\n> body...
     const userNotes: string[] = [];
-    cleaned = cleaned.replace(
+    cleaned = timeStage(stages, 'user-notes', () => cleaned.replace(
       />\s*\[!USERNOTE\]([^\n]*)\n((?:>.*(?:\n|$))*)/gi,
       (match, queryMatch, content) => {
         const noteId = `note-${userNotes.length}`;
@@ -185,18 +280,18 @@
 
         const postItHtml = `
 <div class="postit-container not-prose my-5" data-note-id="${noteId}" data-target="${escapeHtml(targetText)}">
-  <details class="postit-card group rounded-2xl border border-amber-300/80 bg-gradient-to-br from-amber-50/95 via-amber-50/85 to-amber-100/50 p-4 shadow-2xs hover:shadow-xs transition duration-150">
+  <details class="postit-card group rounded-2xl border border-amber-300/80 dark:border-amber-500/20 bg-gradient-to-br from-amber-50/95 via-amber-50/85 to-amber-100/50 dark:from-amber-950/20 dark:via-stone-900/50 dark:to-stone-900/80 p-4 shadow-2xs hover:shadow-xs transition duration-150">
     <summary class="postit-summary flex items-start justify-between cursor-pointer list-none select-none gap-3">
       <div class="flex items-start space-x-2.5 flex-1 min-w-0">
-        <span class="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-200/90 text-amber-950 border border-amber-300/90 shadow-2xs shrink-0 mt-0.5">
+        <span class="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-200/90 dark:bg-amber-950/60 text-amber-950 dark:text-amber-300 border border-amber-300/90 dark:border-amber-800/50 shadow-2xs shrink-0 mt-0.5">
           <span class="text-xs">💡</span>
           <span>AI Note</span>
         </span>
         <div class="flex-1 min-w-0">
-          <div class="text-xs font-semibold text-amber-950 leading-snug">
+          <div class="text-xs font-semibold text-amber-950 dark:text-amber-200 leading-snug">
             ${escapeHtml(cleanQuery || 'Study Note')}
           </div>
-          ${targetText ? `<div class="text-[11px] text-amber-900/70 truncate mt-0.5 italic">"${escapeHtml(targetText)}"</div>` : ''}
+          ${targetText ? `<div class="text-[11px] text-amber-900/70 dark:text-amber-400/60 truncate mt-0.5 italic">"${escapeHtml(targetText)}"</div>` : ''}
         </div>
       </div>
       <div class="flex items-center space-x-1 shrink-0 pt-0.5">
@@ -205,20 +300,20 @@
           data-action="delete-note"
           data-query="${escapeHtml(cleanQuery)}"
           data-target="${escapeHtml(targetText)}"
-          class="postit-delete-btn p-1 rounded-lg text-amber-800/60 hover:text-amber-950 hover:bg-amber-200/70 transition cursor-pointer"
+          class="postit-delete-btn p-1 rounded-lg text-amber-800/60 dark:text-amber-400/60 hover:text-amber-950 dark:hover:text-amber-200 hover:bg-amber-200/70 dark:hover:bg-amber-900/40 transition cursor-pointer"
           title="Delete this AI note"
         >
           <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
         </button>
-        <span class="p-1 text-amber-800/70 group-open:rotate-180 transition-transform duration-200">
+        <span class="p-1 text-amber-800/70 dark:text-amber-400/70 group-open:rotate-180 transition-transform duration-200">
           <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
         </span>
       </div>
     </summary>
-    <div class="postit-body mt-3 pt-3 border-t border-amber-200/70 text-xs text-stone-800 leading-relaxed space-y-2">
+    <div class="postit-body mt-3 pt-3 border-t border-amber-200/70 dark:border-amber-900/40 text-xs text-stone-800 dark:text-stone-300 leading-relaxed space-y-2">
       ${bodyHtml}
       ${targetText ? `
-        <div class="pt-2 mt-2 border-t border-amber-200/40 text-[11px] text-amber-900/60 flex items-center space-x-1">
+        <div class="pt-2 mt-2 border-t border-amber-200/40 dark:border-amber-900/30 text-[11px] text-amber-900/60 dark:text-amber-400/60 flex items-center space-x-1">
           <span>Referencing:</span>
           <span class="italic font-medium truncate max-w-md">"${escapeHtml(targetText)}"</span>
         </div>
@@ -230,29 +325,98 @@
         userNotes.push(postItHtml);
         return `\n\n%%%USERNOTE_${userNotes.length - 1}%%%\n\n`;
       }
-    );
+    ));
 
     // 6. Repair multiline tables so they conform to GFM single-line table specifications
-    cleaned = repairMarkdownTables(cleaned);
+    cleaned = timeStage(stages, 'table-repair', () => repairMarkdownTables(cleaned));
 
     // 7. Pre-extract math formulas before markedParser so \(, \[, _, etc. are never mangled by CommonMark
-    const { processedMarkdown: markdownWithoutMath, mathTokens } = extractMathFromMarkdown(cleaned);
+    const { processedMarkdown: markdownWithoutMath, mathTokens } = timeStage(
+      stages,
+      'math-extract',
+      () => extractMathFromMarkdown(cleaned)
+    );
 
-    // 8. Render Markdown via markedParser
-    let html = markedParser.parse(markdownWithoutMath) as string;
+    // 8. Render Markdown via markedParser (chunked by section to eliminate WebKit O(N^2) lexer degradation)
+    let html = timeStage(stages, 'marked', () => {
+      const sectionDelimiter = /(?:\r?\n){2,}---(?:\r?\n){2,}/;
+      let parts = markdownWithoutMath.split(sectionDelimiter);
+
+      // If no '---' dividers exist but document is large (>50k chars), chunk on major headings
+      if (parts.length <= 1 && markdownWithoutMath.length > 50000) {
+        const headingParts = markdownWithoutMath.split(/(?=(?:\r?\n)+(?:#{1,2} ))/);
+        if (headingParts.length > 1) {
+          parts = headingParts;
+        }
+      }
+
+      if (parts.length > 1) {
+        const rendered = parts
+          .map((part) => {
+            const trimmed = part.trim();
+            if (!trimmed) return '';
+            const sectionHtml = markedParser.parse(trimmed) as string;
+            return `<section class="markdown-section">\n${sectionHtml}\n</section>`;
+          })
+          .filter(Boolean);
+        return rendered.join('\n<hr class="section-divider my-8 border-stone-200 dark:border-stone-800" />\n');
+      }
+
+      return markedParser.parse(markdownWithoutMath) as string;
+    });
 
     // 9. Restore rendered KaTeX formulas
-    html = restoreMathTokens(html, mathTokens);
+    html = timeStage(stages, 'katex', () => restoreMathTokens(html, mathTokens));
 
     // 10. Inject rendered Post-It Notes
-    html = html.replace(/<p>\s*%%%USERNOTE_(\d+)%%%\s*<\/p>/g, (_, idx) => userNotes[Number(idx)] || '');
-    html = html.replace(/%%%USERNOTE_(\d+)%%%/g, (_, idx) => userNotes[Number(idx)] || '');
+    html = timeStage(stages, 'notes-inject', () => {
+      let out = html.replace(/<p>\s*%%%USERNOTE_(\d+)%%%\s*<\/p>/g, (_, idx) => userNotes[Number(idx)] || '');
+      out = out.replace(/%%%USERNOTE_(\d+)%%%/g, (_, idx) => userNotes[Number(idx)] || '');
+      return out;
+    });
 
-    return sanitizeRenderedHtml(html);
+    const sanitized = timeStage(stages, 'sanitize', () => sanitizeRenderedHtml(html));
+
+    // One line per render. Repeated lines carrying the same signature mean the
+    // pipeline is re-running on unchanged input, which multiplies its cost.
+    const repeated = signature === lastSignature;
+    lastSignature = signature;
+    const imageCount = (sanitized.match(/<img/g) || []).length;
+    perf(
+      'markdown-render',
+      {
+        run: renderCount,
+        repeatedInput: repeated,
+        inChars: markdown.length,
+        outChars: sanitized.length,
+        images: imageCount,
+        mathTokens: mathTokens.length,
+        pipelineMs: +(performance.now() - startedAt).toFixed(1),
+        stages: stagesSummary(stages)
+      },
+      `[PERF][markdown-render] #${renderCount}${repeated ? ' (REPEATED INPUT)' : ''} ` +
+        `in=${markdown.length.toLocaleString()}c out=${sanitized.length.toLocaleString()}c ` +
+        `imgs=${imageCount} pipeline=${(performance.now() - startedAt).toFixed(0)}ms | ${stagesSummary(stages)}`
+    );
+
+    // Render→paint is what the student actually waits for: it includes the DOM
+    // update, style recalc and layout the pipeline timing above cannot see.
+    afterPaint(() => {
+      const paintMs = +(performance.now() - startedAt).toFixed(1);
+      const assets = assetReport();
+      perf(
+        'markdown-paint',
+        { run: renderCount, renderToPaintMs: paintMs, chars: markdown.length, assets },
+        `[PERF][markdown-paint] #${renderCount} visible ${paintMs}ms after render started ` +
+          `(pipeline ${stagesTotal(stages)}ms · layout/paint ${(paintMs - stagesTotal(stages)).toFixed(0)}ms) · ` +
+          `assets: ${assets.requests} req, ${assets.totalMB}MB`
+      );
+    });
+
+    return sanitized;
   });
 
-  function sanitizeRenderedHtml(dirty: string): string {
-    if (typeof window === 'undefined') return dirty;
+  function sanitizeRenderedHtml(dirty: string): string {    if (typeof window === 'undefined') return dirty;
     const purify = typeof DOMPurify.sanitize === 'function' ? DOMPurify : (DOMPurify as any)(window);
     if (!purify || typeof purify.sanitize !== 'function') return dirty;
     return purify.sanitize(dirty, {
@@ -534,6 +698,11 @@
     color: inherit;
   }
 
+  :global(.dark .ai-note-anchor) {
+    background-color: rgba(245, 158, 11, 0.15);
+    border-bottom: 2px dotted rgba(245, 158, 11, 0.5);
+  }
+
   :global(.ai-note-anchor:hover),
   :global(.ai-note-anchor.ai-note-anchor-active) {
     background-color: rgba(253, 224, 71, 0.85);
@@ -541,8 +710,20 @@
     box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.45);
   }
 
+  :global(.dark .ai-note-anchor:hover),
+  :global(.dark .ai-note-anchor.ai-note-anchor-active) {
+    background-color: rgba(245, 158, 11, 0.28);
+    border-bottom-style: solid;
+    box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+  }
+
   :global(.ai-note-anchor.ai-note-anchor-open) {
     background-color: rgba(254, 240, 138, 0.75);
+    border-bottom-style: solid;
+  }
+
+  :global(.dark .ai-note-anchor.ai-note-anchor-open) {
+    background-color: rgba(245, 158, 11, 0.24);
     border-bottom-style: solid;
   }
 
@@ -558,5 +739,10 @@
   :global(a .image-container) {
     display: inline-block;
     margin: 0.25rem 0;
+  }
+
+  :global(.markdown-section) {
+    content-visibility: auto;
+    contain-intrinsic-size: 1px 800px;
   }
 </style>

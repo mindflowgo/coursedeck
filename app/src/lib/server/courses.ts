@@ -14,12 +14,12 @@ import {
   trySafeJoin,
 } from './paths';
 
-export interface LessonFileVersion {
-  id: string; // e.g. "summary" or "summary-2"
-  filename: string; // e.g. "01.02.summary.md" or "01.02.summary-2.md"
-  versionNumber: number; // 1, 2, 3...
-  label: string; // "v1", "v2", ...
-  content: string;
+export interface LessonContentBundle {
+  courseId: string;
+  lessonId: string;
+  lesson: string;
+  /** Every tab file on disk for this lesson, keyed by tab slug (summary, test, assignment, …). */
+  tabs: Record<string, string>;
 }
 
 export interface SchedulePayloadItem {
@@ -49,18 +49,6 @@ export interface SchedulePayloadStats {
   estimatedTokens?: number;
 }
 
-export interface LessonContentBundle {
-  courseId: string;
-  lessonId: string;
-  lesson: string;
-  summary: string;
-  cheatsheet: string;
-  test: string;
-  summaries: LessonFileVersion[];
-  cheatsheets: LessonFileVersion[];
-  tests: LessonFileVersion[];
-}
-
 export class CourseService {
   static getCoursesDir(): string {
     return resolveCoursesDir();
@@ -69,6 +57,28 @@ export class CourseService {
   /** Absolute course directory, validated so the id cannot escape the data dir. */
   private static courseDir(courseId: unknown): string {
     return safeJoin(resolveCoursesDir(), normalizeCourseId(courseId));
+  }
+
+  static discoverCourseDocs(courseFolder: string): Record<string, boolean> {
+    const flags: Record<string, boolean> = {
+      summary: false,
+      cheatsheet: false,
+      test: false,
+      schedule: false
+    };
+    if (!fs.existsSync(courseFolder)) return flags;
+    try {
+      const files = fs.readdirSync(courseFolder);
+      for (const file of files) {
+        const m = file.match(/^course\.([a-z0-9_]+)\.md$/i);
+        if (m) {
+          flags[m[1].toLowerCase()] = true;
+        }
+      }
+    } catch (e) {
+      console.warn(`Failed to read files in ${courseFolder}:`, e);
+    }
+    return flags;
   }
 
   static listCourses(): CourseManifest[] {
@@ -88,15 +98,10 @@ export class CourseService {
       if (fs.existsSync(metaPath)) {
         try {
           const content = fs.readFileSync(metaPath, 'utf8');
-        const manifest: CourseManifest = JSON.parse(content);
-        manifest.path = courseFolder;
-        manifest.courseDocs = {
-          summary: fs.existsSync(path.join(courseFolder, 'course.summary.md')),
-          cheatsheet: fs.existsSync(path.join(courseFolder, 'course.cheatsheet.md')),
-          test: fs.existsSync(path.join(courseFolder, 'course.test.md')),
-          schedule: fs.existsSync(path.join(courseFolder, 'course.schedule.md'))
-        };
-        manifests.push(manifest);
+          const manifest: CourseManifest = JSON.parse(content);
+          manifest.path = courseFolder;
+          manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
+          manifests.push(manifest);
         } catch (e) {
           console.error(`Failed to read meta.json for ${dirName}:`, e);
         }
@@ -115,12 +120,7 @@ export class CourseService {
       const content = fs.readFileSync(metaPath, 'utf8');
       const manifest: CourseManifest = JSON.parse(content);
       manifest.path = courseFolder;
-      manifest.courseDocs = {
-        summary: fs.existsSync(path.join(courseFolder, 'course.summary.md')),
-        cheatsheet: fs.existsSync(path.join(courseFolder, 'course.cheatsheet.md')),
-        test: fs.existsSync(path.join(courseFolder, 'course.test.md')),
-        schedule: fs.existsSync(path.join(courseFolder, 'course.schedule.md'))
-      };
+      manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
       return manifest;
     } catch {
       return null;
@@ -170,31 +170,17 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) return null;
 
-    const files = fs.readdirSync(courseDir);
+    const escaped = lesson.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tabFileRegex = new RegExp(`^${escaped}\\.([a-z0-9_]+)\\.md$`, 'i');
 
-    const getVersions = (tabPrefix: 'summary' | 'cheatsheet' | 'test'): LessonFileVersion[] => {
-      const regex = new RegExp(`^${lessonId.replace('.', '\\.')}\\.${tabPrefix}(?:-(\\d+))?\\.md$`, 'i');
-      return files
-        .filter((f) => regex.test(f))
-        .map((f) => {
-          const match = f.match(regex);
-          const versionNum = match && match[1] ? parseInt(match[1], 10) : 1;
-          const versionId = versionNum === 1 ? tabPrefix : `${tabPrefix}-${versionNum}`;
-          const content = fs.readFileSync(path.join(courseDir, f), 'utf8');
-          return {
-            id: versionId,
-            filename: f,
-            versionNumber: versionNum,
-            label: `v${versionNum}`,
-            content
-          };
-        })
-        .sort((a, b) => a.versionNumber - b.versionNumber);
-    };
-
-    const summaries = getVersions('summary');
-    const cheatsheets = getVersions('cheatsheet');
-    const tests = getVersions('test');
+    const tabs: Record<string, string> = {};
+    for (const f of fs.readdirSync(courseDir)) {
+      const match = f.match(tabFileRegex);
+      if (!match) continue;
+      const slug = match[1].toLowerCase();
+      if (slug === 'lesson') continue; // surfaced separately as bundle.lesson
+      tabs[slug] = fs.readFileSync(safeJoin(courseDir, f), 'utf8');
+    }
 
     const readSafe = (filename: string): string => {
       const filePath = safeJoin(courseDir, filename);
@@ -205,12 +191,7 @@ export class CourseService {
       courseId,
       lessonId: lesson,
       lesson: readSafe(`${lessonId}.lesson.md`),
-      summary: summaries[0]?.content || readSafe(`${lessonId}.summary.md`),
-      cheatsheet: cheatsheets[0]?.content || readSafe(`${lessonId}.cheatsheet.md`),
-      test: tests[0]?.content || readSafe(`${lessonId}.test.md`),
-      summaries,
-      cheatsheets,
-      tests
+      tabs
     };
   }
 
@@ -218,32 +199,10 @@ export class CourseService {
     return this.getLessonContent(courseId, lessonId);
   }
 
-  /** Highest existing version number for a lesson tab file (>= 1, base file = 1). */
-  static latestVersionNumber(courseId: string, lessonId: string, tab: string): number {
-    const courseDir = this.courseDir(courseId);
-    if (!fs.existsSync(courseDir)) return 1;
-
-    const baseTab = tab.replace(/-\d+$/, '');
-    const regex = new RegExp(
-      `^${lessonId.replace(/\./g, '\\.')}\\.${baseTab}(?:-(\\d+))?\\.md$`,
-      'i'
-    );
-    let max = 1;
-    for (const f of fs.readdirSync(courseDir)) {
-      const m = f.match(regex);
-      if (m) {
-        const num = m[1] ? parseInt(m[1], 10) : 1;
-        if (num > max) max = num;
-      }
-    }
-    return max;
-  }
-
   /**
-   * True when any version (base or -N) of the lesson tab exists with real
-   * generated content — more than a stub and not a "Not yet generated"
-   * placeholder. Used by the queue's missing-scan, which must not regenerate
-   * lessons that only carry versioned files.
+   * True when the lesson tab file exists with real generated content — more
+   * than a stub and not a "Not yet generated" placeholder. Used by the
+   * queue's missing-scan, which must not regenerate present tabs.
    */
   static hasLessonTabContent(
     courseId: string,
@@ -253,17 +212,12 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) return false;
 
-    const regex = new RegExp(
-      `^${lessonId.replace(/\./g, '\\.')}\\.${tab}(?:-\\d+)?\\.md$`,
-      'i'
-    );
-    for (const f of fs.readdirSync(courseDir)) {
-      if (!regex.test(f)) continue;
-      try {
-        const content = fs.readFileSync(path.join(courseDir, f), 'utf8');
-        if (content.length > 250 && !content.includes('Not yet generated')) return true;
-      } catch {}
-    }
+    const filePath = safeJoin(courseDir, `${lessonId}.${tab}.md`);
+    if (!fs.existsSync(filePath)) return false;
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      return content.length > 250 && !content.includes('Not yet generated');
+    } catch {}
     return false;
   }
 
@@ -271,30 +225,36 @@ export class CourseService {
     courseId: string,
     lessonId: string,
     tab: string,
-    content: string,
-    options?: { asNewVersion?: boolean }
-  ): { success: boolean; versionId: string; filename: string } {
+    content: string
+  ): { success: boolean; filename: string } {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) {
-      return { success: false, versionId: tab, filename: '' };
+      return { success: false, filename: '' };
     }
 
-    let targetTab = tab;
-    const baseTab = tab.replace(/-\d+$/, ''); // 'summary', 'cheatsheet', or 'test'
-
-    if (options?.asNewVersion && ['summary', 'cheatsheet', 'test'].includes(baseTab)) {
-      targetTab = `${baseTab}-${this.latestVersionNumber(courseId, lessonId, baseTab) + 1}`;
-    }
-
-    const filename = `${lessonId}.${targetTab}.md`;
+    const filename = `${lessonId}.${tab}.md`;
     const filePath = safeJoin(courseDir, filename);
 
     try {
       fs.writeFileSync(filePath, content, 'utf8');
-      return { success: true, versionId: targetTab, filename };
+      return { success: true, filename };
     } catch (e) {
       console.error(`Failed to save ${filename}:`, e);
-      return { success: false, versionId: targetTab, filename };
+      return { success: false, filename };
+    }
+  }
+
+  /** Removes the lesson tab file. Returns false when it didn't exist. */
+  static deleteLessonTab(courseId: string, lessonId: string, tab: string): boolean {
+    const courseDir = this.courseDir(courseId);
+    const filePath = safeJoin(courseDir, `${lessonId}.${tab}.md`);
+    if (!fs.existsSync(filePath)) return false;
+    try {
+      fs.unlinkSync(filePath);
+      return true;
+    } catch (e) {
+      console.error(`Failed to delete ${filePath}:`, e);
+      return false;
     }
   }
 
@@ -304,16 +264,21 @@ export class CourseService {
     return fs.statSync(fullPath).isFile() ? fullPath : null;
   }
 
-  static getCourseDocumentPath(courseId: string, type: CourseDocType): string {
+  static getCourseDocumentPath(courseId: string, type: string): string {
     return safeJoin(this.courseDir(courseId), `course.${type}.md`);
   }
 
-  static getCourseDocument(courseId: string, type: CourseDocType): string | null {
+  static getCourseDocument(courseId: string, type: string): string | null {
     const filePath = this.getCourseDocumentPath(courseId, type);
     return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
   }
 
-  static saveCourseDocument(courseId: string, type: CourseDocType, content: string): boolean {
+  static hasCourseDocument(courseId: string, type: string): boolean {
+    const filePath = this.getCourseDocumentPath(courseId, type);
+    return fs.existsSync(filePath);
+  }
+
+  static saveCourseDocument(courseId: string, type: string, content: string): boolean {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) {
       fs.mkdirSync(courseDir, { recursive: true });
@@ -336,7 +301,6 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!course || !fs.existsSync(courseDir)) return [];
 
-    const files = fs.readdirSync(courseDir);
     const results: Array<{
       unitNumber: number;
       unitTitle: string;
@@ -347,34 +311,8 @@ export class CourseService {
 
     for (const unit of course.units) {
       for (const lesson of unit.lessons) {
-        let content = '';
-
-        if (type === 'lesson') {
-          const lessonFile = path.join(courseDir, `${lesson.id}.lesson.md`);
-          if (fs.existsSync(lessonFile)) {
-            content = fs.readFileSync(lessonFile, 'utf8');
-          }
-        } else {
-          // For summary, cheatsheet, test: find latest version or base
-          const regex = new RegExp(`^${lesson.id.replace('.', '\\.')}\\.${type}(?:-(\\d+))?\\.md$`, 'i');
-          const matching = files
-            .filter((f) => regex.test(f))
-            .map((f) => {
-              const m = f.match(regex);
-              const num = m && m[1] ? parseInt(m[1], 10) : 1;
-              return { file: f, version: num };
-            })
-            .sort((a, b) => b.version - a.version);
-
-          if (matching.length > 0) {
-            content = fs.readFileSync(safeJoin(courseDir, matching[0].file), 'utf8');
-          } else {
-            const fallbackFile = safeJoin(courseDir, `${lesson.id}.${type}.md`);
-            if (fs.existsSync(fallbackFile)) {
-              content = fs.readFileSync(fallbackFile, 'utf8');
-            }
-          }
-        }
+        const filePath = safeJoin(courseDir, `${lesson.id}.${type}.md`);
+        const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
 
         results.push({
           unitNumber: unit.number,
@@ -421,42 +359,29 @@ export class CourseService {
     return lines.join('');
   }
 
-  private static findLatestCuratedContent(
+  /**
+   * Body of the lesson's curated tab file (summary/cheatsheet/test), skipping
+   * "Not yet generated" stubs. Null when the file is absent or a stub.
+   */
+  private static readCuratedContent(
     courseDir: string,
-    files: string[],
     lessonId: string,
     docType: 'summary' | 'cheatsheet' | 'test'
   ): string | null {
-    const escaped = lessonId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`^${escaped}\\.${docType}(?:-(\\d+))?\\.md$`, 'i');
-    const matching = files
-      .filter((f) => regex.test(f))
-      .map((f) => {
-        const m = f.match(regex);
-        const num = m && m[1] ? parseInt(m[1], 10) : 1;
-        return { file: f, version: num };
-      })
-      .sort((a, b) => b.version - a.version);
-
-    for (const item of matching) {
-      const filePath = safeJoin(courseDir, item.file);
-      if (!fs.existsSync(filePath)) continue;
-      try {
-        const raw = fs.readFileSync(filePath, 'utf8');
-        if (raw.includes('Not yet generated') && raw.length < 200) {
-          continue;
-        }
-        const parsed = parseFrontmatter(raw);
-        const body = (parsed.body || raw).trim();
-        if (body.length > 0) {
-          return body;
-        }
-      } catch (e) {
-        console.warn(`Failed to read curated file ${filePath}:`, e);
+    const filePath = safeJoin(courseDir, `${lessonId}.${docType}.md`);
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      if (raw.includes('Not yet generated') && raw.length < 200) {
+        return null;
       }
+      const parsed = parseFrontmatter(raw);
+      const body = (parsed.body || raw).trim();
+      return body.length > 0 ? body : null;
+    } catch (e) {
+      console.warn(`Failed to read curated file ${filePath}:`, e);
+      return null;
     }
-
-    return null;
   }
 
   private static extractTestQuestionPrompts(testBody: string): string[] {
@@ -514,7 +439,6 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!course || !fs.existsSync(courseDir)) return '';
 
-    const files = fs.readdirSync(courseDir);
     const lines: string[] = [];
     lines.push(`# Course: ${course.id.toUpperCase()} — ${course.title}\n\n`);
     if (course.description) {
@@ -530,23 +454,23 @@ export class CourseService {
 
         if (type === 'summary') {
           const body =
-            this.findLatestCuratedContent(courseDir, files, lesson.id, 'summary') ??
-            this.findLatestCuratedContent(courseDir, files, lesson.id, 'cheatsheet');
+            this.readCuratedContent(courseDir, lesson.id, 'summary') ??
+            this.readCuratedContent(courseDir, lesson.id, 'cheatsheet');
           if (body) {
             lessonContent = this.budgetLessonContent(body, 3000);
           }
         } else if (type === 'cheatsheet') {
           const body =
-            this.findLatestCuratedContent(courseDir, files, lesson.id, 'cheatsheet') ??
-            this.findLatestCuratedContent(courseDir, files, lesson.id, 'summary');
+            this.readCuratedContent(courseDir, lesson.id, 'cheatsheet') ??
+            this.readCuratedContent(courseDir, lesson.id, 'summary');
           if (body) {
             lessonContent = this.budgetLessonContent(body, 2500);
           }
         } else if (type === 'test') {
           const primaryBody =
-            this.findLatestCuratedContent(courseDir, files, lesson.id, 'summary') ??
-            this.findLatestCuratedContent(courseDir, files, lesson.id, 'cheatsheet');
-          const testBody = this.findLatestCuratedContent(courseDir, files, lesson.id, 'test');
+            this.readCuratedContent(courseDir, lesson.id, 'summary') ??
+            this.readCuratedContent(courseDir, lesson.id, 'cheatsheet');
+          const testBody = this.readCuratedContent(courseDir, lesson.id, 'test');
 
           const parts: string[] = [];
           if (primaryBody) {
@@ -613,7 +537,6 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!course || !fs.existsSync(courseDir)) return '';
 
-    const files = fs.readdirSync(courseDir);
     const lines: string[] = [];
     lines.push(`# Course: ${course.id.toUpperCase()} — ${course.title}\n\n`);
     if (course.description) {
@@ -666,8 +589,8 @@ export class CourseService {
           ? countWords(fs.readFileSync(lessonFile, 'utf8'))
           : 0;
         const summaryBody =
-          this.findLatestCuratedContent(courseDir, files, lesson.id, 'summary') ??
-          this.findLatestCuratedContent(courseDir, files, lesson.id, 'cheatsheet');
+          this.readCuratedContent(courseDir, lesson.id, 'summary') ??
+          this.readCuratedContent(courseDir, lesson.id, 'cheatsheet');
         const density = summaryBody ? computeSummaryDensity(summaryBody) : null;
 
         if (density) {

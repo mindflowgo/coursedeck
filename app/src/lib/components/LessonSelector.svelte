@@ -1,10 +1,12 @@
 <script lang="ts">
-  import type { CourseManifest, CourseManifestLesson } from '$lib/parser/courseIngest';
-  import { ChevronLeft, ChevronRight, ChevronDown, Check, Search, FileText, Bookmark, GraduationCap } from 'lucide-svelte';
+  import type { CourseManifest } from '$lib/parser/courseIngest';
+  import { ChevronRight, ChevronDown, Check, Search, FileText, Bookmark, GraduationCap } from 'lucide-svelte';
+  import { isCourseTab } from '$lib/tabs';
 
   interface Props {
     course: CourseManifest;
     selectedLessonId: string;
+    activeTab?: string;
     isCourseMode?: boolean;
     onSelectLesson: (lessonId: string) => void;
     onSelectCourseMode?: () => void;
@@ -13,6 +15,7 @@
   let {
     course,
     selectedLessonId,
+    activeTab = 'lesson',
     isCourseMode = false,
     onSelectLesson,
     onSelectCourseMode
@@ -34,14 +37,7 @@
     currentIndex !== -1 ? allLessons[currentIndex] : allLessons[0]
   );
 
-  let hasPrev = $derived(currentIndex > 0);
   let hasNext = $derived(currentIndex < allLessons.length - 1 && currentIndex !== -1);
-
-  function prevLesson() {
-    if (hasPrev) {
-      onSelectLesson(allLessons[currentIndex - 1].id);
-    }
-  }
 
   function nextLesson() {
     if (hasNext) {
@@ -55,6 +51,7 @@
   }
 
   function selectAndClose(id: string) {
+    console.log(`[NAV] dropdown pick "${id}" (current "${selectedLessonId}")`);
     onSelectLesson(id);
     isOpen = false;
   }
@@ -74,18 +71,6 @@
 </script>
 
 <div class="relative flex items-center space-x-1.5 text-xs">
-  <!-- Prev Button (hidden in Complete Course mode) -->
-  {#if !isCourseMode}
-    <button
-      onclick={prevLesson}
-      disabled={!hasPrev}
-      title="Previous lesson"
-      class="p-1.5 rounded border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-30 disabled:cursor-not-allowed text-stone-700 dark:text-stone-300 transition"
-    >
-      <ChevronLeft class="w-4 h-4" />
-    </button>
-  {/if}
-
   <!-- Dropdown Trigger -->
   <div class="relative">
     <button
@@ -118,13 +103,14 @@
 
       <div class="absolute left-0 mt-1 w-80 sm:w-96 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-40 overflow-hidden flex flex-col max-h-[480px]">
         <!-- Complete Course Option -->
-        <div class="p-1 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-850/50">
+        <div class="p-1 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950">
           <button
+            type="button"
             onclick={() => {
               if (onSelectCourseMode) onSelectCourseMode();
               isOpen = false;
             }}
-            class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition {isCourseMode ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
+            class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition cursor-pointer {isCourseMode ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
           >
             <div class="flex items-center space-x-2 truncate pr-2">
               <GraduationCap class="w-3.5 h-3.5 shrink-0 {isCourseMode ? 'text-white dark:text-stone-900' : 'text-stone-500 dark:text-stone-400'}" />
@@ -137,7 +123,7 @@
         </div>
 
         <!-- Search bar -->
-        <div class="p-2 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-850/50 flex items-center space-x-2">
+        <div class="p-2 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 flex items-center space-x-2">
           <Search class="w-3.5 h-3.5 text-stone-400 dark:text-stone-500 shrink-0" />
           <input
             type="text"
@@ -158,8 +144,9 @@
                 {#each unit.lessons as lesson}
                   {@const isSelected = !isCourseMode && lesson.id === selectedLessonId}
                   <button
+                    type="button"
                     onclick={() => selectAndClose(lesson.id)}
-                    class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
+                    class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
                   >
                     <div class="flex items-center space-x-2 truncate pr-2">
                       {#if lesson.type === 'assignment'}

@@ -41,8 +41,8 @@ export const assertCourseId = (value: unknown): string => assertId('course id', 
 export const assertLessonId = (value: unknown): string => assertId('lesson id', value);
 export const assertPromptId = (value: unknown): string => assertId('prompt id', value);
 
-/** Study tabs, optionally carrying a multi-version suffix (`summary-2`). */
-const TAB_PATTERN = /^(lesson|summary|cheatsheet|test)(-\d+)?$/i;
+/** Tab slugs: lowercase alphanumerics and underscores (built-ins and custom tabs alike). */
+const TAB_PATTERN = /^[a-z0-9][a-z0-9_]{0,31}$/;
 
 export function assertTab(value: unknown): string {
   if (typeof value !== 'string' || !TAB_PATTERN.test(value)) {

@@ -119,4 +119,20 @@ export class PromptService {
       return false;
     }
   }
+
+  static deletePrompt(id: string): boolean {
+    const safeId = assertPromptId(id);
+    const activeDir = getPromptsDir();
+    const fullPath = safeJoin(activeDir, `${safeId}.md`);
+
+    try {
+      if (fs.existsSync(fullPath)) {
+        fs.unlinkSync(fullPath);
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
 }

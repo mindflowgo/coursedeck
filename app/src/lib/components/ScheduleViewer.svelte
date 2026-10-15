@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { goto } from '$app/navigation';
   import { CalendarDays, RotateCcw, Loader2 } from 'lucide-svelte';
   import {
     ScheduleParser,
     toggleEventDone,
     eventHref,
+    isLinkableSection,
     type ScheduleEvent
   } from '$lib/parser/scheduleParser';
   import { scheduleTypeClasses } from '$lib/schedule';
@@ -184,17 +186,23 @@
                     <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide {scheduleTypeClasses(event.type)}">
                       {event.type}
                     </span>
-                    <a
-                      href={eventHref(courseId, event)}
-                      class="font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 transition"
-                      title="Open lesson"
-                    >{event.lessonId}{event.section ? `/${event.section}` : ''}</a>
-                    {#if event.section && !['summary', 'cheatsheet', 'test'].includes(event.section)}
+                    <button
+                      type="button"
+                      onclick={() => goto(eventHref(courseId, event))}
+                      class="font-mono text-[11px] px-1.5 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition inline-flex items-center cursor-pointer"
+                      title="Open {event.lessonId}{event.section ? ` (${event.section})` : ''}"
+                    >{event.lessonId}{event.section ? `/${event.section}` : ''}</button>
+                    {#if event.section && !isLinkableSection(event.section)}
                       <span class="text-[10px] text-stone-400 dark:text-stone-500 italic">{event.section}</span>
                     {/if}
-                    <span class="text-sm {event.done ? 'line-through text-stone-400' : 'text-stone-900 dark:text-stone-100'}">
+                    <button
+                      type="button"
+                      onclick={() => goto(eventHref(courseId, event))}
+                      class="text-sm font-medium hover:underline hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer text-left {event.done ? 'line-through text-stone-400 dark:text-stone-500' : 'text-stone-900 dark:text-stone-100'}"
+                      title="Open {event.lessonId}{event.section ? ` (${event.section})` : ''}"
+                    >
                       {event.title}
-                    </span>
+                    </button>
                     {#if event.durationMin}
                       <span class="text-[10px] text-stone-400 dark:text-stone-500 whitespace-nowrap">({event.durationMin}m)</span>
                     {/if}

@@ -36,7 +36,7 @@
   let isRenameModalOpen = $state(false);
 
   function openCourseDoc(courseId: string, tab: 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule') {
-    goto(`/courses/${courseId}?scope=course&tab=${tab}`);
+    goto(`/courses/${courseId.toLowerCase()}/course/${tab}`);
   }
 
   async function openCourseFolder(courseId: string, path?: string) {
@@ -172,9 +172,9 @@
   <!-- Page Hero & Search -->
   <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
     <div>
-      <h1 class="text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Your Courses</h1>
+      <h1 class="text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Active Courses</h1>
       <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
-        Distraction-free study notes, summaries, cheatsheets, and interactive practice tests.
+        Click on a course to dive in. 
       </p>
     </div>
 
@@ -214,9 +214,18 @@
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       {#each filteredCourses as course}
         {@const totalLessons = course.units.reduce((acc, u) => acc + u.lessons.length, 0)}
-        <a
-          href="/courses/{course.id}"
-          class="group relative rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 shadow-2xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700 transition flex flex-col justify-between {course.archived ? 'opacity-60 hover:opacity-100' : ''}"
+        <div
+          role="button"
+          tabindex="0"
+          aria-label="Open course {course.id}"
+          onclick={() => goto(`/courses/${course.id}`)}
+          onkeydown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              goto(`/courses/${course.id}`);
+            }
+          }}
+          class="group relative rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 shadow-2xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700 transition flex flex-col justify-between cursor-pointer text-left {course.archived ? 'opacity-60 hover:opacity-100' : ''}"
         >
           {#if openMenuCourseId === course.id}
             <!-- Transparent click-catcher: closes the menu on any outside click
@@ -440,7 +449,7 @@
               </button>
             </div>
           </div>
-        </a>
+        </div>
       {/each}
 
       <!-- Add New Course Card -->

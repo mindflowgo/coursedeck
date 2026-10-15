@@ -100,6 +100,10 @@ app/src/
 │   │   ├── livePreview.ts          # Heading, bold, italic, link, list & table styling widgets
 │   │   ├── frontmatter.ts          # Interactive YAML frontmatter Properties widget
 │   │   └── table.ts                # GFM table interactive editor
+│   ├── markdown/               # Markdown AST & pre-processing pipelines
+│   │   ├── tableRepair.ts          # GFM table reconstructor (fixes multiline cells & stacked tables)
+│   │   ├── mathRenderer.ts         # KaTeX pre-parser & currency protector (extractMath / restoreMath)
+│   │   └── imageSpec.ts            # Image dimension, layout chip & icon detector
 │   ├── parser/                 # Course extraction, HTML conversion, and frontmatter
 │   │   ├── courseIngest.ts         # Course ingestion engine (creates lessons, summaries, manifest)
 │   │   ├── archiveExtractor.ts     # Universal archive unpacker (.zip, .mhtml, .html)
@@ -114,7 +118,7 @@ app/src/
 │   └── server/                 # Framework-agnostic backend services & API logic
 │       ├── api.ts                  # handleApiRequest() — Single source of truth for ALL /api/* routes
 │       ├── backup.ts               # Streaming zip backup export/import (createDataBackupZipStream)
-│       ├── courses.ts              # CourseService (lessons, tabs, multi-versions, course-wide payload)
+│       ├── courses.ts              # CourseService (lessons, tab files, course-wide payload)
 │       ├── queue.ts                # GenerationQueue & worker for background AI jobs
 │       ├── paths.ts                # Filesystem paths, DATA_DIR resolution, and path asserts
 │       ├── llm.ts                  # Unified LLM provider client (OpenAI, Ollama, Gemini, OpenRouter)
@@ -226,8 +230,8 @@ course: COU2M.01.02
 02) B - (explanation) 
 ```
 
-### 3.4 Study Material YAML Frontmatter & Multi-Versioning Schema
-All generated study materials (`.summary.md`, `.cheatsheet.md`, `.test.md`) store their AI prompt instructions and revision metadata in standard YAML frontmatter (`--- ... ---`):
+### 3.4 Study Material YAML Frontmatter & Tab Schema
+All generated study materials (`.summary.md`, `.cheatsheet.md`, `.test.md`, and custom tabs like `.assignment.md`) store their AI prompt instructions and metadata in standard YAML frontmatter (`--- ... ---`). Each lesson+tab has exactly **one** file — there is no versioning:
 
 ```markdown
 ---
@@ -235,21 +239,23 @@ prompt: |
   # ILC Lesson Summary Generation Prompt
   You are an expert Ontario Secondary School educator...
 type: summary
-version: 1
-updatedAt: '2025-10-03'
+updatedAt: '2026-10-14'
 ---
 
 # Study Summary: Learning activity 1.2
 ...
 ```
 
-#### Multi-Version Storage
-When students experiment with alternative prompts or regenerate study materials:
-- **v1 (Initial)**: `<lessonId>.<tab>.md` (e.g., `01.02.summary.md`)
-- **v2 (Revision 2)**: `<lessonId>.<tab>-2.md` (e.g., `01.02.summary-2.md`)
-- **vN (Revision N)**: `<lessonId>.<tab>-N.md` (e.g., `01.02.summary-N.md`)
-
-The UI provides clean pill buttons (`[ v1 ] [ v2 ] [ + New ]`) allowing students to switch between versions instantaneously. When re-generating with AI, users choose whether to overwrite the active version or branch into a new version.
+#### Tab Files & Custom Tabs
+- Every tab is a file: `<lessonId>.<tab>.md` (e.g., `01.02.summary.md`, `01.02.custom.md`, `01.01.assignment.md`).
+- Tab slugs are lowercase alphanumerics/underscores (spaces in a typed name become `_`), validated by `TAB_SLUG_PATTERN` in `src/lib/tabs.ts` and `TAB_PATTERN` server-side.
+- Beside **Practice Test**, a `[+]` button creates a custom tab for the current lesson (name prompt → slugified file, e.g. `01.02.custom.md`). Custom tabs carry their own prompt (seeded into `data/prompts/<slug>.md` on first use) and support edit, AI generation, and PDF export like the built-ins; a hover **×** deletes the lesson's file.
+- Custom tabs are **per-lesson and file-driven**: the tab bar shows only tabs whose files exist for the open lesson. Visiting a URL like `/courses/<id>/02.03/assignment` when no file exists creates the tab automatically — this is how schedule deep links (`02.03/assignment` sections) open assignment-day work.
+- **Navigation & Existence Verification**:
+  - When switching between lessons: if the active tab is a custom tab, the app checks whether `<targetLessonId>.<tab>.md` exists on disk. If the file exists, the user stays on that custom tab; if absent, navigation gracefully falls back to **Lessons** (`.lesson.md`).
+  - When switching to **Complete Course**: the system verifies if a corresponding course-level document exists (`course.<tab>.md`). If present, it navigates directly to that tab; if absent, it defaults to Complete Course Lessons (`/courses/<id>/course/lesson`) rather than attempting invalid document generation.
+  - Course-level custom tabs (`course.<slug>.md`) are dynamically discovered by `CourseService.discoverCourseDocs()` and surfaced in the course mode tab bar alongside built-ins.
+- Regeneration always overwrites the single file; the per-version pills and overwrite-vs-new-version choice were removed with versioning itself.
 
 ---
 
@@ -269,6 +275,8 @@ The Bun extraction pipeline (`src/lib/parser/`):
    - Rewrites image and document `href`/`src` paths to local relative asset paths.
 4. **Turndown Markdown Converter**:
    - Uses `turndown` + `turndown-plugin-gfm` to generate crisp Markdown.
+   - Enforces single-line table cell formatting (`tableCellLineBreaks` rule) by mapping inner `<br>` and `<p>` breaks to `<br>` tags rather than raw newlines that violate GFM table specifications.
+   - Pipes output through `repairMarkdownTables` before serialization to guarantee all tables are GFM-compliant.
    - Preserves tables, callouts, lists, and KaTeX mathematical notation.
    - YAML frontmatter is written with the **`Bun.YAML`** runtime builtin (parse + stringify; note: `stringify` emits flow style with no trailing newline, so serializers append `\n` before the closing `---`).
 5. **Study Suite Synthesizer**:
@@ -582,3 +590,57 @@ The course ingestion pipeline (`CourseIngest` in `src/lib/parser/courseIngest.ts
 - **Mandatory User Input**: New courses require an explicit, user-supplied course code (e.g., `MCR3U`, `CLU3M`, `ENG4U`).
 - **No Mock Defaults**: Ingestion contains zero hardcoded course codes, mock curriculum titles, or fake unit names.
 - **Dynamic Unit Discovery**: Unit titles are extracted from the uploaded course content or preserved from existing `meta.json` manifests, falling back to clean numeric identifiers (`Unit 1`, `Unit 2`, etc.).
+
+---
+
+## 15. Markdown Parsing, Math & Table Normalization Architecture
+
+Because ILC course materials span diverse disciplines—from high-density algebra and calculus (MCR3U) to accounting balance sheets (BAF3M) and legal case studies (CLU3M)—the Markdown rendering pipeline must handle mathematical notation, financial currency, complex tables, and multimedia attributes without syntax corruption.
+
+### 15.1 Multi-Stage Rendering Pipeline
+
+The rendering lifecycle in both the on-screen reader (`MarkdownViewer.svelte`) and the PDF compiler (`pdf/markdown/preprocess.ts`) follows a strict multi-pass pipeline:
+
+1. **Frontmatter Stripping**: Strips YAML frontmatter blocks (`--- ... ---`) so only document body text is parsed.
+2. **Pandoc Attribute Normalization**: Converts `{width=300px}` into pipe-delimited image specs (`![alt|300px](url)`).
+3. **Asset Route Rewriting**: Rewrites relative `assets/` paths into active API URLs (`/api/courses/:id/assets/...`).
+4. **Callout & Post-It Isolation**: Extracts `> [!NOTE]` callouts and `> [!USERNOTE]` AI study notes into structured blocks, substituting them with collision-proof markers (`%%%USERNOTE_N%%%` or `%%%PDFBOX_N%%%`).
+5. **Table Normalization (`tableRepair.ts`)**: Reconstructs broken multiline tables, balances columns, and separates stacked tables before Markdown tokenization.
+6. **Pre-Parsing Math Extraction (`mathRenderer.ts`)**: Detects LaTeX expressions (`$$...$$`, `\[...\]`, `\(...\)`, `$formula$`, `(formula)`) and substitutes them with `%%%MATH_TOKEN_N%%%` tokens. This shields LaTeX backslashes (`\(`) and underscores (`x_1`) from CommonMark parsers.
+7. **Marked GFM Parsing (`markedParser.parse()`)**: Parses the cleaned, math-isolated Markdown into clean HTML / AST tokens with GitHub Flavored Markdown rules.
+8. **KaTeX Formula Restoration (`restoreMathTokens`)**: Replaces math tokens with server-rendered KaTeX HTML (`katex.renderToString()`).
+9. **Component Re-Injection & Sanitization**: Restores callouts/post-its and runs DOMPurify with whitelisted tags (`<details>`, `<summary>`, `<mark>`).
+
+---
+
+### 15.2 Critical Parsing Gotchas & Rules to Watch Out For
+
+#### 1. GFM Single-Line Table Constraint vs. Multiline Ingestion
+- **The Pitfall**: HTML course rubrics and activity tables frequently contain `<br>` or `<p>` tags within `<th>` and `<td>` cells (e.g., `<th>Level 4<br>(80 – 100%)</th>` or multiline criteria descriptions). When Turndown's standard GFM plugin converts these, it emits literal raw newlines (`\n`) between table pipes.
+- **The Consequence**: CommonMark and GFM specifications (§4.10) mandate that **every table row must be a single continuous line**. If unescaped newlines appear between pipes, Marked's table tokenizer fails and falls back to rendering the entire table as fragmented paragraph `<p>` tags with raw markdown pipes.
+- **The Solution**:
+  - `repairMarkdownTables` (`app/src/lib/markdown/tableRepair.ts`) scans for delimiter lines (`| --- | --- |`), looks backward to reconstruct multiline headers, and looks forward to collapse multiline body cells into single-line rows with `<br>` tags.
+  - In `turndownConverter.ts`, the `tableCellLineBreaks` rule maps inner cell line breaks to `<br>` during ingestion.
+
+#### 2. Stacked Adjacent Tables with Differing Columns
+- **The Pitfall**: In accounting courses (such as BAF3M 02.05), a 2-column header table (`| General Journal | Page 3 | \n | --- | --- |`) is often immediately followed on the next line by a 5-column ledger table (`| Date 20-- | Accounts... | P.R. | Debit | Credit | \n | --- | --- | --- | --- | --- |`) without an empty separating line.
+- **The Consequence**: Markdown tokenizers treat the second table's header and delimiter as continuation rows of the first table, destroying table structure.
+- **The Solution**: `repairMarkdownTables` inspects upcoming lines for new delimiter rows with different column schemas and automatically inserts separating blank lines.
+
+#### 3. Strict Accounting Currency vs. Math LaTeX Protection
+- **The Pitfall**: Standard LaTeX dollar math (`$...$`) naive regexes mistake financial figures (e.g., `$1,500 and then $2,500`, or `$30,000 to $45,000`) for math delimiters, corrupting currency values into broken equation syntax.
+- **The Defense**: `isLikelyInlineMath` (`app/src/lib/markdown/mathRenderer.ts`) enforces strict structural heuristics:
+  - Digit-leading expressions (`$30^\circ$`) are ONLY accepted if they contain structural LaTeX operators (`\command`, `^`, `_`, `{}`).
+  - Plain digit/comma sequences (`$1,500`, `$45,000.00`) are immediately rejected as currency.
+  - Financial prose keywords (`revenue`, `assets`, `inventory`, `cash`, `debt`, `and`, `then`, `cost`, `per hour`) force content to remain literal text.
+
+#### 4. Pre-Extraction Shields CommonMark from Corrupting LaTeX
+- **The Pitfall**: Marked's default tokenizer treats `\(` as an escaped parenthesis `(`, stripping the backslash and destroying `\frac`, `\alpha`, or `\sqrt` commands. Furthermore, subscripts like `x_1 + x_2` are misparsed into italic `<em>` tags.
+- **The Defense**: `extractMathFromMarkdown` extracts math *before* Marked processes the string, replacing formulas with inert tokens (`%%%MATH_TOKEN_N%%%`). KaTeX renders the math *after* Marked completes.
+
+#### 5. Code Block Shielding
+- **The Rule**: Any pre-processor that scans for pipes, math dollars, or markdown markers must first protect code blocks (fenced ```...``` and inline `...`) with placeholders (`%%%TABLE_CODE_N%%%` / `%%%MATH_CODE_N%%%`). Code snippets illustrating markdown, shell scripts, or programming syntax must never be altered by table or math normalizers.
+
+#### 6. Escaped Pipes in Table Cells
+- **The Rule**: Table cells containing literal pipes must escape them as `\|`. The helper `splitTableCells` respects escaped pipes when parsing cells so column counts remain accurate.
+

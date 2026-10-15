@@ -1,7 +1,7 @@
 import type { Content } from 'pdfmake/build/pdfmake';
 
-/** Which study-workspace tab is being exported. */
-export type ExportTab = 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule';
+/** Which study-workspace tab is being exported — fixed tabs or a custom tab slug. */
+export type ExportTab = 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule' | (string & {});
 
 export interface PdfExportOptions {
   courseCode: string;
@@ -10,7 +10,6 @@ export interface PdfExportOptions {
   lessonTitle: string;
   tab: ExportTab;
   tabDisplayName: string;
-  version?: number | string;
   /** Raw markdown of the active document (test tabs use the KICA quiz format). */
   rawMarkdown: string;
 }
@@ -28,6 +27,13 @@ export function tabBadgeLabel(tab: ExportTab): string {
       return 'Ontario Curriculum Practice Test';
     case 'schedule':
       return 'Study Schedule';
+    default:
+      // Custom tabs: title-case the slug ("assignment" -> "Assignment").
+      return tab
+        .split('_')
+        .filter(Boolean)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(' ');
   }
 }
 
