@@ -38,7 +38,11 @@ export function validateScheduleMarkdown(
 
   const warnings: string[] = [];
   const allLessons = manifest.units.flatMap((u) => u.lessons);
-  const known = new Set(allLessons.map((l) => l.id));
+  const unitIds = manifest.units.flatMap((u) => [
+    String(u.number),
+    String(u.number).padStart(2, '0')
+  ]);
+  const known = new Set([...allLessons.map((l) => l.id), ...unitIds]);
 
   const SYSTEM_LESSONS = new Set(['catchup', 'course', 'schedule']);
   const unknown = [

@@ -234,48 +234,65 @@ export function buildScheduleSkeleton(
           });
         }
 
-        // Add spaced review if reviews are enabled
-        if (prefs.includeReviews) {
-          const revDuration =
-            prefs.reviewIntensity === 'light'
-              ? Math.max(15, Math.round(prefs.sessionLengthMin * 0.25))
-              : prefs.reviewIntensity === 'heavy'
-                ? Math.max(30, Math.round(prefs.sessionLengthMin * 0.45))
-                : Math.max(20, Math.round(prefs.sessionLengthMin * 0.35));
-
-          plannedSessions.push({
-            type: 'review',
-            lessonId: lesson.id,
-            section: 'summary',
-            title: `${lesson.title} — Active Recall`,
-            durationMin: revDuration
-          });
-        }
       } else if (lesson.type === 'assignment') {
-        // Assignment backward planning: research -> draft -> submit
+        // Assignments receive max 2 sessions: [ASSIGNMENT] work session, followed by [SUBMIT]
+        const workTitle = /assignment/i.test(lesson.title)
+          ? `${lesson.title} — Work Session`
+          : `${lesson.title} — Assignment Work`;
+
         plannedSessions.push({
           type: 'assignment',
           lessonId: lesson.id,
-          section: 'research',
-          title: `${lesson.title} — Research & Planning`,
-          durationMin: prefs.sessionLengthMin
-        });
-        plannedSessions.push({
-          type: 'assignment',
-          lessonId: lesson.id,
-          section: 'draft',
-          title: `${lesson.title} — Drafting & Refinement`,
+          section: 'assignment',
+          title: workTitle,
+          description: `Work on ${lesson.title}. Review instructions, draft solutions, and compile deliverables.`,
           durationMin: prefs.sessionLengthMin
         });
         plannedSessions.push({
           type: 'submit',
           lessonId: lesson.id,
+          section: 'assignment',
           title: `${lesson.title} Due`,
+          description: `Final review, polish formatting, and submit ${lesson.title}.`,
           durationMin: 30
         });
       }
 
       // Interleave catch-up buffer session every ~6 sessions if enabled
+      if (prefs.includeCatchupDays && plannedSessions.length > 0 && plannedSessions.length % 6 === 0) {
+        plannedSessions.push({
+          type: 'catchup',
+          lessonId: 'catchup',
+          title: 'Weekly Catch-up Buffer',
+          description: 'Buffer session for reviewing difficult concepts or absorbing unexpected schedule delays.',
+          durationMin: prefs.sessionLengthMin
+        });
+      }
+    }
+
+    // Add unit review at the end of each unit if reviews are enabled
+    if (prefs.includeReviews) {
+      const unitId = String(unit.number).padStart(2, '0');
+      const cleanUnitTitle = unit.title.replace(/^unit\s+\d+[:\s—–-]*\s*/i, '');
+      const unitTitle = cleanUnitTitle
+        ? `Unit ${unit.number} Review — ${cleanUnitTitle}`
+        : `Unit ${unit.number} Review`;
+
+      const revDuration =
+        prefs.reviewIntensity === 'light'
+          ? Math.max(30, Math.round(prefs.sessionLengthMin * 0.6))
+          : prefs.reviewIntensity === 'heavy'
+            ? Math.max(45, prefs.sessionLengthMin)
+            : Math.max(35, Math.round(prefs.sessionLengthMin * 0.75));
+
+      plannedSessions.push({
+        type: 'review',
+        lessonId: unitId,
+        title: unitTitle,
+        description: `Comprehensive active-recall review covering key concepts and problem types from Unit ${unit.number}.`,
+        durationMin: revDuration
+      });
+
       if (prefs.includeCatchupDays && plannedSessions.length > 0 && plannedSessions.length % 6 === 0) {
         plannedSessions.push({
           type: 'catchup',

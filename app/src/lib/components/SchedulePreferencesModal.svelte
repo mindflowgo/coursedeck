@@ -82,7 +82,7 @@
     validationError = validateSchedulePreferences(prefs);
     if (validationError) return;
     if (!promptTemplate || promptTemplate.trim().length === 0) {
-      validationError = 'Core prompt template for course schedule is missing. Please add or verify course_schedule.md in Prompts before generating.';
+      validationError = 'Core prompt template for course schedule is missing. Please add or verify course_schedule_enrichment.md in Prompts before generating.';
       return;
     }
     storeSchedulePreferences(prefs);

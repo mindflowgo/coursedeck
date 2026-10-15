@@ -192,6 +192,20 @@ describe('buildScheduleSkeleton', () => {
     const validation = validateScheduleMarkdown(skeleton.markdown, mockManifest);
     expect(validation.ok).toBe(true);
     expect(validation.warnings).toEqual([]);
+
+    // Unit-level reviews scheduled at the end of each unit
+    const reviews = skeleton.sessions.filter((s) => s.type === 'review');
+    expect(reviews.length).toBe(2);
+    expect(reviews[0].lessonId).toBe('01');
+    expect(reviews[0].title).toBe('Unit 1 Review — Self-Discovery');
+    expect(reviews[1].lessonId).toBe('02');
+    expect(reviews[1].title).toBe('Unit 2 Review — Exploration');
+
+    // No per-lesson reviews
+    const perLessonReviews = skeleton.sessions.filter(
+      (s) => s.type === 'review' && s.lessonId.includes('.')
+    );
+    expect(perLessonReviews.length).toBe(0);
   });
 
   it('splits high density lessons when effort signals indicate high density', () => {
@@ -231,6 +245,27 @@ describe('buildScheduleSkeleton', () => {
     const skeleton = buildScheduleSkeleton(mockManifest, prefs);
     const reviews = skeleton.sessions.filter((s) => s.type === 'review');
     expect(reviews.length).toBe(0);
+  });
+
+  it('schedules max 2 sessions for assignments with /assignment links', () => {
+    const prefs: SchedulePreferences = {
+      ...defaultSchedulePreferences(),
+      includeReviews: false,
+      includeCatchupDays: false
+    };
+
+    const skeleton = buildScheduleSkeleton(mockManifest, prefs);
+    const assignSessions = skeleton.sessions.filter(
+      (s) => s.lessonId === '01.05_assign1'
+    );
+    expect(assignSessions.length).toBe(2);
+    expect(assignSessions[0].type).toBe('assignment');
+    expect(assignSessions[0].section).toBe('assignment');
+    expect(assignSessions[1].type).toBe('submit');
+    expect(assignSessions[1].section).toBe('assignment');
+
+    expect(skeleton.markdown).toContain('- [ ] **Assignment** 01.05_assign1/assignment');
+    expect(skeleton.markdown).toContain('- [ ] **Submit** 01.05_assign1/assignment');
   });
 
   it('emits overflow warning when targetEndDate cannot fit all required sessions', () => {

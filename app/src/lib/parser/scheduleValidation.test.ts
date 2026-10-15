@@ -98,6 +98,13 @@ describe('validateScheduleMarkdown', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it('accepts unit-level reviews (e.g. 01) without flagging them as unknown', () => {
+    const withUnitReview = GOOD + '\n### 2026-10-20 · Tue\n- [ ] **Review** 01 — Unit 1 Review (45m)\n';
+    const result = validateScheduleMarkdown(withUnitReview, manifest);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('returns a warning instead of throwing when the manifest is missing', () => {
     const result = validateScheduleMarkdown(GOOD, null);
     expect(result.ok).toBe(true);

@@ -381,8 +381,8 @@ class GenerationQueue {
             systemPrompt =
               'You are an Ontario academic learning coach. Return a JSON array of session enrichment objects with "sessionKey", "title", and "description" (active-recall retrieval tasks). Output ONLY valid JSON.';
           }
-          if (nextTask.customPrompt && nextTask.customPrompt.trim().length > 0) {
-            systemPrompt += `\n\nStudent Preferences & Notes:\n${nextTask.customPrompt.trim()}`;
+          if (prefs.notes && prefs.notes.trim().length > 0) {
+            systemPrompt += `\n\nStudent Notes & Focus Areas:\n${prefs.notes.trim()}`;
           }
 
           const enrichmentPayload = CourseService.buildEnrichmentPayload(skeleton.sessions, efforts);

@@ -336,7 +336,7 @@
 
     if (!promptWithPreferences || promptWithPreferences.trim().length === 0) {
       alert(
-        'Core prompt template for course schedule is missing. Please add course_schedule.md in Prompts before generating.'
+        'Core prompt template for course schedule is missing. Please add course_schedule_enrichment.md in Prompts before generating.'
       );
       return;
     }
@@ -443,7 +443,7 @@
   async function generateCourseDocument(type: PageTab, opts?: { customPrompt?: string }) {
     if (type === 'lesson' || !['summary', 'cheatsheet', 'test', 'schedule'].includes(type)) return;
 
-    const promptKey = `course_${type}`;
+    const promptKey = type === 'schedule' ? 'course_schedule_enrichment' : `course_${type}`;
     const activePrompt =
       opts?.customPrompt ||
       parsedActiveTab.frontmatter.prompt ||
@@ -1459,7 +1459,15 @@
     );
     if (codeMatch) return codeMatch;
 
-    // 4. Title match (e.g. "1.2 Types of business organizations")
+    // 4. Unit ID match (e.g. "01", "1", "unit 1") -> first lesson of that unit
+    const unitMatch = clean.match(/^(?:unit\s*)?(\d{1,2})$/);
+    if (unitMatch) {
+      const uNum = parseInt(unitMatch[1], 10);
+      const unitLesson = lessons.find((l) => l.unitNumber === uNum);
+      if (unitLesson) return unitLesson;
+    }
+
+    // 5. Title match (e.g. "1.2 Types of business organizations")
     const titleMatch = lessons.find((l) => {
       const t = l.title.toLowerCase();
       return t === clean || t.startsWith(clean + ' ') || t.startsWith(clean + ':');
@@ -2103,7 +2111,7 @@
     isOpen={isScheduleModalOpen}
     onClose={() => (isScheduleModalOpen = false)}
     onGenerate={handleScheduleGenerate}
-    promptTemplate={genericPrompts['course_schedule'] || ''}
+    promptTemplate={genericPrompts['course_schedule_enrichment'] || genericPrompts['course_schedule'] || ''}
     courseTitle={course.title}
   />
 
