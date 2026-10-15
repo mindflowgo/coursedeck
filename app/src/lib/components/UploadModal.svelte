@@ -65,7 +65,8 @@
       baseUrl,
       authHeaderType: (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer',
       model: (localStorage.getItem('ilc_llm_model') ?? '').trim(),
-      temperature: parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3')
+      temperature: parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3'),
+      timeoutSeconds: Number(localStorage.getItem('ilc_llm_timeout')) || undefined
     };
   }
 

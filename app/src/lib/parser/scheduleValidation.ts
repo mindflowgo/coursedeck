@@ -40,7 +40,14 @@ export function validateScheduleMarkdown(
   const allLessons = manifest.units.flatMap((u) => u.lessons);
   const known = new Set(allLessons.map((l) => l.id));
 
-  const unknown = [...new Set(events.map((e) => e.lessonId).filter((id) => !known.has(id)))];
+  const SYSTEM_LESSONS = new Set(['catchup', 'course', 'schedule']);
+  const unknown = [
+    ...new Set(
+      events
+        .map((e) => e.lessonId)
+        .filter((id) => id && !known.has(id) && !SYSTEM_LESSONS.has(id.toLowerCase()))
+    )
+  ];
   if (unknown.length > 0) {
     warnings.push(`References unknown lesson id(s): ${unknown.join(', ')}.`);
   }

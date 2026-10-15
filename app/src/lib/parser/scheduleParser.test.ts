@@ -235,6 +235,7 @@ describe('eventHref', () => {
 
   it('handles course-scoped schedule and docs', () => {
     expect(eventHref('mcr3u', { lessonId: 'schedule' })).toBe('/courses/mcr3u/course/schedule');
+    expect(eventHref('mcr3u', { lessonId: 'catchup' })).toBe('/courses/mcr3u/course/schedule');
     expect(eventHref('mcr3u', { lessonId: 'course', section: 'test' })).toBe('/courses/mcr3u/course/test');
     expect(eventHref('mcr3u', { lessonId: 'course' })).toBe('/courses/mcr3u/course');
   });

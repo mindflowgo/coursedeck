@@ -17,6 +17,9 @@
   let model = $state('');
   let temperature = $state(0.3);
 
+  const REQUEST_TIMEOUT_STEPS: readonly number[] = [30, 60, 90, 120, 150, 300, 600];
+  let timeoutSeconds = $state(150);
+
   let isTesting = $state(false);
   let statusMessage = $state<{ success: boolean; text: string } | null>(null);
   let hasStoredApiKey = $state(false);
@@ -38,6 +41,7 @@
             model = data.config.model ?? '';
             authHeaderType = data.config.authHeaderType || 'bearer';
             temperature = data.config.temperature ?? 0.3;
+            timeoutSeconds = data.config.timeoutSeconds ?? 150;
             hasStoredApiKey = Boolean(data.config.hasApiKey);
           } else if (typeof localStorage !== 'undefined') {
             provider = localStorage.getItem('ilc_llm_provider') || 'openai_compatible';
@@ -45,6 +49,7 @@
             authHeaderType = (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer';
             model = localStorage.getItem('ilc_llm_model') ?? '';
             temperature = parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3');
+            timeoutSeconds = Number(localStorage.getItem('ilc_llm_timeout')) || 150;
           }
         })
         .catch(() => {});
@@ -60,6 +65,7 @@
       localStorage.setItem('ilc_llm_authHeaderType', authHeaderType);
       localStorage.setItem('ilc_llm_model', cleanModel);
       localStorage.setItem('ilc_llm_temp', temperature.toString());
+      localStorage.setItem('ilc_llm_timeout', timeoutSeconds.toString());
     }
 
     // Sync to server immediately so background worker uses CURRENT active settings
@@ -74,7 +80,8 @@
           apiKey: apiKey || undefined,
           authHeaderType,
           model: cleanModel,
-          temperature
+          temperature,
+          timeoutSeconds
         }
       })
     }).catch((err) => console.warn('Failed to sync LLM config to server:', err));
@@ -99,7 +106,8 @@
             apiKey,
             authHeaderType,
             model,
-            temperature
+            temperature,
+            timeoutSeconds
           }
         })
       });
@@ -230,6 +238,24 @@
             <option value="api_key">api-key: &#123;key&#125; (Azure / Custom OpenAPI)</option>
             <option value="both">Both (Authorization: Bearer + api-key)</option>
           </select>
+        </div>
+
+        <!-- Request Timeout Option -->
+        <div class="space-y-1 pt-1">
+          <label for="modal-timeout" class="text-xs font-medium text-stone-700 dark:text-stone-300 flex items-center justify-between">
+            <span>Request Timeout</span>
+            <span class="text-[10px] text-stone-400 dark:text-stone-500 font-mono">per attempt</span>
+          </label>
+          <select
+            id="modal-timeout"
+            bind:value={timeoutSeconds}
+            class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-950 text-xs text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          >
+            {#each REQUEST_TIMEOUT_STEPS as step (step)}
+              <option value={step}>{step}s{step === 150 ? ' (default)' : ''}</option>
+            {/each}
+          </select>
+          <p class="text-[10px] text-stone-400 dark:text-stone-500">Raise this if generation fails with "timed out" (slow providers need more).</p>
         </div>
       </div>
 

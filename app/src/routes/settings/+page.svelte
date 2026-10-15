@@ -22,9 +22,14 @@
     Palette,
     Sun,
     Moon,
-    Monitor
+    Monitor,
+    ZoomIn
   } from 'lucide-svelte';
   import { theme } from '$lib/theme.svelte';
+  import { zoom } from '$lib/zoom.svelte';
+  import { ZOOM_STEPS } from '$lib/zoomLevels';
+
+  const isTauri = isTauriEnvironment();
 
   // Storage state
   interface StorageInfo {
@@ -59,6 +64,10 @@
   let model = $state('');
   let temperature = $state(0.3);
 
+  /** Per-request LLM deadline in seconds (30–600). 150 = generous default for standard providers. */
+  const REQUEST_TIMEOUT_STEPS: readonly number[] = [30, 60, 90, 120, 150, 300, 600];
+  let timeoutSeconds = $state(150);
+
   let isTestingConnection = $state(false);
   let connectionTestResult: { success: boolean; message: string } | null = $state(null);
 
@@ -86,6 +95,7 @@
           model = data.config.model ?? '';
           authHeaderType = data.config.authHeaderType || 'bearer';
           temperature = data.config.temperature ?? 0.3;
+          timeoutSeconds = data.config.timeoutSeconds ?? 150;
           hasStoredApiKey = Boolean(data.config.hasApiKey);
         } else if (typeof localStorage !== 'undefined') {
           provider = localStorage.getItem('ilc_llm_provider') || 'openai_compatible';
@@ -93,6 +103,7 @@
           authHeaderType = (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer';
           model = localStorage.getItem('ilc_llm_model') ?? '';
           temperature = parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3');
+          timeoutSeconds = Number(localStorage.getItem('ilc_llm_timeout')) || 150;
         }
       })
       .catch(() => {});
@@ -107,6 +118,7 @@
       localStorage.setItem('ilc_llm_authHeaderType', authHeaderType);
       localStorage.setItem('ilc_llm_model', cleanModel);
       localStorage.setItem('ilc_llm_temp', temperature.toString());
+      localStorage.setItem('ilc_llm_timeout', timeoutSeconds.toString());
       saveMessage = 'Settings saved.';
       setTimeout(() => {
         saveMessage = '';
@@ -125,7 +137,8 @@
           apiKey: apiKey || undefined,
           authHeaderType,
           model: cleanModel,
-          temperature
+          temperature,
+          timeoutSeconds
         }
       })
     })
@@ -154,7 +167,8 @@
             apiKey,
             authHeaderType,
             model,
-            temperature
+            temperature,
+            timeoutSeconds
           }
         })
       });
@@ -571,6 +585,30 @@
       </div>
     </div>
 
+    <!-- Zoom Row (desktop app only) -->
+    {#if isTauri}
+      <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div class="flex items-center space-x-2">
+          <ZoomIn class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
+          <div>
+            <span class="font-medium text-stone-900 dark:text-stone-100">Zoom</span>
+            <span class="text-[11px] text-stone-400 dark:text-stone-500 ml-1.5">Ctrl/Cmd +/− or Ctrl+scroll</span>
+          </div>
+        </div>
+
+        <select
+          id="zoom-level-select"
+          value={zoom.level}
+          onchange={(event) => zoom.setLevel(Number(event.currentTarget.value))}
+          class="px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100 self-start sm:self-auto"
+        >
+          {#each ZOOM_STEPS as step (step)}
+            <option value={step}>{step}%{step === 100 ? ' (default)' : ''}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
+
     <!-- Course Data Storage Row -->
     <div class="p-3 space-y-2">
       <div class="flex flex-wrap items-center justify-between gap-1.5">
@@ -875,6 +913,23 @@
             <option value="api_key">api-key: &#123;key&#125; (Azure)</option>
             <option value="both">Both (Bearer + api-key)</option>
           </select>
+        </div>
+
+        <!-- Request Timeout Row -->
+        <div>
+          <label for="timeout-select" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+            Request Timeout <span class="text-[10px] text-stone-400 dark:text-stone-500">(per attempt)</span>
+          </label>
+          <select
+            id="timeout-select"
+            bind:value={timeoutSeconds}
+            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          >
+            {#each REQUEST_TIMEOUT_STEPS as step (step)}
+              <option value={step}>{step}s{step === 150 ? ' (default)' : ''}</option>
+            {/each}
+          </select>
+          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-1">Raise this if generation fails with "timed out".</p>
         </div>
 
         <div class="sm:col-span-2">

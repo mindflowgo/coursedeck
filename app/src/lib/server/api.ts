@@ -23,6 +23,7 @@ import {
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
 import { CourseIngest, type CourseDocType, type CourseManifest } from '../parser/courseIngest';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
+import type { SchedulePreferences } from '../schedule';
 import { ScheduleParser } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
 import { createDataBackupZip, createDataBackupZipStream, restoreDataBackupZip } from './backup';
@@ -146,6 +147,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                 model: config.model,
                 authHeaderType: config.authHeaderType,
                 temperature: config.temperature,
+                timeoutSeconds: config.timeoutSeconds,
                 hasApiKey: Boolean(config.apiKey)
               }
             : null
@@ -242,7 +244,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                 lessonTitle:
                   singleTab === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
                 tab: singleTab,
-                customPrompt: (customPrompt || prompt) as string | undefined
+                customPrompt: (customPrompt || prompt) as string | undefined,
+                preferences: body.preferences as SchedulePreferences | undefined
               }
             ];
             const enqueued = queueManager.enqueue(items, customConfig as LLMConfig | undefined);
@@ -888,7 +891,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
 
           const customTimeout = typeof body.timeoutMs === 'number' && body.timeoutMs > 0 ? body.timeoutMs : undefined;
-          const timeoutMs = customTimeout || 180_000;
+          // Per-call override when a caller sends one; otherwise the
+          // "Request Timeout" from Settings governs.
+          const timeoutMs = customTimeout ?? LLMService.resolveRequestTimeoutMs(config);
 
           console.log(
             `[Course AI] Generating course.${type}.md for ${courseId.toUpperCase()} using model: ${config.model || 'default'} (timeout: ${Math.round(timeoutMs / 1000)}s)`

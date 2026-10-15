@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
+import type { LessonEffort, PlannedSession } from '../scheduleGenerator';
 import {
   assertCourseId,
   assertLessonId,
@@ -568,7 +569,7 @@ export class CourseService {
     }
 
     const items: SchedulePayloadItem[] = [];
-    let excerptBudget = 20_000;
+    let excerptBudget = 6_000;
     let currentUnit = -1;
     let processedCount = 0;
 
@@ -613,7 +614,7 @@ export class CourseService {
         let excerptChars = 0;
         if (summaryBody && excerptBudget > 0) {
           const remainingLessons = Math.max(1, allLessons.length - processedCount + 1);
-          const perLessonMax = Math.max(300, Math.min(500, Math.floor(excerptBudget / remainingLessons)));
+          const perLessonMax = Math.max(120, Math.min(250, Math.floor(excerptBudget / remainingLessons)));
           const budgeted = this.budgetLessonContent(summaryBody, Math.min(perLessonMax, excerptBudget));
           excerptBudget -= budgeted.length;
           excerptChars = budgeted.length;
@@ -643,5 +644,81 @@ export class CourseService {
     }
 
     return payloadText;
+  }
+
+  /**
+   * Precomputes word counts, summary information density, and excerpts
+   * across all lessons in a course for deterministic schedule planning.
+   */
+  static computeCourseEfforts(courseId: string): LessonEffort[] {
+    const course = this.getCourse(courseId);
+    if (!course) return [];
+
+    const courseDir = this.courseDir(courseId);
+    if (!fs.existsSync(courseDir)) return [];
+    const efforts: LessonEffort[] = [];
+
+    for (const unit of course.units) {
+      for (const lesson of unit.lessons) {
+        const lessonFile = safeJoin(courseDir, `${lesson.id}.lesson.md`);
+        const wordCount = fs.existsSync(lessonFile)
+          ? countWords(fs.readFileSync(lessonFile, 'utf8'))
+          : 0;
+
+        const summaryBody =
+          this.readCuratedContent(courseDir, lesson.id, 'summary') ??
+          this.readCuratedContent(courseDir, lesson.id, 'cheatsheet');
+
+        const densityObj = summaryBody ? computeSummaryDensity(summaryBody) : null;
+        const summaryDensity: 'low' | 'medium' | 'high' = densityObj?.density || 'medium';
+
+        let excerpt = '';
+        if (summaryBody) {
+          excerpt = this.budgetLessonContent(summaryBody, 180);
+        }
+
+        efforts.push({
+          lessonId: lesson.id,
+          title: lesson.title,
+          type: lesson.type,
+          wordCount,
+          summaryDensity,
+          excerpt
+        });
+      }
+    }
+
+    return efforts;
+  }
+
+  /**
+   * Builds the compact JSON-oriented payload for LLM enrichment of scheduled sessions.
+   */
+  static buildEnrichmentPayload(sessions: PlannedSession[], efforts: LessonEffort[]): string {
+    const lines: string[] = [];
+
+    lines.push('# Course Lesson Content Excerpts\n');
+    for (const effort of efforts) {
+      lines.push(`## ${effort.lessonId}: ${effort.title} (${effort.type.toUpperCase()})`);
+      if (effort.excerpt) {
+        lines.push(`Key Concepts & Topics: ${effort.excerpt.trim()}`);
+      }
+      lines.push('');
+    }
+
+    lines.push('\n# Scheduled Sessions Requiring Enrichment\n');
+    lines.push('Generate a title and retrieval-practice description for each sessionKey below:\n');
+
+    const sessionsToEnrich = sessions.map((s) => ({
+      sessionKey: s.sessionKey,
+      lessonId: s.lessonId,
+      type: s.type,
+      section: s.section || null,
+      currentTitle: s.title
+    }));
+
+    lines.push(JSON.stringify(sessionsToEnrich, null, 2));
+
+    return lines.join('\n');
   }
 }

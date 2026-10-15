@@ -18,6 +18,20 @@
 					document.documentElement.style.colorScheme = 'light';
 				}
 			} catch (_) {}
+			try {
+				// Restore zoom before first paint (desktop app only; browsers use
+				// their native zoom). Must mirror isTauriEnvironment() in $lib/api.
+				const isTauri =
+					'__TAURI_INTERNALS__' in window ||
+					location.protocol === 'tauri:' ||
+					location.hostname === 'tauri.localhost';
+				if (isTauri) {
+					const level = parseFloat(localStorage.getItem('course_zoom') || '100');
+					if (Number.isFinite(level) && level !== 100 && level >= 50 && level <= 300) {
+						document.documentElement.style.zoom = String(level / 100);
+					}
+				}
+			} catch (_) {}
 		</script>
 		%sveltekit.head%
 	</head>

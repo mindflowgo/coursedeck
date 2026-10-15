@@ -91,6 +91,13 @@ describe('validateScheduleMarkdown', () => {
     expect(bad.warnings.some((w) => /invalid date/i.test(w))).toBe(true);
   });
 
+  it('accepts catchup pseudo-lessons without flagging them as unknown', () => {
+    const withCatchup = GOOD + '\n### 2026-10-20 · Tue\n- [ ] **Catchup** catchup — Weekly catch-up buffer (60m)\n';
+    const result = validateScheduleMarkdown(withCatchup, manifest);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
   it('returns a warning instead of throwing when the manifest is missing', () => {
     const result = validateScheduleMarkdown(GOOD, null);
     expect(result.ok).toBe(true);

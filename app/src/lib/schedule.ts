@@ -3,6 +3,15 @@
 export type ReviewIntensity = 'light' | 'standard' | 'heavy';
 export type PaceMode = 'steady' | 'target';
 
+export interface BlackoutDateRange {
+  /** YYYY-MM-DD */
+  startDate: string;
+  /** YYYY-MM-DD */
+  endDate: string;
+  /** Optional user label, e.g. "Winter Break", "March Break" */
+  label?: string;
+}
+
 export interface SchedulePreferences {
   /** YYYY-MM-DD — first possible study day. */
   startDate: string;
@@ -16,6 +25,10 @@ export interface SchedulePreferences {
   /** When false, the prompt must not schedule Review or Practice entries at all. */
   includeReviews: boolean;
   reviewIntensity: ReviewIntensity;
+  /** Date ranges excluded from scheduling (e.g. holidays, vacations). */
+  blackoutDates: BlackoutDateRange[];
+  /** Allocate ~1 catch-up buffer session per week (~15% of sessions). */
+  includeCatchupDays: boolean;
   /** Free-form: away days, constraints, work/school conflicts. */
   notes?: string;
 }
@@ -31,7 +44,9 @@ export function defaultSchedulePreferences(today = new Date()): SchedulePreferen
     sessionsPerDay: 1,
     paceMode: 'steady',
     includeReviews: true,
-    reviewIntensity: 'standard'
+    reviewIntensity: 'standard',
+    blackoutDates: [],
+    includeCatchupDays: true
   };
 }
 
@@ -41,6 +56,13 @@ export function validateSchedulePreferences(p: SchedulePreferences): string | nu
   if (p.paceMode === 'target') {
     if (!p.targetEndDate) return 'Please choose a target end date, or switch to a steady pace.';
     if (p.targetEndDate <= p.startDate) return 'The target end date must be after the start date.';
+  }
+  if (Array.isArray(p.blackoutDates)) {
+    for (const b of p.blackoutDates) {
+      if (b.startDate && b.endDate && b.endDate < b.startDate) {
+        return `Invalid blackout range: "${b.label || 'Exclusion'}" end date must be on or after start date.`;
+      }
+    }
   }
   return null;
 }
@@ -128,6 +150,8 @@ export function loadStoredSchedulePreferences(): SchedulePreferences | null {
     if (!parsed.startDate || !Array.isArray(parsed.studyDays)) return null;
     // Migration for prefs stored before includeReviews existed (default: on).
     if (typeof parsed.includeReviews !== 'boolean') parsed.includeReviews = true;
+    if (!Array.isArray(parsed.blackoutDates)) parsed.blackoutDates = [];
+    if (typeof parsed.includeCatchupDays !== 'boolean') parsed.includeCatchupDays = true;
     return parsed;
   } catch {
     return null;

@@ -3,7 +3,13 @@ import { PromptService } from './prompts';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
-import { ScheduleParser } from '../parser/scheduleParser';
+import { defaultSchedulePreferences, type SchedulePreferences } from '../schedule';
+import {
+  buildScheduleSkeleton,
+  applyEnrichmentPatches,
+  verifyStructuralEquivalence,
+  type SessionEnrichmentPatch
+} from '../scheduleGenerator';
 
 export interface GenerationTask {
   id: string; // e.g. "gwl3o:01.01:summary" or "gwl3o:schedule"
@@ -12,6 +18,7 @@ export interface GenerationTask {
   lessonTitle: string;
   tab: string;
   customPrompt?: string;
+  preferences?: SchedulePreferences;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
   createdAt: string;
@@ -39,6 +46,24 @@ export interface QueueStatus {
   recentLogs: QueueLogEntry[];
 }
 
+function extractJsonPatches(completion: string): SessionEnrichmentPatch[] {
+  try {
+    const trimmed = completion.trim();
+    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+    const arrayStart = candidate.indexOf('[');
+    const arrayEnd = candidate.lastIndexOf(']');
+    if (arrayStart >= 0 && arrayEnd > arrayStart) {
+      const parsed = JSON.parse(candidate.slice(arrayStart, arrayEnd + 1));
+      if (Array.isArray(parsed)) return parsed;
+    }
+    const parsed = JSON.parse(candidate);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 class GenerationQueue {
   private tasks: Map<string, GenerationTask> = new Map();
   private recentLogs: QueueLogEntry[] = [];
@@ -48,9 +73,10 @@ class GenerationQueue {
 
   /**
    * A task stuck 'processing' longer than this is treated as stalled and
-   * failed so the worker can continue. The LLM client's own timeout bounds a
-   * legitimate attempt at ~5 minutes (90s × retries), so 15 minutes leaves a
-   * wide safety margin.
+   * failed so the worker can continue. A legitimate attempt is bounded by the
+   * LLM client's timeout — schedule tasks ~5 minutes per attempt, everything
+   * else up to the configured Request Timeout (max 150s) × retries — so 15
+   * minutes leaves a wide safety margin.
    */
   private static readonly STALE_PROCESSING_MS = 15 * 60 * 1000;
 
@@ -98,6 +124,7 @@ class GenerationQueue {
       lessonTitle?: string;
       tab: string;
       customPrompt?: string;
+      preferences?: SchedulePreferences;
     }>,
     customConfig?: LLMConfig
   ): GenerationTask[] {
@@ -125,6 +152,7 @@ class GenerationQueue {
         lessonTitle,
         tab: item.tab,
         customPrompt: item.customPrompt,
+        preferences: item.preferences,
         status: 'pending',
         createdAt: new Date().toISOString()
       };
@@ -319,6 +347,7 @@ class GenerationQueue {
     this.activeTaskId = nextTask.id;
     nextTask.status = 'processing';
     nextTask.startedAt = new Date().toISOString();
+    const taskStartedAt = nextTask.startedAt;
 
     try {
       const config = LLMService.loadStoredConfig();
@@ -327,66 +356,117 @@ class GenerationQueue {
       }
 
       if (nextTask.tab === 'schedule') {
-        let systemPrompt = nextTask.customPrompt;
-        if (!systemPrompt) {
-          const promptItem = PromptService.getPrompt('course_schedule');
-          systemPrompt = promptItem ? promptItem.content : '';
-        }
-        if (!systemPrompt || systemPrompt.trim().length === 0) {
-          throw new Error('Core prompt template for course schedule is missing. Please configure course_schedule.md in Prompts.');
+        const course = CourseService.getCourse(nextTask.courseId);
+        if (!course) {
+          throw new Error(`Course ${nextTask.courseId.toUpperCase()} not found.`);
         }
 
-        const scheduleStats = { lessons: 0, assignments: 0, totalWords: 0, density: {} };
-        const userPrompt = CourseService.buildSchedulePayload(nextTask.courseId, scheduleStats);
-        if (!userPrompt || userPrompt.trim().length < 50) {
-          throw new Error(`No lesson materials found to generate a schedule for ${nextTask.courseId.toUpperCase()}.`);
-        }
+        const efforts = CourseService.computeCourseEfforts(nextTask.courseId);
+        const prefs: SchedulePreferences = nextTask.preferences || defaultSchedulePreferences();
 
-        const effectiveConfig: LLMConfig = {
-          ...config,
-          model: config.model ? config.model.trim() : '',
-          sessionId: config.sessionId || `${nextTask.courseId}-schedule`
-        };
+        // 1. Build deterministic schedule skeleton (instant, 100% valid calendar dates & inventory coverage)
+        const skeleton = buildScheduleSkeleton(course, prefs, efforts);
+        let finalMarkdown = skeleton.markdown;
+        let tokensUsed: number | undefined;
 
         this.addLog(
           'info',
-          `\n=================== [ILC AI Request: COURSE SCHEDULE] ===================\n` +
-          `Course:      ${nextTask.courseId.toUpperCase()}\n` +
-          `Endpoint:    ${effectiveConfig.baseUrl}\n` +
-          `Model:       ${effectiveConfig.model || '(server default)'}\n` +
-          `Session ID:  ${effectiveConfig.sessionId}\n` +
-          `Payload:     ${userPrompt.length.toLocaleString()} chars (~${Math.round(userPrompt.length / 4).toLocaleString()} tokens), ${scheduleStats.lessons} lessons, ${scheduleStats.assignments} assignments\n` +
-          `========================================================================`
+          `[Schedule] Deterministic calendar generated for ${nextTask.courseId.toUpperCase()} (${skeleton.sessions.length} sessions across preferred study days).`
         );
 
-        const timeoutMs = 300_000;
-        const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt, { timeoutMs });
-        const parsed = parseFrontmatter(result.completion.trim());
-        const finalMarkdown = serializeWithFrontmatter(
+        // 2. Attempt lightweight LLM JSON Patch Enrichment
+        try {
+          let systemPrompt = PromptService.getPrompt('course_schedule_enrichment')?.content;
+          if (!systemPrompt || systemPrompt.trim().length === 0) {
+            systemPrompt =
+              'You are an Ontario academic learning coach. Return a JSON array of session enrichment objects with "sessionKey", "title", and "description" (active-recall retrieval tasks). Output ONLY valid JSON.';
+          }
+          if (nextTask.customPrompt && nextTask.customPrompt.trim().length > 0) {
+            systemPrompt += `\n\nStudent Preferences & Notes:\n${nextTask.customPrompt.trim()}`;
+          }
+
+          const enrichmentPayload = CourseService.buildEnrichmentPayload(skeleton.sessions, efforts);
+
+          const effectiveConfig: LLMConfig = {
+            ...config,
+            model: config.model ? config.model.trim() : '',
+            sessionId: config.sessionId || `${nextTask.courseId}-schedule`
+          };
+
+          this.addLog(
+            'info',
+            `\n=================== [ILC AI Request: SCHEDULE ENRICHMENT] ===================\n` +
+            `Course:      ${nextTask.courseId.toUpperCase()}\n` +
+            `Endpoint:    ${effectiveConfig.baseUrl}\n` +
+            `Model:       ${effectiveConfig.model || '(server default)'}\n` +
+            `Session ID:  ${effectiveConfig.sessionId}\n` +
+            `Payload:     ${enrichmentPayload.length.toLocaleString()} chars (~${Math.round(enrichmentPayload.length / 4).toLocaleString()} tokens), ${skeleton.sessions.length} sessions to enrich\n` +
+            `========================================================================`
+          );
+
+          // 120s floor gives reasoning models ample headroom without timing out
+          const timeoutMs = LLMService.resolveRequestTimeoutMs(effectiveConfig, 120_000, { isFloor: true });
+          const result = await LLMService.generateResult(effectiveConfig, systemPrompt, enrichmentPayload, {
+            timeoutMs,
+            onLog: (level, message) => this.addLog(level, message)
+          });
+
+          tokensUsed = result.usage?.total_tokens;
+
+          const patches = extractJsonPatches(result.completion);
+          if (patches.length > 0) {
+            const enriched = applyEnrichmentPatches(skeleton, patches);
+            if (verifyStructuralEquivalence(skeleton, enriched)) {
+              finalMarkdown = enriched;
+              this.addLog(
+                'info',
+                `[Schedule] LLM enrichment applied successfully (${patches.length} patches spliced).`
+              );
+            } else {
+              this.addLog(
+                'warn',
+                `[Schedule] Enriched output failed structural equivalence gate. Retaining deterministic skeleton.`
+              );
+            }
+          } else {
+            this.addLog(
+              'warn',
+              `[Schedule] No valid JSON patches found in LLM response. Retaining deterministic skeleton.`
+            );
+          }
+        } catch (enrichErr: any) {
+          this.addLog(
+            'warn',
+            `[Schedule] LLM enrichment skipped (${enrichErr?.message || 'timeout/error'}). Retaining deterministic skeleton.`
+          );
+        }
+
+        // 3. Serialize frontmatter with provenance preferences
+        const parsed = parseFrontmatter(finalMarkdown.trim());
+        const finalWithFrontmatter = serializeWithFrontmatter(
           {
             ...parsed.frontmatter,
             type: 'course_schedule',
             updatedAt: new Date().toISOString().split('T')[0],
-            prompt: systemPrompt
+            preferences: prefs
           },
           parsed.body.trim()
         );
 
-        CourseService.saveCourseDocument(nextTask.courseId, 'schedule', finalMarkdown);
+        CourseService.saveCourseDocument(nextTask.courseId, 'schedule', finalWithFrontmatter);
 
-        const course = CourseService.getCourse(nextTask.courseId);
-        const validation = validateScheduleMarkdown(finalMarkdown, course);
-        const parsedSchedule = ScheduleParser.parseMarkdown(finalMarkdown);
+        const validation = validateScheduleMarkdown(finalWithFrontmatter, course);
 
         nextTask.status = 'completed';
         nextTask.completedAt = new Date().toISOString();
-        nextTask.tokensUsed = result.usage?.total_tokens;
+        nextTask.tokensUsed = tokensUsed;
 
-        const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
+        const tokensInfo = tokensUsed !== undefined ? ` (tokens: ${tokensUsed})` : '';
         const warningsInfo = validation.warnings.length > 0 ? ` [${validation.warnings.length} warning(s)]` : '';
+        const tookS = taskStartedAt ? Math.round((Date.now() - Date.parse(taskStartedAt)) / 1000) : null;
         this.addLog(
           'info',
-          `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalMarkdown.length.toLocaleString()} characters, ${parsedSchedule.events.length} events parsed${tokensInfo}${warningsInfo}\n`
+          `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalWithFrontmatter.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}${warningsInfo}\n`
         );
       } else {
         const bundle = CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId);
@@ -434,7 +514,9 @@ class GenerationQueue {
           `========================================================================`
         );
 
-        const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt);
+        const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt, {
+          onLog: (level, message) => this.addLog(level, message)
+        });
         const parsed = parseFrontmatter(result.completion.trim());
         const frontmatter = {
           ...parsed.frontmatter,
@@ -455,7 +537,7 @@ class GenerationQueue {
         const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
         this.addLog(
           'info',
-          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters${tokensInfo}\n`
+          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters in ${Math.round((Date.now() - Date.parse(taskStartedAt)) / 1000)}s${tokensInfo}\n`
         );
       }
     } catch (err: any) {

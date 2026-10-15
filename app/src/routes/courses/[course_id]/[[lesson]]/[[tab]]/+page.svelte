@@ -12,6 +12,7 @@
   import PromptCard from '$lib/components/PromptCard.svelte';
   import ConfigureLLMModal from '$lib/components/ConfigureLLMModal.svelte';
   import SchedulePreferencesModal from '$lib/components/SchedulePreferencesModal.svelte';
+  import type { SchedulePreferences } from '$lib/schedule';
   import ScheduleViewer from '$lib/components/ScheduleViewer.svelte';
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
@@ -32,6 +33,7 @@
   } from '$lib/tabs';
   import { onMount, onDestroy, untrack } from 'svelte';
   import {
+    ArrowUp,
     BookOpen,
     FileText,
     ListCollapse,
@@ -55,6 +57,7 @@
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
   import { afterPaint, installPerfObservers, perf } from '$lib/perf';
+  import { scrollMemoryKey, recallScroll, rememberScroll } from '$lib/scrollMemory';
 
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
@@ -132,6 +135,60 @@
   let isSaving = $state(false);
   let saveSuccessMessage = $state('');
   let isExportingPdf = $state(false);
+
+  // ---- Workspace scroll memory -------------------------------------------
+  // Every course/lesson/tab page remembers its own offset (tab_scroll:*), so
+  // switching tabs lands at the top for a first visit and back where the
+  // reader stopped on later ones.
+  let contentScroller = $state<HTMLDivElement | undefined>();
+  let showScrollTop = $state(false);
+  const SCROLL_TOP_BUTTON_AFTER = 400;
+  const SCROLL_SAVE_DEBOUNCE_MS = 200;
+  let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingScroll: { key: string; top: number } | null = null;
+
+  function currentScrollKey(): string {
+    return scrollMemoryKey(courseId || '', isCourseScope ? 'course' : selectedLessonId, activeTab);
+  }
+
+  function handleContentScroll() {
+    if (!contentScroller) return;
+    const top = contentScroller.scrollTop;
+    showScrollTop = top > SCROLL_TOP_BUTTON_AFTER;
+    // Content swaps replace the page with a short loading spinner, which
+    // clamps scrollTop to 0 — that is not the reader scrolling to the top,
+    // so don't let it overwrite their remembered offset.
+    if (isCourseScope ? isLoadingCourseDoc : isLoadingLesson) return;
+    // Capture key+offset now: by the time the debounce fires the user may be
+    // on another tab, and the write must target the page that was scrolled.
+    pendingScroll = { key: currentScrollKey(), top };
+    clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = setTimeout(flushPendingScroll, SCROLL_SAVE_DEBOUNCE_MS);
+  }
+
+  function flushPendingScroll() {
+    clearTimeout(scrollSaveTimer);
+    scrollSaveTimer = undefined;
+    if (pendingScroll) {
+      rememberScroll(pendingScroll.key, pendingScroll.top);
+      pendingScroll = null;
+    }
+  }
+
+  function scrollWorkspaceToTop() {
+    contentScroller?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // Land the page now on screen at its remembered offset once its content is
+  // in the DOM ($effect runs after updates; course docs arrive async, hence
+  // the loading gate). Pages never scrolled start at the top.
+  $effect(() => {
+    const key = currentScrollKey();
+    const isLoading = isCourseScope ? isLoadingCourseDoc : isLoadingLesson;
+    if (isLoading || !contentScroller) return;
+    contentScroller.scrollTop = recallScroll(key);
+    showScrollTop = contentScroller.scrollTop > SCROLL_TOP_BUTTON_AFTER;
+  });
 
   // Default prompt for active tab
   let defaultPromptForActiveTab = $derived.by(() => {
@@ -270,7 +327,7 @@
     }
   }
 
-  async function enqueueScheduleGeneration(promptWithPreferences: string) {
+  async function enqueueScheduleGeneration(promptWithPreferences: string, preferences?: SchedulePreferences) {
     const localConfig = getLocalLLMConfig();
     if (!localConfig?.baseUrl) {
       isLLMModalOpen = true;
@@ -356,7 +413,8 @@
           lessonId: 'schedule',
           lessonTitle: 'Course Study Schedule',
           customPrompt: promptWithPreferences,
-          customConfig: localConfig
+          customConfig: localConfig,
+          preferences
         })
       });
 
@@ -421,7 +479,6 @@
           forceRegenerate: true,
           customPrompt: activePrompt,
           customConfig: localConfig,
-          timeoutMs: 180_000,
           async: true
         })
       });
@@ -448,11 +505,17 @@
         const pollInterval = 1500;
         const maxWaitMs = 360_000; // 6 minutes max
         const startTime = Date.now();
+        let lastStatus = 'generating';
 
         while (true) {
           await new Promise((r) => setTimeout(r, pollInterval));
           if (Date.now() - startTime > maxWaitMs) {
-            throw new Error(`Generation timed out after 6 minutes`);
+            // The server-side job keeps running after we stop polling — the
+            // unfinished doc usually lands anyway, so say so instead of
+            // telling the user the generation is simply dead.
+            throw new Error(
+              `Generation has not finished after 6 minutes (last status: ${lastStatus}). It will keep running in the background — check the AI Queue, or reload this tab shortly.`
+            );
           }
 
           const pollRes = await apiFetch(`/api/courses/${courseId}/course-docs?type=${type}&status=true`);
@@ -462,6 +525,11 @@
           }
 
           const pollData = await pollRes.json();
+          if (pollData.status === 'generating') {
+            lastStatus = `generating ${Math.round((Date.now() - startTime) / 1000)}s elapsed${typeof pollData.elapsedMs === 'number' ? `, server ${Math.round(pollData.elapsedMs / 1000)}s` : ''}`;
+          } else {
+            lastStatus = String(pollData.status);
+          }
           if (pollData.status === 'completed') {
             data = pollData;
             generatedMarkdown = pollData.markdown || '';
@@ -764,8 +832,8 @@
     isScheduleModalOpen = true;
   }
 
-  function handleScheduleGenerate(promptWithPreferences: string) {
-    enqueueScheduleGeneration(promptWithPreferences);
+  function handleScheduleGenerate(promptWithPreferences: string, preferences?: SchedulePreferences) {
+    enqueueScheduleGeneration(promptWithPreferences, preferences);
   }
 
   // Advisory schedule checks (coverage, unknown ids, dates) run against the
@@ -885,7 +953,8 @@
       baseUrl,
       authHeaderType: (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer',
       model: (localStorage.getItem('ilc_llm_model') ?? '').trim(),
-      temperature: parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3')
+      temperature: parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3'),
+      timeoutSeconds: Number(localStorage.getItem('ilc_llm_timeout')) || undefined
     };
   }
 
@@ -1565,13 +1634,16 @@
     schedulePdfPrewarm();
     if (typeof window !== 'undefined') {
       window.addEventListener('popstate', handlePopState);
+      window.addEventListener('pagehide', flushPendingScroll);
     }
   });
 
   onDestroy(() => {
     if (typeof window !== 'undefined') {
       window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('pagehide', flushPendingScroll);
     }
+    flushPendingScroll();
     stopQueueFeedback();
   });
 
@@ -1757,8 +1829,16 @@
       </div>
     </div>
 
-    <!-- Main Workspace Content Area -->
-    <div class="flex-1 overflow-y-auto p-4 sm:p-8 max-w-5xl mx-auto w-full">
+    <!-- Main Workspace Content Area (the scroll container for scroll memory).
+         overflow-anchor: none — restoring an offset must land exactly there;
+         without it, Chromium's scroll anchoring re-adjusts the position when
+         late-laying-out images change the article height, landing a few
+         dozen pixels short (and the drifted value gets re-saved). -->
+    <div
+      class="flex-1 overflow-y-auto p-4 sm:p-8 max-w-5xl mx-auto w-full [overflow-anchor:none]"
+      bind:this={contentScroller}
+      onscroll={handleContentScroll}
+    >
       {#if isCourseScope ? isLoadingCourseDoc : isLoadingLesson}
         <div class="h-64 flex items-center justify-center">
           <Loader2 class="w-6 h-6 animate-spin text-stone-300" />
@@ -1972,6 +2052,19 @@
       {/if}
     </div>
   </div>
+
+  <!-- Scroll-to-top: appears once the reader is a screen or so down -->
+  {#if showScrollTop}
+    <button
+      type="button"
+      onclick={scrollWorkspaceToTop}
+      class="fixed bottom-5 right-5 z-30 flex items-center justify-center w-10 h-10 rounded-full border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm text-stone-500 dark:text-stone-400 shadow-md hover:bg-white dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
+      title="Scroll to top"
+      aria-label="Scroll to top"
+    >
+      <ArrowUp class="w-4 h-4" />
+    </button>
+  {/if}
 
   {#if !isEditing && !isCourseScope}
     <SelectionToolbar

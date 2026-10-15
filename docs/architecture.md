@@ -85,6 +85,7 @@ app/src/
 ├── lib/
 │   ├── api.ts                  # Typed client apiFetch() and environment detection (isTauriEnvironment)
 │   ├── queueStatus.svelte.ts   # Reactive global queue poll store & task listeners
+│   ├── scrollMemory.ts         # Per-tab scroll offsets in localStorage (tab_scroll:*) + stale-key pruning
 │   ├── theme.svelte.ts         # Light / Dark / System theme manager
 │   ├── components/             # Reusable UI components
 │   │   ├── Header.svelte           # Top application navigation bar
@@ -256,6 +257,13 @@ updatedAt: '2026-10-14'
   - When switching to **Complete Course**: the system verifies if a corresponding course-level document exists (`course.<tab>.md`). If present, it navigates directly to that tab; if absent, it defaults to Complete Course Lessons (`/courses/<id>/course/lesson`) rather than attempting invalid document generation.
   - Course-level custom tabs (`course.<slug>.md`) are dynamically discovered by `CourseService.discoverCourseDocs()` and surfaced in the course mode tab bar alongside built-ins.
 - Regeneration always overwrites the single file; the per-version pills and overwrite-vs-new-version choice were removed with versioning itself.
+
+### 3.5 Reader Tab Scroll Memory (`tab_scroll:*`)
+The course workspace scrolls inside a nested container, so the browser does not restore offsets between tabs. `src/lib/scrollMemory.ts` keeps them in `localStorage` instead — key `tab_scroll:<courseId>:<lessonId|course>:<tab>`, all lowercased (~40 bytes each):
+- **A first visit to a tab/page opens at the top; later visits return to the remembered offset** — via tab click, lesson switch, course ↔ lesson scope toggle, browser Back, or reload alike.
+- Offsets are written ~200 ms after scrolling pauses (flushed on `pagehide` and component teardown); offsets under 8 px are deleted rather than stored, so "at the top" and "never visited" behave identically.
+- A floating **scroll-to-top** button (fixed bottom-right, shown once scrolled past ~400 px) smooth-scrolls the workspace back to the top.
+- **Pruning:** archiving a course (`PUT /api/courses/:id/meta { archived: true }`) forgets all of that course's keys, and every courses-list load sweeps keys whose course no longer exists on disk. Offsets never reach the server, so pruning applies to the browser that performs the action.
 
 ---
 
@@ -554,9 +562,9 @@ updatedAt: '2026-10-08'
 
 ### 13.4 Resilient LLM Execution & Extended Timeouts
 Synthesizing multiple units into high-question-count exams (e.g., 24 KICA questions + detailed explanations) requires extended generation windows:
-- `LLMService.generateResult` accepts an optional `timeoutMs` parameter governing both the `AbortController` and the `Promise.race` deadline timer (defaulting to 90 seconds).
-- Course-wide generation requests (`POST /api/courses/:id/course-docs`) supply a dedicated **180-second (3-minute) timeout** to ensure complex synthesis completes reliably without premature timeouts.
-- The UI reflects asynchronous status with inline spinners (`<Loader2 class="animate-spin" />`) and disabled button states, resetting interactive quiz state cleanly upon document replacement.
+- `LLMService.generateResult` accepts an optional `timeoutMs` parameter governing both the `AbortController` and the `Promise.race` deadline timer. The effective per-attempt deadline is resolved as: per-call `timeoutMs` override → the **Request Timeout** in Settings (stored config `timeoutSeconds`, selectable 30/60/90/120/150s) → built-in default of **150 seconds** (raised from 90s; timeout errors name the setting so users can self-serve).
+- The background queue's schedule task keeps a dedicated **300-second (5-minute) per-attempt budget** (via a per-call override) because schedule prompts aggregate the whole course; the Settings knob can only raise that floor, never lower it.
+- The UI reflects asynchronous status with inline spinners (`<Loader2 class="animate-spin" />`) and disabled button states, resetting interactive quiz state cleanly upon document replacement. The course-docs poll loop reports last-known status/elapsed time in its timeout message and clarifies that the background job continues and usually completes — check the AI Queue or reload.
 
 ---
 

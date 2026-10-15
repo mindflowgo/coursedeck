@@ -311,7 +311,7 @@ export function eventHref(
   const cId = (courseId || '').toLowerCase();
   const rawLesson = (event.lessonId || '').trim();
 
-  if (rawLesson.toLowerCase() === 'schedule') {
+  if (rawLesson.toLowerCase() === 'schedule' || rawLesson.toLowerCase() === 'catchup') {
     return `/courses/${cId}/course/schedule`;
   }
 

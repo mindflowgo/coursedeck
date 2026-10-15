@@ -25,6 +25,7 @@
   import { apiFetch, isTauriEnvironment } from '$lib/api';
   import { stripCourseCodePrefix } from '$lib/courses';
   import { confirmDialog } from '$lib/dialog';
+  import { forgetCourseScroll, pruneScrollMemory } from '$lib/scrollMemory';
 
   let courses: CourseManifest[] = $state([]);
   let isLoading = $state(true);
@@ -68,6 +69,9 @@
       if (res.ok) {
         const data = await res.json();
         courses = data.courses || [];
+        // Drop scroll offsets for courses that no longer exist on disk
+        // (deletions happen outside the app; archived courses are still listed).
+        pruneScrollMemory(courses.map((c) => c.id));
       }
     } catch (e) {
       console.error('Failed to load courses:', e);
@@ -98,6 +102,9 @@
         alert(data.message || 'Failed to update course. Please try again.');
         return;
       }
+      // Archiving retires the course from the listings — forget the reader's
+      // tab scroll offsets for it (unarchiving does not bring them back).
+      if (patch.archived === true) forgetCourseScroll(courseId);
       await loadCourses();
     } catch (e) {
       console.error('Failed to update course metadata:', e);
