@@ -17,7 +17,7 @@
     eventHref,
     type ScheduleEvent
   } from '$lib/parser/scheduleParser';
-  import { scheduleTypeClasses } from '$lib/schedule';
+  import { scheduleTypeClasses, getScheduleEndDateLabel } from '$lib/schedule';
 
   interface CourseSchedule {
     courseId: string;
@@ -260,6 +260,7 @@
       <!-- By Course: cards with progress + upcoming sessions -->
       <div class="grid gap-4 sm:grid-cols-2">
         {#each schedules as course (course.courseId)}
+          {@const endDate = course.exists ? getScheduleEndDateLabel(course.parsed.events, course.markdown, course.parsed.summaryLine) : null}
           <div class="rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4 shadow-2xs">
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
@@ -268,7 +269,9 @@
                   onclick={() => goto(`/courses/${course.courseId}`)}
                   class="text-sm font-semibold text-stone-900 dark:text-stone-100 hover:underline truncate block text-left cursor-pointer"
                 >{course.courseTitle}</button>
-                <p class="text-[11px] text-stone-400 uppercase tracking-wide font-mono">{course.courseId}</p>
+                <p class="text-[11px] text-stone-400">
+                  <span class="font-mono uppercase tracking-wide">{course.courseId}</span>{#if endDate}<span> - until {endDate}</span>{/if}
+                </p>
               </div>
               {#if course.exists}
                 {@const ratio = doneRatio(course.parsed.events)}

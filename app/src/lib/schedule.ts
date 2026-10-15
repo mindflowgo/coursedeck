@@ -1,3 +1,5 @@
+import { parseFrontmatter } from './parser/frontmatter';
+
 /** Scheduling preference questionnaire model + prompt composition. */
 
 export type ReviewIntensity = 'light' | 'standard' | 'heavy';
@@ -163,3 +165,68 @@ export function storeSchedulePreferences(prefs: SchedulePreferences): void {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   } catch {}
 }
+
+/**
+ * Formats a schedule's ISO date string (YYYY-MM-DD) for display:
+ * e.g. "Dec 31, 2027" (year included when not in current year)
+ * or "Dec 31" (year omitted when in current year).
+ */
+export function formatScheduleDateLabel(dateIso: string, referenceDate = new Date()): string | null {
+  try {
+    const trimmed = dateIso.trim();
+    const date = new Date(`${trimmed}T00:00:00`);
+    if (isNaN(date.getTime())) return null;
+    const currentYear = referenceDate.getFullYear();
+    const eventYear = date.getFullYear();
+
+    if (eventYear === currentYear) {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } else {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extracts and formats the end-date label for a course schedule:
+ * e.g. "Dec 31, 2027" or "Dec 31" (if in current year).
+ * Checks dated events first, then summary line, then frontmatter preferences.targetEndDate.
+ */
+export function getScheduleEndDateLabel(
+  events: Array<{ date?: string }>,
+  markdown?: string,
+  summaryLine?: string,
+  referenceDate = new Date()
+): string | null {
+  let latest = '';
+  for (const e of events) {
+    if (e.date && (!latest || e.date > latest)) {
+      latest = e.date;
+    }
+  }
+
+  if (!latest && summaryLine) {
+    const match = summaryLine.match(/→\s*(\d{4}-\d{2}-\d{2})/);
+    if (match) latest = match[1];
+  }
+
+  if (!latest && markdown) {
+    try {
+      const { frontmatter } = parseFrontmatter(markdown);
+      if (frontmatter?.preferences?.targetEndDate) {
+        latest = frontmatter.preferences.targetEndDate;
+      }
+    } catch {}
+
+    if (!latest) {
+      const match = markdown.match(/targetEndDate:\s*['"]?(\d{4}-\d{2}-\d{2})['"]?/);
+      if (match) latest = match[1];
+    }
+  }
+
+  if (!latest) return null;
+  return formatScheduleDateLabel(latest, referenceDate);
+}
+

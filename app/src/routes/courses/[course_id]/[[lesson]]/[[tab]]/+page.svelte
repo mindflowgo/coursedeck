@@ -1822,7 +1822,7 @@
             <span>Schedule</span>
           </button>
 
-          {#each courseCustomTabs as slug (slug)}
+          <!-- {#each courseCustomTabs as slug (slug)}
             <div class="relative group/tab">
               <button
                 onclick={() => switchTab(slug)}
@@ -1832,7 +1832,7 @@
                 <span>{customTabDisplayName(slug)}</span>
               </button>
             </div>
-          {/each}
+          {/each} -->
         {/if}
       </div>
     </div>
