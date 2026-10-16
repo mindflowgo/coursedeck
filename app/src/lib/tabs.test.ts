@@ -6,7 +6,12 @@ import {
   isCourseTab,
   customTabDisplayName,
   validateTabName,
-  starterPromptForTab
+  starterPromptForTab,
+  tabFileName,
+  courseDocFileName,
+  docFileName,
+  parseDocFileName,
+  courseTabHref
 } from './tabs';
 
 describe('slugifyTabName', () => {
@@ -121,3 +126,47 @@ describe('starterPromptForTab', () => {
     expect(prompt).toContain('"Assignment"');
   });
 });
+
+describe('tab and document filenames', () => {
+  it('formats tabFileName for lessons', () => {
+    expect(tabFileName('01.01', 'lesson')).toBe('01.01.lesson.md');
+    expect(tabFileName('02.03', 'Assignment')).toBe('02.03.assignment.md');
+  });
+
+  it('formats courseDocFileName for course docs', () => {
+    expect(courseDocFileName('summary')).toBe('course.summary.md');
+    expect(courseDocFileName('Schedule')).toBe('course.schedule.md');
+  });
+
+  it('formats docFileName based on scope', () => {
+    expect(docFileName('01.01', 'lesson')).toBe('01.01.lesson.md');
+    expect(docFileName('course', 'summary')).toBe('course.summary.md');
+    expect(docFileName('01.01', 'summary', true)).toBe('course.summary.md');
+  });
+
+  it('parses valid document filenames', () => {
+    expect(parseDocFileName('01.01.lesson.md')).toEqual({
+      isCourseScope: false,
+      lessonId: '01.01',
+      tab: 'lesson'
+    });
+    expect(parseDocFileName('01.06_assign1.test.md')).toEqual({
+      isCourseScope: false,
+      lessonId: '01.06_assign1',
+      tab: 'test'
+    });
+    expect(parseDocFileName('course.summary.md')).toEqual({
+      isCourseScope: true,
+      lessonId: 'course',
+      tab: 'summary'
+    });
+    expect(parseDocFileName('invalid_file.txt')).toBeNull();
+  });
+
+  it('builds courseTabHref paths', () => {
+    expect(courseTabHref('baf3m', '01.01', 'lesson')).toBe('/courses/baf3m/01.01/lesson');
+    expect(courseTabHref('baf3m', 'course', 'summary')).toBe('/courses/baf3m/course/summary');
+    expect(courseTabHref('baf3m', 'any', 'schedule', true)).toBe('/courses/baf3m/course/schedule');
+  });
+});
+

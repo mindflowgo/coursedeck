@@ -17,6 +17,10 @@ export interface BlackoutDateRange {
 export interface SchedulePreferences {
   /** YYYY-MM-DD — first possible study day. */
   startDate: string;
+  /** YYYY-MM-DD — calculated completion date. */
+  calculatedEndDate?: string;
+  /** Total calendar days between start and end date (inclusive). */
+  totalCalendarDays?: number;
   /** JS getDay() values, 0=Sun … 6=Sat. */
   studyDays: number[];
   sessionLengthMin: number;
@@ -33,6 +37,8 @@ export interface SchedulePreferences {
   includeCatchupDays: boolean;
   /** Free-form: away days, constraints, work/school conflicts. */
   notes?: string;
+  /** Optional times of day (HH:MM) for each session on each study day. Key is getDay() 0..6. */
+  dayTimes?: Record<number, string[]>;
 }
 
 export const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
@@ -48,7 +54,12 @@ export function defaultSchedulePreferences(today = new Date()): SchedulePreferen
     includeReviews: true,
     reviewIntensity: 'standard',
     blackoutDates: [],
-    includeCatchupDays: true
+    includeCatchupDays: true,
+    dayTimes: {
+      1: ['09:00'],
+      3: ['09:00'],
+      5: ['09:00']
+    }
   };
 }
 
@@ -56,8 +67,8 @@ export function validateSchedulePreferences(p: SchedulePreferences): string | nu
   if (!p.startDate) return 'Please choose a start date.';
   if (p.studyDays.length === 0) return 'Please pick at least one study day.';
   if (p.paceMode === 'target') {
-    if (!p.targetEndDate) return 'Please choose a target end date, or switch to a steady pace.';
-    if (p.targetEndDate <= p.startDate) return 'The target end date must be after the start date.';
+    if (!p.targetEndDate) return 'Please choose an end date, or switch to End of Course.';
+    if (p.targetEndDate <= p.startDate) return 'The end date must be after the start date.';
   }
   if (Array.isArray(p.blackoutDates)) {
     for (const b of p.blackoutDates) {
@@ -88,51 +99,68 @@ export function stripStudentPreferencesBlock(text: string | null | undefined): s
  */
 export function buildSchedulePrompt(template: string, prefs: SchedulePreferences): string {
   const cleanTemplate = stripStudentPreferencesBlock(template);
-  const days = [...prefs.studyDays].sort().map((d) => WEEKDAY_LABELS[d]).join('/');
+
+  const endDate = prefs.calculatedEndDate || prefs.targetEndDate;
+  let totalDays = prefs.totalCalendarDays;
+  if (totalDays === undefined && prefs.startDate && endDate) {
+    try {
+      const start = new Date(`${prefs.startDate}T00:00:00`);
+      const end = new Date(`${endDate}T00:00:00`);
+      const diffMs = end.getTime() - start.getTime();
+      if (!isNaN(diffMs)) {
+        totalDays = Math.max(1, Math.round(diffMs / (86400 * 1000)) + 1);
+      }
+    } catch {}
+  }
+
+  // 1. Start date & End date
+  const dateLine = endDate
+    ? `- Start date: ${prefs.startDate}; end date: ${endDate}`
+    : `- Start date: ${prefs.startDate}`;
+
+  // 2. Session length & sessions/day
+  const perDayLabel = `${prefs.sessionsPerDay} session${prefs.sessionsPerDay > 1 ? 's' : ''}/day`;
+  const sessionLine = `- Session length: ${prefs.sessionLengthMin} minutes; ${perDayLabel}`;
+
+  // 3. Daily session times
+  let timesLine: string;
+  if (prefs.dayTimes && Object.keys(prefs.dayTimes).length > 0) {
+    const formattedTimes: string[] = [];
+    for (const d of [...prefs.studyDays].sort()) {
+      const times = prefs.dayTimes[d]?.slice(0, prefs.sessionsPerDay).filter(Boolean);
+      if (times && times.length > 0) {
+        formattedTimes.push(`${WEEKDAY_LABELS[d]}: ${times.join(', ')}`);
+      } else {
+        formattedTimes.push(WEEKDAY_LABELS[d]);
+      }
+    }
+    timesLine = `- Daily session times: ${formattedTimes.join('; ')}`;
+  } else {
+    const days = [...prefs.studyDays].sort().map((d) => WEEKDAY_LABELS[d]).join('/');
+    timesLine = `- Daily session times: ${days}`;
+  }
+
   const lines: string[] = [
     '',
     '## STUDENT PREFERENCES (authoritative):',
-    `- Start date: ${prefs.startDate}`,
-    `- Study days: ${days}`,
-    `- Session length: ${prefs.sessionLengthMin} minutes`,
-    `- Max sessions per study day: ${prefs.sessionsPerDay}`
+    dateLine,
+    sessionLine,
+    timesLine
   ];
-  if (prefs.paceMode === 'target' && prefs.targetEndDate) {
-    lines.push(`- Target end date: ${prefs.targetEndDate} (finish before it, with buffer)`);
-    try {
-      const start = new Date(`${prefs.startDate}T00:00:00`);
-      const end = new Date(`${prefs.targetEndDate}T00:00:00`);
-      let studySlots = 0;
-      const cur = new Date(start);
-      while (cur <= end) {
-        if (prefs.studyDays.includes(cur.getDay())) {
-          studySlots += prefs.sessionsPerDay;
-        }
-        cur.setDate(cur.getDate() + 1);
-      }
-      lines.push(
-        `- Schedule capacity: ~${studySlots} total session slots available across preferred study days. Adjust lesson grouping and review frequency so all course inventory is scheduled comfortably within this window.`
-      );
-    } catch {}
-  } else {
-    lines.push('- Pace: no fixed deadline — choose a steady, sustainable pace');
+
+  // 4. Total calendar days
+  if (totalDays !== undefined && totalDays > 0) {
+    lines.push(`- Total calendar days: ${totalDays}`);
   }
+
   if (!prefs.includeReviews) {
-    lines.push(
-      '- Review sessions: OFF — do NOT schedule Review or Practice entries; use study sessions and assignment phases only'
-    );
-  } else {
-    const intensity =
-      prefs.reviewIntensity === 'light'
-        ? 'light — short recall checks only'
-        : prefs.reviewIntensity === 'heavy'
-          ? 'heavy — frequent reviews plus weekly unit recaps'
-          : 'standard — a review 2–3 days after each lesson';
-    lines.push(`- Review intensity: ${intensity}`);
+    lines.push('- Review sessions: OFF');
   }
+
   if (prefs.notes?.trim()) {
-    lines.push(`- Additional notes from the student: ${prefs.notes.trim()}`);
+    lines.push(`- Additional notes: ${prefs.notes.trim()}`);
   }
+
   return `${cleanTemplate}\n\n${lines.join('\n')}\n`;
 }
 
@@ -167,6 +195,9 @@ export function loadStoredSchedulePreferences(): SchedulePreferences | null {
     if (typeof parsed.includeReviews !== 'boolean') parsed.includeReviews = true;
     if (!Array.isArray(parsed.blackoutDates)) parsed.blackoutDates = [];
     if (typeof parsed.includeCatchupDays !== 'boolean') parsed.includeCatchupDays = true;
+    if (!parsed.dayTimes || typeof parsed.dayTimes !== 'object') {
+      parsed.dayTimes = {};
+    }
     return parsed;
   } catch {
     return null;

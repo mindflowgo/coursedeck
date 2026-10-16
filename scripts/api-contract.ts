@@ -501,6 +501,74 @@ try {
     check('course-docs rejects a malformed type → 400', bad.status === 400);
   }
 
+  console.log('\nCourse checkpoints:');
+  {
+    const empty = await req('/api/checkpoints');
+    check(
+      'GET /api/checkpoints → {checkpoints: array}',
+      empty.status === 200 && Array.isArray(empty.body.checkpoints)
+    );
+
+    const postNote = await req('/api/courses/tst01/checkpoints', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file: '01.01.lesson.md',
+        verticalPosition: 350,
+        color: 'coral',
+        noteText: 'Contract test note'
+      })
+    });
+    check(
+      'POST /checkpoints → creates note checkpoint',
+      postNote.status === 200 &&
+        postNote.body.success === true &&
+        postNote.body.checkpoint?.type === 'note' &&
+        postNote.body.checkpoint?.color === 'coral' &&
+        postNote.body.checkpoint?.verticalPosition === 350
+    );
+
+    const noteId = postNote.body.checkpoint?.id;
+
+    const postPos = await req('/api/courses/tst01/checkpoints/position', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file: '01.01.lesson.md',
+        verticalPosition: 900
+      })
+    });
+    check(
+      'POST /checkpoints/position → records position checkpoint',
+      postPos.status === 200 &&
+        postPos.body.success === true &&
+        postPos.body.checkpoint?.type === 'position' &&
+        postPos.body.checkpoint?.verticalPosition === 900
+    );
+
+    const courseCps = await req('/api/courses/tst01/checkpoints');
+    check(
+      'GET /courses/:id/checkpoints → returns all checkpoints for course',
+      courseCps.status === 200 &&
+        Array.isArray(courseCps.body.checkpoints) &&
+        courseCps.body.checkpoints.length === 2
+    );
+
+    const allNotes = await req('/api/checkpoints');
+    check(
+      'GET /api/checkpoints → returns only notes across courses',
+      allNotes.status === 200 &&
+        allNotes.body.checkpoints.length === 1 &&
+        allNotes.body.checkpoints[0].noteText === 'Contract test note' &&
+        allNotes.body.checkpoints[0].courseId === 'tst01'
+    );
+
+    const del = await req(`/api/courses/tst01/checkpoints/${noteId}`, {
+      method: 'DELETE'
+    });
+    check('DELETE /checkpoints/:id → removes note', del.status === 200 && del.body.success === true);
+  }
+
   console.log('\nCourse metadata (rename / archive):');
   {
     const rename = await req('/api/courses/tst01/meta', {

@@ -4,7 +4,8 @@
     ChevronDown,
     ChevronUp,
     Loader2,
-    RotateCcw
+    RotateCcw,
+    X
   } from 'lucide-svelte';
 
   interface Props {
@@ -15,6 +16,7 @@
     onChangePrompt: (newPrompt: string) => void;
     onRegenerate: () => void;
     onResetPrompt?: () => void;
+    onClose?: () => void;
   }
 
   let {
@@ -24,10 +26,11 @@
     defaultPrompt = '',
     onChangePrompt,
     onRegenerate,
-    onResetPrompt
+    onResetPrompt,
+    onClose
   }: Props = $props();
 
-  let isExpanded = $state(false);
+  let isExpanded = $state(true);
   let localPrompt = $state('');
   let initialPrompt = $state('');
 
@@ -76,9 +79,9 @@
     </div>
 
     <!-- Right: Actions -->
-    <div class="flex items-center space-x-2">
+    <div class="flex items-center space-x-1.5">
       {#if isGenerating}
-        <span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-amber-800 dark:text-amber-300 text-xs font-medium">
+        <span class="inline-flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-amber-800 dark:text-amber-300 text-xs font-medium mr-1">
           <Loader2 class="w-3.5 h-3.5 animate-spin" />
           <span>Generating...</span>
         </span>
@@ -87,7 +90,7 @@
       <button
         onclick={() => (isExpanded = !isExpanded)}
         class="p-1 rounded-md text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-800 transition cursor-pointer"
-        title={isExpanded ? 'Collapse Prompt' : 'Expand & Edit Prompt'}
+        title={isExpanded ? 'Collapse Prompt' : 'Expand Prompt'}
       >
         {#if isExpanded}
           <ChevronUp class="w-4 h-4" />
@@ -95,30 +98,30 @@
           <ChevronDown class="w-4 h-4" />
         {/if}
       </button>
+
+      {#if onClose}
+        <button
+          onclick={onClose}
+          class="p-1 rounded-md text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-800 transition cursor-pointer"
+          title="Close Prompt"
+        >
+          <X class="w-4 h-4" />
+        </button>
+      {/if}
     </div>
   </div>
 
   <!-- Collapsible Prompt Textarea -->
   {#if isExpanded}
-    <div class="p-4 space-y-3 bg-white dark:bg-stone-900 border-t border-stone-100 dark:border-stone-800">
-      <div class="space-y-1">
-        <div class="flex items-center justify-between">
-          <label for="prompt-input" class="text-[11px] font-semibold text-stone-500 dark:text-stone-400 uppercase tracking-wider">
-            Prompt Instructions
-          </label>
-          <span class="text-[11px] text-stone-400 dark:text-stone-500 font-mono">
-            YAML frontmatter
-          </span>
-        </div>
-        <textarea
-          id="prompt-input"
-          value={localPrompt}
-          oninput={handleInput}
-          rows="7"
-          placeholder="Enter prompt instructions for generating this study material..."
-          class="w-full p-3 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950 text-xs font-mono leading-relaxed text-stone-800 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100 transition resize-y"
-        ></textarea>
-      </div>
+    <div class="p-4 space-y-2 bg-white dark:bg-stone-900 border-t border-stone-100 dark:border-stone-800">
+      <textarea
+        id="prompt-input"
+        value={localPrompt}
+        oninput={handleInput}
+        rows="7"
+        placeholder="Enter prompt instructions for generating this study material..."
+        class="w-full p-3 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950 text-xs font-mono leading-relaxed text-stone-800 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100 transition resize-y"
+      ></textarea>
 
       <div class="flex items-center justify-between text-xs pt-1">
         <div class="flex items-center space-x-2">
@@ -133,10 +136,6 @@
               <RotateCcw class="w-3 h-3" />
               <span>Reset</span>
             </button>
-          {:else}
-            <span class="text-[11px] text-stone-400 dark:text-stone-500">
-              Stored in <code>--- prompt: | ---</code> frontmatter.
-            </span>
           {/if}
         </div>
 

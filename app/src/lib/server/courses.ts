@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
+import type { Checkpoint } from '../checkpoint';
+import { tabFileName, courseDocFileName, parseDocFileName } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
 import type { LessonEffort, PlannedSession } from '../scheduleGenerator';
@@ -71,9 +73,9 @@ export class CourseService {
     try {
       const files = fs.readdirSync(courseFolder);
       for (const file of files) {
-        const m = file.match(/^course\.([a-z0-9_]+)\.md$/i);
-        if (m) {
-          flags[m[1].toLowerCase()] = true;
+        const parsed = parseDocFileName(file);
+        if (parsed && parsed.isCourseScope) {
+          flags[parsed.tab] = true;
         }
       }
     } catch (e) {
@@ -191,7 +193,7 @@ export class CourseService {
     return {
       courseId,
       lessonId: lesson,
-      lesson: readSafe(`${lessonId}.lesson.md`),
+      lesson: readSafe(tabFileName(lesson, 'lesson')),
       tabs
     };
   }
@@ -213,7 +215,7 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) return false;
 
-    const filePath = safeJoin(courseDir, `${lessonId}.${tab}.md`);
+    const filePath = safeJoin(courseDir, tabFileName(lessonId, tab));
     if (!fs.existsSync(filePath)) return false;
     try {
       const content = fs.readFileSync(filePath, 'utf8');
@@ -233,7 +235,7 @@ export class CourseService {
       return { success: false, filename: '' };
     }
 
-    const filename = `${lessonId}.${tab}.md`;
+    const filename = tabFileName(lessonId, tab);
     const filePath = safeJoin(courseDir, filename);
 
     try {
@@ -248,7 +250,7 @@ export class CourseService {
   /** Removes the lesson tab file. Returns false when it didn't exist. */
   static deleteLessonTab(courseId: string, lessonId: string, tab: string): boolean {
     const courseDir = this.courseDir(courseId);
-    const filePath = safeJoin(courseDir, `${lessonId}.${tab}.md`);
+    const filePath = safeJoin(courseDir, tabFileName(lessonId, tab));
     if (!fs.existsSync(filePath)) return false;
     try {
       fs.unlinkSync(filePath);
@@ -266,7 +268,7 @@ export class CourseService {
   }
 
   static getCourseDocumentPath(courseId: string, type: string): string {
-    return safeJoin(this.courseDir(courseId), `course.${type}.md`);
+    return safeJoin(this.courseDir(courseId), courseDocFileName(type));
   }
 
   static getCourseDocument(courseId: string, type: string): string | null {
@@ -294,6 +296,146 @@ export class CourseService {
     }
   }
 
+  static getCheckpointsPath(courseId: string): string {
+    return safeJoin(this.courseDir(courseId), 'checkpoint.json');
+  }
+
+  static getCheckpoints(courseId: string): Checkpoint[] {
+    const filePath = this.getCheckpointsPath(courseId);
+    if (!fs.existsSync(filePath)) return [];
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (item): item is Checkpoint =>
+          Boolean(item && typeof item === 'object' && item.id && item.file && typeof item.verticalPosition === 'number' && item.type)
+      );
+    } catch (e) {
+      console.warn(`Failed to read checkpoints from ${filePath}:`, e);
+      return [];
+    }
+  }
+
+  static saveCheckpoints(courseId: string, checkpoints: Checkpoint[]): boolean {
+    const courseDir = this.courseDir(courseId);
+    if (!fs.existsSync(courseDir)) {
+      fs.mkdirSync(courseDir, { recursive: true });
+    }
+    const filePath = this.getCheckpointsPath(courseId);
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(checkpoints, null, 2), 'utf8');
+      return true;
+    } catch (e) {
+      console.error(`Failed to save checkpoints to ${filePath}:`, e);
+      return false;
+    }
+  }
+
+  static recordPositionCheckpoint(courseId: string, file: string, verticalPosition: number): Checkpoint {
+    const checkpoints = this.getCheckpoints(courseId);
+    const now = new Date().toISOString();
+    const pos = Math.max(0, Math.floor(verticalPosition));
+    const cleanFile = file.trim();
+
+    const existingIdx = checkpoints.findIndex((c) => c.type === 'position' && c.file === cleanFile);
+    if (existingIdx !== -1) {
+      checkpoints[existingIdx] = {
+        ...checkpoints[existingIdx],
+        verticalPosition: pos,
+        date: now
+      };
+      this.saveCheckpoints(courseId, checkpoints);
+      return checkpoints[existingIdx];
+    }
+
+    const newCp: Checkpoint = {
+      id: `cp_pos_${Math.random().toString(36).slice(2, 10)}`,
+      file: cleanFile,
+      verticalPosition: pos,
+      type: 'position',
+      date: now
+    };
+    checkpoints.push(newCp);
+    this.saveCheckpoints(courseId, checkpoints);
+    return newCp;
+  }
+
+  static addOrUpdateNoteCheckpoint(
+    courseId: string,
+    note: {
+      id?: string;
+      file: string;
+      verticalPosition: number;
+      color?: string;
+      noteText?: string;
+    }
+  ): Checkpoint {
+    const checkpoints = this.getCheckpoints(courseId);
+    const now = new Date().toISOString();
+    const pos = Math.max(0, Math.floor(note.verticalPosition));
+    const cleanFile = note.file.trim();
+
+    if (note.id) {
+      const idx = checkpoints.findIndex((c) => c.id === note.id);
+      if (idx !== -1) {
+        checkpoints[idx] = {
+          ...checkpoints[idx],
+          file: cleanFile,
+          verticalPosition: pos,
+          color: note.color || checkpoints[idx].color || 'yellow',
+          noteText: note.noteText ?? checkpoints[idx].noteText ?? '',
+          date: now
+        };
+        this.saveCheckpoints(courseId, checkpoints);
+        return checkpoints[idx];
+      }
+    }
+
+    const newCp: Checkpoint = {
+      id: note.id || `cp_note_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      file: cleanFile,
+      verticalPosition: pos,
+      type: 'note',
+      color: note.color || 'yellow',
+      noteText: note.noteText || '',
+      date: now
+    };
+    checkpoints.push(newCp);
+    this.saveCheckpoints(courseId, checkpoints);
+    return newCp;
+  }
+
+  static deleteCheckpoint(courseId: string, checkpointId: string): boolean {
+    const checkpoints = this.getCheckpoints(courseId);
+    const filtered = checkpoints.filter((c) => c.id !== checkpointId);
+    if (filtered.length !== checkpoints.length) {
+      this.saveCheckpoints(courseId, filtered);
+      return true;
+    }
+    return false;
+  }
+
+  static listAllNoteCheckpoints(): Array<Checkpoint & { courseId: string; courseTitle: string }> {
+    const courses = this.listCourses().filter((c) => !c.archived);
+    const allNotes: Array<Checkpoint & { courseId: string; courseTitle: string }> = [];
+
+    for (const course of courses) {
+      const cps = this.getCheckpoints(course.id);
+      for (const cp of cps) {
+        if (cp.type === 'note') {
+          allNotes.push({
+            ...cp,
+            courseId: course.id,
+            courseTitle: course.title
+          });
+        }
+      }
+    }
+
+    return allNotes.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
   static gatherLessonFiles(
     courseId: string,
     type: 'lesson' | 'summary' | 'cheatsheet' | 'test'
@@ -312,7 +454,7 @@ export class CourseService {
 
     for (const unit of course.units) {
       for (const lesson of unit.lessons) {
-        const filePath = safeJoin(courseDir, `${lesson.id}.${type}.md`);
+        const filePath = safeJoin(courseDir, tabFileName(lesson.id, type));
         const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
 
         results.push({
@@ -369,7 +511,7 @@ export class CourseService {
     lessonId: string,
     docType: 'summary' | 'cheatsheet' | 'test'
   ): string | null {
-    const filePath = safeJoin(courseDir, `${lessonId}.${docType}.md`);
+    const filePath = safeJoin(courseDir, tabFileName(lessonId, docType));
     if (!fs.existsSync(filePath)) return null;
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
@@ -548,7 +690,7 @@ export class CourseService {
     const allLessons = course.units.flatMap((u) => u.lessons);
     let totalWords = 0;
     for (const lesson of allLessons) {
-      const lessonFile = safeJoin(courseDir, `${lesson.id}.lesson.md`);
+      const lessonFile = safeJoin(courseDir, tabFileName(lesson.id, 'lesson'));
       if (fs.existsSync(lessonFile)) {
         totalWords += countWords(fs.readFileSync(lessonFile, 'utf8'));
       }
@@ -585,7 +727,7 @@ export class CourseService {
         lines.push(`### Lesson ${lesson.id}${kind}: ${lesson.title}\n\n`);
 
         // Effort signals: raw content size + summary information density.
-        const lessonFile = safeJoin(courseDir, `${lesson.id}.lesson.md`);
+        const lessonFile = safeJoin(courseDir, tabFileName(lesson.id, 'lesson'));
         const lessonWords = fs.existsSync(lessonFile)
           ? countWords(fs.readFileSync(lessonFile, 'utf8'))
           : 0;
@@ -660,7 +802,7 @@ export class CourseService {
 
     for (const unit of course.units) {
       for (const lesson of unit.lessons) {
-        const lessonFile = safeJoin(courseDir, `${lesson.id}.lesson.md`);
+        const lessonFile = safeJoin(courseDir, tabFileName(lesson.id, 'lesson'));
         const wordCount = fs.existsSync(lessonFile)
           ? countWords(fs.readFileSync(lessonFile, 'utf8'))
           : 0;

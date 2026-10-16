@@ -19,12 +19,11 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
      - **Practice Test**: Interactive quiz runner for Ontario KICA-aligned questions (Knowledge & Understanding, Thinking & Investigation, Communication, Application) with instant scoring, feedback, and rationale reveals.
    - **Inline CodeMirror Editor**: Toggle between rich reading view and live Markdown editing with instant auto-save to disk.
    - **Incremental Chapter Additions**: An `[+] Add Chapters` button in the workspace subheader allows uploading new lesson `.zip` archives directly to the active course. Existing customized notes and edits are strictly preserved while new chapters are parsed and indexed.
-3. **Prompts Engine (`/prompts`)**:
-   - Customizable prompt templates for generating lesson summaries, cheatsheets, and KICA tests with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
-4. **Settings (`/settings`)**:
-   - Data storage path configuration (default: `data/courses`).
-   - **AI Models**: a list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown — every AI feature (Ask AI, summaries, cheatsheets, tests, schedules) routes through the active card. See §16.
-   - Manual re-index and re-parse triggers.
+3. **Settings (`/settings`) & Prompts Engine**:
+   - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, AI models, maintenance) and `[Prompts]` (prompt template management).
+   - **Prompts Management**: Template editor for course-wide and lesson prompts (summaries, cheatsheets, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
+   - **AI Models**: A list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
+   - **Maintenance & Ingestion**: Manual re-index and image compression triggers.
 
 ---
 
@@ -70,7 +69,7 @@ ilc-study-tool/
 │       │   ├── components/     # Svelte 5 components (Header, MarkdownViewer, CodeMirrorEditor, QuizRunner, UploadModal)
 │       │   ├── parser/         # Extraction engine (Cheerio + Turndown + Asset pipeline + Incremental ingester)
 │       │   └── server/         # File access repository and LLM service
-│       └── routes/             # SvelteKit routes (+layout, /, /courses/[id], /prompts, /settings, /api)
+│       └── routes/             # SvelteKit routes (+layout, /, /courses/[id], /schedules, /settings, /api)
 └── tauri/                      # Tauri v2 Desktop App
     ├── Cargo.toml              # Tauri v2 dependency declarations
     ├── tauri.conf.json         # Tauri v2 window & build configuration
@@ -84,13 +83,15 @@ To accelerate code navigation and prevent exhaustive searches across the codebas
 app/src/
 ├── lib/
 │   ├── api.ts                  # Typed client apiFetch() and environment detection (isTauriEnvironment)
+│   ├── tabs.ts                 # CANONICAL single source of truth for tab slugs, document filenames (tabFileName, courseDocFileName, docFileName), route parsing (parseDocFileName), and URL helpers (courseTabHref)
+│   ├── checkpoint.ts           # Checkpoint domain models, 12-color sticky note palette, and color utilities
 │   ├── llmProviders.ts         # Shared provider presets/protocols (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible)
 │   ├── llmClient.ts            # Typed /api/llm client: model cards, active model, per-card connection test
 │   ├── queueStatus.svelte.ts   # Reactive global queue poll store & task listeners
-│   ├── scrollMemory.ts         # Per-tab scroll offsets in localStorage (tab_scroll:*) + stale-key pruning
+│   ├── scrollMemory.ts         # Legacy per-tab scroll offsets in localStorage (superceded by Checkpoint position tracking)
 │   ├── theme.svelte.ts         # Light / Dark / System theme manager
 │   ├── components/             # Reusable UI components
-│   │   ├── Header.svelte           # Top application navigation bar
+│   │   ├── Header.svelte           # Top application navigation bar (Courses, Checkpoints, Settings, Prompts)
 │   │   ├── LessonSelector.svelte   # Unit & Lesson selector dropdown + prev/next controls
 │   │   ├── PromptCard.svelte       # Prompt template inspection & re-generation trigger
 │   │   ├── QuizRunner.svelte       # Interactive Ontario KICA practice quiz runner & scoring
@@ -98,7 +99,10 @@ app/src/
 │   │   ├── CodeMirrorEditor.svelte # CodeMirror 6 markdown editor integration
 │   │   ├── DocumentViewerModal.svelte # Fullscreen modal for viewing curriculum PDFs & diagrams
 │   │   ├── UploadModal.svelte      # Course zip/mhtml ingestion modal (requires mandatory course code)
-│   │   └── AIQueuePopover.svelte   # Popover showing live background AI generation jobs
+│   │   ├── AIQueuePopover.svelte   # Popover showing live background AI generation jobs
+│   │   ├── FloatingCheckpointTrigger.svelte # Cursor-height floating trigger for creating note checkpoints
+│   │   ├── CheckpointMarker.svelte # In-page persistent marker (color flag + subtle date)
+│   │   └── CheckpointModal.svelte  # Modal dialog for creating and editing post-it checkpoint notes
 │   ├── editor/                 # CodeMirror 6 Obsidian-style Live Preview extensions
 │   │   ├── livePreview.ts          # Heading, bold, italic, link, list & table styling widgets
 │   │   ├── frontmatter.ts          # Interactive YAML frontmatter Properties widget
@@ -121,7 +125,7 @@ app/src/
 │   └── server/                 # Framework-agnostic backend services & API logic
 │       ├── api.ts                  # handleApiRequest() — Single source of truth for ALL /api/* routes
 │       ├── backup.ts               # Streaming zip backup export/import (createDataBackupZipStream)
-│       ├── courses.ts              # CourseService (lessons, tab files, course-wide payload)
+│       ├── courses.ts              # CourseService (lessons, tab files, course-wide payload, checkpoints persistence)
 │       ├── queue.ts                # GenerationQueue & worker for background AI jobs
 │       ├── paths.ts                # Filesystem paths, DATA_DIR resolution, and path asserts
 │       ├── llm.ts                  # Unified LLM client: multi-card store, active-model resolution, OpenAI-compatible + llama.cpp native transports
@@ -129,7 +133,8 @@ app/src/
 └── routes/                     # SvelteKit page routes
     ├── +layout.svelte              # Root shell with global navigation and theme initialization
     ├── +page.svelte                # Courses dashboard & library
-    ├── courses/[course_id]/        # Course study workspace (Full Lesson, Summary, Cheatsheet, Test)
+    ├── checkpoints/                # Global Checkpoints hub (course cards layout like /schedules, newest-to-oldest)
+    ├── checkpoint/                 # Route redirect to /checkpoints
     ├── prompts/                    # Global prompt templates editor
     ├── settings/                   # Data storage path, LLM config, backup/restore, re-indexing
     └── api/[...path]/+server.ts    # SvelteKit catch-all adapter delegating to api.ts
@@ -678,3 +683,100 @@ Provider presets live in the dependency-free `app/src/lib/llmProviders.ts`, shar
 - Settings UI: one card per provider with provider/base URL/model/API key/auth header/timeout fields, an inline **Add another model provider** `[+]` tile, per-card **Test** and remove, plus the **Active Model** dropdown whose options are the model ids of all added cards.
 - **Clearing is explicit.** `save_store` counts the cards that would actually survive normalization (a card without a Base URL is dropped, not stored) and rejects a save that would leave none (400 for all-unusable input, 409 without `confirmClear: true`), so no client bug or stale tab can silently wipe the configured models. An unreadable/corrupt `llm_config.json` is reported as an error (HTTP 500, file left untouched) rather than as "no models configured". Saves replace the whole list, so two Settings windows editing at once resolve last-writer-wins — close the other window before re-arranging models.
 - The frontend keeps no LLM state of its own: feature call sites ask `$lib/llmClient` for the active card (guarding "no model configured → open setup modal") and the server resolves the real config, so a stale browser cache can never generate with the wrong model.
+
+---
+
+## 17. Checkpoint Architecture & Canonical Tab/Document Helpers
+
+The Checkpoint system provides bookmarking and contextual post-it note annotations across all course study pages, coupled with a central hub (`/checkpoint`) for tracking and deep-linking into study notes.
+
+### 17.1 Canonical Tab & Document Helpers (Single Source of Truth)
+To maintain architectural integrity and eliminate duplicate implementations:
+- **Central Authority (`app/src/lib/tabs.ts`)**:
+  All Markdown document filenames and tab route navigation URLs MUST be created and parsed exclusively through the canonical helper functions in `tabs.ts`:
+  - `tabFileName(lessonId: string, tab: string): string` -> e.g. `01.01.lesson.md`, `02.04.summary.md`
+  - `courseDocFileName(tab: string): string` -> e.g. `course.summary.md`, `course.cheatsheet.md`
+  - `docFileName(scope: string, tab: string, isCourseScope: boolean): string` -> Unified document resolver
+  - `parseDocFileName(file: string): { isCourseScope: boolean; lessonId: string; tab: string } | null` -> Filename parser
+  - `courseTabHref(courseId: string, scope: string, tab: string, isCourseScope: boolean): string` -> URL path generator
+- **No Duplicate Helper Functions**: Modules across both frontend and server layers must import and reuse these functions. Writing ad-hoc regexes or local filename/route resolvers is strictly prohibited.
+
+### 17.2 Checkpoint Data Model & Storage (`checkpoint.json`)
+Checkpoints are stored per course in `data/courses/<course_id>/checkpoint.json`:
+- **`type: 'position'`**:
+  Automatically records the user's vertical reading position in a file (debounced by ~600ms during scrolling). Replaces the legacy browser `localStorage` scroll memory with persistent filesystem-backed bookmarking that synchronizes across restarts and sessions.
+- **`type: 'note'`**:
+  User-created post-it notes attached to a specific vertical offset on a document page.
+  ```json
+  {
+    "id": "cp_1729115000000_abc123",
+    "courseId": "baf3m",
+    "file": "01.01.lesson.md",
+    "verticalPosition": 450,
+    "type": "note",
+    "color": "yellow",
+    "noteText": "Review balance sheet debit/credit rules here.",
+    "date": "2026-10-16T12:00:00.000Z"
+  }
+  ```
+
+### 17.3 10-Color Post-It Note Palette (Grouped Two-Set System)
+Standardized on two distinct 5-color sets (`CHECKPOINT_COLORS` in `app/src/lib/checkpoint.ts`), grouped together in the UI and data layer:
+- **Set 1 (Pastel / Soft Tones)**:
+  1. Aqua Mint (`#a7f8ef`)
+  2. Canary Yellow (`#f7fa6d`, default)
+  3. Soft Lavender (`#d5b3ff`)
+  4. Golden Yellow (`#ffd000`)
+  5. Pastel Pink (`#f086be`)
+- **Set 2 (Vibrant / Bold Tones)**:
+  6. Tangerine Orange (`#ffa417`)
+  7. Electric Blue (`#0055ff`)
+  8. Coral Red (`#ff5a3c`)
+  9. Electric Cyan (`#3ce1ff`)
+  10. Neon Green (`#48ff40`)
+- **Accessibility & Contrast**: Each swatch defines `isLight`, light theme background/border/text, and dark theme background/border/text, ensuring high legibility for both card bodies and marker flags. Backward-compatible aliases (`mint`, `amber`, `lime`, `purple`, etc.) resolve seamlessly via `getCheckpointColor`.
+- **UI Grouping**: Color pickers in `CheckpointModal` and filter bars in `/checkpoint` render Set 1 grouped together in a dedicated container, followed by Set 2 grouped together.
+
+### 17.4 In-Page Interaction & Post-It Note Architecture
+1. **Floating Trigger (`FloatingCheckpointTrigger.svelte`)**:
+   - Follows the user's cursor height along the right margin of the reading container (`max-w-5xl`). Excluded from schedule tabs and editor mode.
+   - Standardized on the `FlagTriangleRight` icon from `lucide-svelte`.
+   - **Debounced Hold**: Holds visibility for **2,500ms** after movement stops before gracefully fading out.
+   - **Horizontal Approach Stabilization (Deadband)**: When moving the cursor horizontally towards the trigger button (within 180px), vertical position tracking locks in place to prevent the button from jittering up and down while aiming.
+   - **Direct Hover Locks**: The button element itself captures mouseenter/mousemove/mouseleave to prevent disappearing under the cursor.
+2. **In-Page Markers & Sticky Note Overlay (`CheckpointMarker.svelte`)**:
+   - Renders as a 36px circular dot (`w-9 h-9`) colored with the note's swatch color with an internal `FlagTriangleRight` icon (dark on light swatches, white on dark swatches).
+   - Timestamp is rendered cleanly **above** the circular dot in light grey letters (`text-[11px] font-mono text-stone-400 dark:text-stone-500`).
+   - Positioned at the exact vertical offset where the note was added.
+   - **Non-Modal Post-It Overlay**: Clicking the dot expands a post-it note to the left by **250px by 100px** (`w-[250px] h-[100px]`) directly on the page. Toggled open and closed by clicking the circular dot.
+   - **Scroll Persistence**: The note is anchored in the scrollable page container, staying open beside the text so the user can continue reading and scrolling naturally.
+   - **First-Line Text & Overlay Actions**: Note text starts immediately on the very first line, accompanied by a compact `Edit | Trash` overlay floated to the top-right. Omit date, flag, and redundant `[x]` close buttons from the post-it body for maximum space efficiency.
+   - **Safe Inline Deletion**: Trash action triggers an inline 2-step confirmation (`Delete? [Yes] [No]`) directly within the overlay, completely bypassing native OS/browser `confirm()` dialogs that are blocked in Tauri/WebKit webviews.
+   - **Scrollable Note Body**: Long text scrolls smoothly inside the fixed 100px card body (`overflow-y-auto`, `scrollbar-thin`).
+3. **Edit & Creation Modal (`CheckpointModal.svelte`)**:
+   - Opened when clicking the `+ 🚩` floating trigger to create a new note, or clicking `Edit` on an existing in-page post-it note.
+   - Provides grouped color selection (Set 1 Pastels & Set 2 Vibrants), keyboard shortcuts (`⌘+Enter`), and deletion confirmation.
+4. **Global Checkpoints Hub (`/checkpoints`)**:
+   - **Top Navigation**: Accessible via the `Checkpoints` button in `Header.svelte` (`/checkpoints`, with `/checkpoint` auto-redirecting for backwards compatibility).
+   - **Search & Palette Filter Bar**:
+     - Positioned at the top of the page.
+     - Search input dynamically filters notes, lessons, and course codes across all courses in real time.
+     - Grouped color palette buttons (Set 1 Pastels & Set 2 Vibrants) allow instant filtering by note swatch color.
+   - **Course Cards Layout (modeled after `/schedule`)**:
+     - Renders courses organized alphabetically in a responsive 2-column grid (`grid gap-4 sm:grid-cols-2`).
+     - Course Card Header: Displays the course title (clickable link to `/courses/<id>`), uppercase monospace course code, and a note count badge (`X notes`).
+     - Course Card Footer: Provides a quick "Open course →" direct link.
+   - **Notes Chronological Sorting (Newest to Oldest)**:
+     - While the courses are organized alphabetically, the notes inside each course card are strictly sorted by date/time from most recent to oldest (`new Date(b.date).getTime() - new Date(a.date).getTime()`).
+   - **Compact Item Styling**:
+     - **Color Dot**: Displays the checkpoint's color dot with a subtle contrast ring for dark/light mode compatibility.
+     - **Scope / Lesson Badge**: Displays a compact identifier (e.g., `1.1`, `Summary`).
+     - **Written Text Preview**: Rendered in a small font (`text-xs`), single-line truncated snippet (`truncate`).
+     - **No Date Displayed**: Date strings are deliberately omitted from the item rows to maximize compactness and focus on note content.
+   - **Scrollable Card Lists**:
+     - Checkpoint rows inside each card are wrapped in a scrollable container (`max-h-60 overflow-y-auto`) so cards stay bounded when a course contains many notes.
+   - **Deep-Linking & Quick Deletion**:
+     - Clicking any checkpoint item navigates directly to that document, scrolling with a 60px breathing offset above the note (`Math.max(0, target.verticalPosition - 60)`), unfolds the post-it note, and cleans the URL query parameter via `replaceState`.
+     - Hovering over an item reveals a subtle delete icon to remove notes directly from the hub without leaving the page.
+
+

@@ -138,10 +138,42 @@ describe('buildSchedulePrompt', () => {
 
     // New values should be present
     expect(result).toContain('- Start date: 2026-11-01');
-    expect(result).toContain('- Study days: Tue/Thu');
-    expect(result).toContain('- Session length: 90 minutes');
-    expect(result).toContain('- Max sessions per study day: 2');
-    expect(result).toContain('- Additional notes from the student: new focus notes');
+    expect(result).toContain('- Session length: 90 minutes; 2 sessions/day');
+    expect(result).toContain('- Additional notes: new focus notes');
+  });
+
+  it('formats daily session times when dayTimes are provided', () => {
+    const prefs = defaultSchedulePreferences(new Date('2026-10-15T12:00:00'));
+    prefs.studyDays = [1, 3];
+    prefs.sessionsPerDay = 2;
+    prefs.dayTimes = {
+      1: ['09:00', '14:00'],
+      3: ['10:00', '15:30']
+    };
+
+    const result = buildSchedulePrompt('# Template', prefs);
+    expect(result).toContain('- Daily session times: Mon: 09:00, 14:00; Wed: 10:00, 15:30');
+  });
+
+  it('formats student preferences in the concise modern format with end date and total calendar days', () => {
+    const prefs = defaultSchedulePreferences(new Date('2026-10-15T12:00:00'));
+    prefs.startDate = '2026-10-15';
+    prefs.calculatedEndDate = '2026-11-08';
+    prefs.sessionLengthMin = 90;
+    prefs.sessionsPerDay = 1;
+    prefs.studyDays = [1, 3, 5];
+    prefs.dayTimes = {
+      1: ['09:00'],
+      3: ['09:00'],
+      5: ['09:00']
+    };
+
+    const result = buildSchedulePrompt('# Template', prefs);
+    expect(result).toContain('- Start date: 2026-10-15; end date: 2026-11-08');
+    expect(result).toContain('- Session length: 90 minutes; 1 session/day');
+    expect(result).toContain('- Daily session times: Mon: 09:00; Wed: 09:00; Fri: 09:00');
+    expect(result).toContain('- Total calendar days: 25');
   });
 });
+
 

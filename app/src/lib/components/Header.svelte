@@ -3,12 +3,12 @@
   import { goto } from '$app/navigation';
   import {
     BookOpen,
-    Sparkles,
     Settings,
     GraduationCap,
     ChevronLeft,
     ChevronRight,
-    CalendarDays
+    CalendarDays,
+    FlagTriangleRight
   } from 'lucide-svelte';
   import AIQueuePopover from './AIQueuePopover.svelte';
   import { goBackOrHome } from '$lib/navHistory';
@@ -101,8 +101,6 @@
 
   <!-- Right: Top-Level Navigation & Background AI Queue -->
   <nav class="flex items-center space-x-1.5 shrink-0">
-    <AIQueuePopover {courseId} {onLessonUpdated} />
-
     <button
       type="button"
       onclick={() => goto('/')}
@@ -114,6 +112,15 @@
 
     <button
       type="button"
+      onclick={() => goto('/checkpoints')}
+      class="flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition cursor-pointer {activePath.startsWith('/checkpoint') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+    >
+      <FlagTriangleRight class="w-3.5 h-3.5" />
+      <span>Checkpoints</span>
+    </button>
+
+    <button
+      type="button"
       onclick={() => goto('/schedules')}
       class="flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition cursor-pointer {activePath.startsWith('/schedules') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
     >
@@ -121,21 +128,14 @@
       <span>Schedules</span>
     </button>
 
-    <button
-      type="button"
-      onclick={() => goto('/prompts')}
-      class="flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition cursor-pointer {activePath.startsWith('/prompts') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
-    >
-      <Sparkles class="w-3.5 h-3.5" />
-      <span>Prompts</span>
-    </button>
+    <AIQueuePopover {courseId} {onLessonUpdated} />
 
     <button
       type="button"
       onclick={() => goto('/settings')}
       aria-label="Settings"
       title="Settings"
-      class="flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium transition cursor-pointer {activePath.startsWith('/settings') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+      class="flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium transition cursor-pointer {activePath.startsWith('/settings') || activePath.startsWith('/prompts') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
     >
       <Settings class="w-4 h-4" />
     </button>

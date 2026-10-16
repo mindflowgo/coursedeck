@@ -12,8 +12,7 @@
     Play,
     X,
     RotateCcw,
-    Trash2,
-    ChevronDown
+    Trash2
   } from 'lucide-svelte';
   import Elapsed from './Elapsed.svelte';
   import type { GenerationTask } from '$lib/server/queue';
@@ -64,6 +63,12 @@
   let pendingCount = $derived(scopedTasks.filter((t) => t.status === 'pending').length);
   let completedCount = $derived(scopedTasks.filter((t) => t.status === 'completed').length);
   let failedCount = $derived(scopedTasks.filter((t) => t.status === 'failed').length);
+  let isGenerating = $derived(activeTask !== null);
+  let totalGeneratingCount = $derived.by(() => {
+    const activeCount = activeTask ? (courseId ? (activeTask.courseId === courseId.toLowerCase() ? 1 : 0) : 1) : 0;
+    const total = activeCount + pendingCount;
+    return total > 0 ? total : (activeTask ? 1 : 0);
+  });
   let isBusy = $derived(status.pendingCount > 0 || activeTask !== null);
 
   let progressPercent = $derived.by(() => {
@@ -105,29 +110,27 @@
 </script>
 
 <div class="relative">
-  <!-- Trigger Button in Header -->
+  <!-- Trigger Button in Header: grey, shows queue count beside icon when generating -->
   <button
+    type="button"
     onclick={() => { isOpen = !isOpen; if (isOpen) queueStatus.refresh(); }}
-    class="relative flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/80 dark:border-stone-700 bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 transition shadow-2xs hover:shadow-xs cursor-pointer {activeTask ? 'border-amber-400 dark:border-amber-600 bg-amber-50/50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200' : ''}"
-    title="Background AI Generation Queue"
+    class="relative flex items-center justify-center h-8 rounded-md text-xs font-medium transition cursor-pointer text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-100 {isGenerating ? 'px-2 space-x-1.5' : 'w-8'} {isOpen ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : ''}"
+    title={isGenerating ? `Background AI Generation Queue (${totalGeneratingCount} active/queued)` : 'Background AI Generation Queue'}
+    aria-label="Background AI Generation Queue"
+    aria-expanded={isOpen}
   >
-    {#if activeTask}
-      <Loader2 class="w-3.5 h-3.5 text-amber-500 animate-spin" />
-    {:else if !reachable}
-      <AlertCircle class="w-3.5 h-3.5 text-rose-500" />
-    {:else}
-      <Sparkles class="w-3.5 h-3.5 text-amber-500" />
-    {/if}
-
-    {#if pendingCount > 0}
+    {#if isGenerating}
+      <Loader2 class="w-4 h-4 text-stone-600 dark:text-stone-300 animate-spin shrink-0" />
       <span
-        class="inline-flex items-center justify-center min-w-[18px] h-4 px-1 text-[10px] font-bold text-white bg-amber-500 rounded-full animate-pulse shadow-xs ml-0.5"
+        class="inline-flex items-center justify-center min-w-[17px] h-4 px-1 text-[10px] font-bold rounded-full bg-stone-200 dark:bg-stone-700 text-stone-700 dark:text-stone-200 tabular-nums shadow-2xs"
       >
-        {pendingCount}
+        {totalGeneratingCount}
       </span>
+    {:else if !reachable}
+      <AlertCircle class="w-4 h-4 text-rose-500 shrink-0" />
+    {:else}
+      <Sparkles class="w-4 h-4 text-stone-500 dark:text-stone-400 shrink-0" />
     {/if}
-
-    <ChevronDown class="w-3 h-3 text-stone-400 dark:text-stone-500 ml-0.5" />
   </button>
 
   <!-- Popover Menu -->

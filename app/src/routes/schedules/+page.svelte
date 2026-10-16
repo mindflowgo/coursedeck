@@ -32,7 +32,7 @@
   let isLoading = $state(true);
   let loadFailed = $state(false);
   let viewMode: 'week' | 'courses' = $state('courses');
-  let togglingLine: number | null = $state(null);
+  let togglingKey: string | null = $state(null);
 
   const todayIso = new Date().toISOString().split('T')[0];
   const weekEndIso = new Date(Date.now() + 7 * 86_400_000).toISOString().split('T')[0];
@@ -75,7 +75,7 @@
   onMount(loadSchedules);
 
   async function handleToggle(course: CourseSchedule, event: ScheduleEvent) {
-    togglingLine = event.lineIndex;
+    togglingKey = `${course.courseId}:${event.lineIndex}`;
     try {
       const updated = toggleEventDone(course.markdown, event.lineIndex);
       const res = await apiFetch(`/api/courses/${course.courseId}/course-docs`, {
@@ -91,7 +91,7 @@
       console.error('Failed to update schedule:', e);
       alert('Could not save the change — please try again.');
     } finally {
-      togglingLine = null;
+      togglingKey = null;
     }
   }
 
@@ -145,19 +145,14 @@
   }}
 />
 
-<main class="flex-1 overflow-y-auto px-4 sm:px-6 py-8 max-w-5xl mx-auto w-full space-y-6">
+<main class="flex-1 overflow-y-auto px-4 py-8 sm:px-8 max-w-6xl mx-auto w-full space-y-6">
     <!-- Page header + view toggle -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center space-x-2.5">
-        <div class="p-2 rounded-xl bg-stone-900 dark:bg-stone-800 text-white dark:text-stone-200 shadow-2xs">
-          <CalendarDays class="w-4 h-4" />
-        </div>
-        <div>
-          <h1 class="text-lg font-semibold text-stone-900 dark:text-stone-100">Schedules</h1>
-          <p class="text-xs text-stone-500 dark:text-stone-400">
-            Upcoming study sessions across your courses — tick them off as you go
-          </p>
-        </div>
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Schedules</h1>
+        <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
+          Upcoming study sessions across your courses — tick them off as you go
+        </p>
       </div>
 
       <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium">
@@ -217,11 +212,11 @@
                 {/if}
               </div>
               <div class="space-y-1.5">
-                {#each group.items as { course, event } (event.lineIndex)}
+                {#each group.items as { course, event } (`${course.courseId}:${event.lineIndex}`)}
                   <div class="flex items-center space-x-3 p-3 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
                     <button
                       onclick={() => handleToggle(course, event)}
-                      disabled={togglingLine === event.lineIndex}
+                      disabled={togglingKey === `${course.courseId}:${event.lineIndex}`}
                       title={event.done ? 'Mark as not done' : 'Mark as done'}
                       class="w-4 h-4 shrink-0 rounded border flex items-center justify-center transition cursor-pointer {event.done
                         ? 'bg-emerald-600 border-emerald-600 text-white'
@@ -304,11 +299,11 @@
                 </p>
               {:else}
                 <div class="space-y-1.5">
-                  {#each upcoming as event (event.lineIndex)}
+                  {#each upcoming as event (`${course.courseId}:${event.lineIndex}`)}
                     <div class="flex items-center space-x-2.5 text-xs">
                       <button
                         onclick={() => handleToggle(course, event)}
-                        disabled={togglingLine === event.lineIndex}
+                        disabled={togglingKey === `${course.courseId}:${event.lineIndex}`}
                         title="Mark as done"
                         class="w-3.5 h-3.5 shrink-0 rounded border border-stone-300 dark:border-stone-600 hover:border-stone-500 transition cursor-pointer"
                       ></button>

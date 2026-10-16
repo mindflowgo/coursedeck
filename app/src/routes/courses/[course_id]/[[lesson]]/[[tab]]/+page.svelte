@@ -3,7 +3,7 @@
   import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
   import { page } from '$app/stores';
-  import { goto } from '$app/navigation';
+  import { goto, replaceState } from '$app/navigation';
   import Header from '$lib/components/Header.svelte';
   import LessonSelector from '$lib/components/LessonSelector.svelte';
   import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
@@ -30,7 +30,8 @@
     customTabDisplayName,
     validateTabName,
     slugifyTabName,
-    starterPromptForTab
+    starterPromptForTab,
+    docFileName
   } from '$lib/tabs';
   import { onMount, onDestroy, untrack } from 'svelte';
   import {
@@ -53,12 +54,17 @@
     Plus,
     X,
     RefreshCw,
-    FileDown
+    RotateCcw,
+    FileDown,
+    MoreHorizontal
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
   import { afterPaint, installPerfObservers, perf } from '$lib/perf';
-  import { scrollMemoryKey, recallScroll, rememberScroll } from '$lib/scrollMemory';
+  import type { Checkpoint } from '$lib/checkpoint';
+  import FloatingCheckpointTrigger from '$lib/components/FloatingCheckpointTrigger.svelte';
+  import CheckpointMarker from '$lib/components/CheckpointMarker.svelte';
+  import CheckpointModal from '$lib/components/CheckpointModal.svelte';
 
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
@@ -70,6 +76,7 @@
   let isEditing: boolean = $state(false);
   let isUploadModalOpen: boolean = $state(false);
   let uploadModalMode: 'add' | 'replace' = $state('add');
+  let isLessonActionsOpen: boolean = $state(false);
   let isLLMModalOpen: boolean = $state(false);
   let isScheduleModalOpen: boolean = $state(false);
   let isGeneratingAI: boolean = $state(false);
@@ -125,43 +132,89 @@
   let isSaving = $state(false);
   let saveSuccessMessage = $state('');
   let isExportingPdf = $state(false);
+  let showPromptCard = $state(false);
 
-  // ---- Workspace scroll memory -------------------------------------------
-  // Every course/lesson/tab page remembers its own offset (tab_scroll:*), so
-  // switching tabs lands at the top for a first visit and back where the
-  // reader stopped on later ones.
+  function togglePromptCard() {
+    showPromptCard = !showPromptCard;
+    if (showPromptCard && contentScroller) {
+      contentScroller.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }
+
+  // ---- Workspace checkpoints (position and notes) -----------------------
   let contentScroller = $state<HTMLDivElement | undefined>();
   let showScrollTop = $state(false);
   const SCROLL_TOP_BUTTON_AFTER = 400;
-  const SCROLL_SAVE_DEBOUNCE_MS = 200;
+  const SCROLL_SAVE_DEBOUNCE_MS = 300;
   let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
-  let pendingScroll: { key: string; top: number } | null = null;
+  let pendingScroll: { file: string; top: number } | null = null;
 
-  function currentScrollKey(): string {
-    return scrollMemoryKey(courseId || '', isCourseScope ? 'course' : selectedLessonId, activeTab);
+  let checkpoints: Checkpoint[] = $state([]);
+  let isCheckpointModalOpen: boolean = $state(false);
+  let activeCheckpoint: Partial<Checkpoint> | null = $state(null);
+  let openNoteIds = $state<Set<string>>(new Set());
+
+  let lastRestoredFile: string = '';
+  let lastHandledCheckpointQuery: string = '';
+
+  let currentFile = $derived(
+    docFileName(isCourseScope ? 'course' : selectedLessonId, activeTab, isCourseScope)
+  );
+  let currentFileNotes = $derived(
+    checkpoints.filter((c) => c.type === 'note' && c.file === currentFile)
+  );
+
+  async function loadCheckpoints() {
+    if (!courseId) return;
+    try {
+      const res = await apiFetch(`/api/courses/${courseId}/checkpoints`);
+      if (res.ok) {
+        const data = await res.json();
+        checkpoints = data.checkpoints || [];
+      }
+    } catch (e) {
+      console.warn('Failed to load checkpoints:', e);
+    }
   }
 
   function handleContentScroll() {
     if (!contentScroller) return;
     const top = contentScroller.scrollTop;
     showScrollTop = top > SCROLL_TOP_BUTTON_AFTER;
-    // Content swaps replace the page with a short loading spinner, which
-    // clamps scrollTop to 0 — that is not the reader scrolling to the top,
-    // so don't let it overwrite their remembered offset.
     if (isCourseScope ? isLoadingCourseDoc : isLoadingLesson) return;
-    // Capture key+offset now: by the time the debounce fires the user may be
-    // on another tab, and the write must target the page that was scrolled.
-    pendingScroll = { key: currentScrollKey(), top };
+    pendingScroll = { file: currentFile, top };
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = setTimeout(flushPendingScroll, SCROLL_SAVE_DEBOUNCE_MS);
   }
 
-  function flushPendingScroll() {
+  async function flushPendingScroll() {
     clearTimeout(scrollSaveTimer);
     scrollSaveTimer = undefined;
-    if (pendingScroll) {
-      rememberScroll(pendingScroll.key, pendingScroll.top);
+    if (pendingScroll && courseId) {
+      const { file, top } = pendingScroll;
       pendingScroll = null;
+      try {
+        await apiFetch(`/api/courses/${courseId}/checkpoints/position`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ file, verticalPosition: top })
+        });
+        const existing = checkpoints.find((c) => c.type === 'position' && c.file === file);
+        if (existing) {
+          existing.verticalPosition = top;
+          existing.date = new Date().toISOString();
+        } else {
+          checkpoints.push({
+            id: `cp_pos_${Date.now()}`,
+            file,
+            verticalPosition: top,
+            type: 'position',
+            date: new Date().toISOString()
+          });
+        }
+      } catch (e) {
+        console.warn('Failed to record position checkpoint:', e);
+      }
     }
   }
 
@@ -169,16 +222,151 @@
     contentScroller?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // Land the page now on screen at its remembered offset once its content is
-  // in the DOM ($effect runs after updates; course docs arrive async, hence
-  // the loading gate). Pages never scrolled start at the top.
+  // Restore position or open linked checkpoint when content is in DOM
   $effect(() => {
-    const key = currentScrollKey();
     const isLoading = isCourseScope ? isLoadingCourseDoc : isLoadingLesson;
     if (isLoading || !contentScroller) return;
-    contentScroller.scrollTop = recallScroll(key);
+
+    const file = currentFile;
+    const queryCheckpointId = $page.url.searchParams.get('checkpoint');
+
+    // 1. If there's a target checkpoint in the query parameter, handle it once
+    if (queryCheckpointId) {
+      if (queryCheckpointId !== lastHandledCheckpointQuery) {
+        const target = checkpoints.find((c) => c.id === queryCheckpointId);
+        if (target) {
+          lastHandledCheckpointQuery = queryCheckpointId;
+          lastRestoredFile = file;
+
+          // Give 60px breathing space above the note so it's not flush against the top edge
+          const targetTop = Math.max(0, target.verticalPosition - 60);
+          contentScroller.scrollTop = targetTop;
+          showScrollTop = targetTop > SCROLL_TOP_BUTTON_AFTER;
+
+          untrack(() => {
+            const next = new Set(openNoteIds);
+            next.add(target.id);
+            openNoteIds = next;
+          });
+
+          // Clean up the URL parameter cleanly in SvelteKit
+          try {
+            const cleanUrl = new URL($page.url);
+            cleanUrl.searchParams.delete('checkpoint');
+            replaceState(cleanUrl.pathname + cleanUrl.search, $page.state);
+          } catch {}
+          return;
+        }
+      } else {
+        // Already handled this checkpoint query
+        return;
+      }
+    } else {
+      lastHandledCheckpointQuery = '';
+    }
+
+    // 2. Only restore scroll position once per file load/switch
+    if (file === lastRestoredFile) {
+      return;
+    }
+
+    lastRestoredFile = file;
+    const pos = untrack(() => checkpoints.find((c) => c.type === 'position' && c.file === file));
+    if (pos && pos.verticalPosition > 0) {
+      contentScroller.scrollTop = pos.verticalPosition;
+    } else {
+      contentScroller.scrollTop = 0;
+    }
     showScrollTop = contentScroller.scrollTop > SCROLL_TOP_BUTTON_AFTER;
   });
+
+  function handleTriggerAddCheckpoint(verticalPosition: number) {
+    activeCheckpoint = {
+      file: currentFile,
+      verticalPosition,
+      color: 'yellow',
+      noteText: ''
+    };
+    isCheckpointModalOpen = true;
+  }
+
+  function handleToggleCheckpoint(cp: Checkpoint) {
+    const next = new Set(openNoteIds);
+    if (next.has(cp.id)) {
+      next.delete(cp.id);
+    } else {
+      next.add(cp.id);
+    }
+    openNoteIds = next;
+  }
+
+  function handleCloseCheckpoint(cp: Checkpoint) {
+    const next = new Set(openNoteIds);
+    next.delete(cp.id);
+    openNoteIds = next;
+  }
+
+  function handleEditCheckpoint(cp: Checkpoint) {
+    activeCheckpoint = cp;
+    isCheckpointModalOpen = true;
+  }
+
+  async function handleSaveCheckpoint(data: { color: string; noteText: string }) {
+    if (!activeCheckpoint || !courseId) return;
+    try {
+      const res = await apiFetch(`/api/courses/${courseId}/checkpoints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeCheckpoint.id,
+          file: activeCheckpoint.file || currentFile,
+          verticalPosition: activeCheckpoint.verticalPosition ?? contentScroller?.scrollTop ?? 0,
+          color: data.color,
+          noteText: data.noteText
+        })
+      });
+      if (res.ok) {
+        const body = await res.json();
+        const saved: Checkpoint = body.checkpoint;
+        const idx = checkpoints.findIndex((c) => c.id === saved.id);
+        if (idx !== -1) {
+          checkpoints[idx] = saved;
+        } else {
+          checkpoints = [...checkpoints, saved];
+        }
+        // Keep the saved note open as a post-it note on the page
+        const next = new Set(openNoteIds);
+        next.add(saved.id);
+        openNoteIds = next;
+      }
+    } catch (e) {
+      console.error('Failed to save checkpoint note:', e);
+      alert('Could not save checkpoint note.');
+    }
+  }
+
+  async function handleDeleteCheckpoint(cp?: Checkpoint) {
+    const target = cp || activeCheckpoint;
+    if (!target?.id || !courseId) return;
+    try {
+      const res = await apiFetch(`/api/courses/${courseId}/checkpoints/${target.id}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        checkpoints = checkpoints.filter((c) => c.id !== target.id);
+        const next = new Set(openNoteIds);
+        next.delete(target.id);
+        openNoteIds = next;
+        if (activeCheckpoint?.id === target.id) {
+          isCheckpointModalOpen = false;
+          activeCheckpoint = null;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to delete checkpoint note:', e);
+      alert('Could not delete checkpoint note.');
+    }
+  }
 
   // Default prompt for active tab
   let defaultPromptForActiveTab = $derived.by(() => {
@@ -233,6 +421,7 @@
       if (res.ok) {
         const data = await res.json();
         course = data.course;
+        await loadCheckpoints();
         if (!opts?.skipAutoLesson && !isCourseScope && course && course.units.length > 0 && course.units[0].lessons.length > 0) {
           const target = selectTargetLessonId || selectedLessonId || course.units[0].lessons[0].id;
           await loadLesson(target);
@@ -541,6 +730,7 @@
     }
     activeTab = tab;
     isEditing = false;
+    showPromptCard = false;
     const tabSuffix = tab !== 'lesson' ? `/${tab}` : '';
     if (isCourseScope) {
       loadCourseDocument(tab);
@@ -564,6 +754,8 @@
     );
     isCourseScope = false;
     isEditing = false;
+    showPromptCard = false;
+    isLessonActionsOpen = false;
     // Schedule is course-only; custom tabs are checked against file existence in loadLesson.
     if (activeTab === 'schedule') {
       activeTab = 'lesson';
@@ -584,6 +776,7 @@
     console.log(`[NAV] selectCourseMode | from lesson=${selectedLessonId} tab=${activeTab}`);
     isCourseScope = true;
     isEditing = false;
+    isLessonActionsOpen = false;
     if (!hasCourseDoc(activeTab)) {
       activeTab = 'lesson';
     }
@@ -1510,6 +1703,9 @@
 
         isCourseScope = true;
         activeTab = targetTab;
+        if (scopeChanged || tabChanged) {
+          showPromptCard = false;
+        }
 
         if (scopeChanged || tabChanged || !tabContents[targetTab]) {
           await loadCourseDocument(targetTab);
@@ -1547,12 +1743,16 @@
 
         const scopeChanged = isCourseScope;
         const lessonChanged = selectedLessonId !== targetLesson;
+        const tabChanged = activeTab !== targetTab;
         console.log(
           `[NAV] syncRoute lesson branch | target="${targetLesson}" targetTab=${targetTab} lessonChanged=${lessonChanged} scopeChanged=${scopeChanged}`
         );
 
         isCourseScope = false;
         activeTab = targetTab;
+        if (scopeChanged || lessonChanged || tabChanged) {
+          showPromptCard = false;
+        }
 
         if (scopeChanged || lessonChanged || !selectedLessonId) {
           if (targetLesson) {
@@ -1687,39 +1887,86 @@
         />
 
         {#if !isCourseScope}
-          <div class="flex items-center space-x-1.5 shrink-0">
+          <div class="relative shrink-0">
             <button
-              onclick={() => { uploadModalMode = 'add'; isUploadModalOpen = true; }}
-              class="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-xs font-medium text-stone-700 dark:text-stone-300 transition shadow-2xs cursor-pointer"
-              title="Add new chapters / lessons to this course"
+              type="button"
+              onclick={() => (isLessonActionsOpen = !isLessonActionsOpen)}
+              class="w-8 h-8 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 flex items-center justify-center text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition shadow-2xs cursor-pointer {isLessonActionsOpen ? 'bg-stone-100 dark:bg-stone-700 text-stone-900 dark:text-stone-100 ring-2 ring-stone-400/20' : ''}"
+              title="More options (Add, Replace, Generate Missing)"
+              aria-label="More lesson options"
+              aria-expanded={isLessonActionsOpen}
             >
-              <Plus class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
-              <span>Add</span>
+              <MoreHorizontal class="w-4 h-4" />
             </button>
 
-            <button
-              onclick={() => { uploadModalMode = 'replace'; isUploadModalOpen = true; }}
-              class="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-xs font-medium text-stone-700 dark:text-stone-300 transition shadow-2xs cursor-pointer"
-              title="Replace current chapter ({currentLessonTitle || selectedLessonId}) with a new file upload"
-            >
-              <RefreshCw class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
-              <span>Replace</span>
-            </button>
+            {#if isLessonActionsOpen}
+              <!-- Click outside backdrop -->
+              <div
+                class="fixed inset-0 z-40"
+                onclick={() => (isLessonActionsOpen = false)}
+                aria-hidden="true"
+              ></div>
 
-            <button
-              onclick={queueAllMissing}
-              disabled={isQueueingMissing}
-              class="flex items-center space-x-1 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-xs font-medium text-amber-900 dark:text-amber-200 transition shadow-2xs cursor-pointer disabled:opacity-50"
-              title="Scan course and queue all ungenerated study sheets (Summary, Cheatsheet, Test) in background"
-            >
-              {#if isQueueingMissing}
-                <Loader2 class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 animate-spin" />
-                <span>Queueing...</span>
-              {:else}
-                <Sparkles class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                <span>Generate Missing</span>
-              {/if}
-            </button>
+              <div
+                role="menu"
+                tabindex="-1"
+                class="absolute left-0 mt-1.5 w-52 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 py-1 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100"
+              >
+                <div class="py-1">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      isLessonActionsOpen = false;
+                      uploadModalMode = 'add';
+                      isUploadModalOpen = true;
+                    }}
+                    class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left"
+                    title="Add new chapters / lessons to this course"
+                  >
+                    <Plus class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                    <span>Add Chapters</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      isLessonActionsOpen = false;
+                      uploadModalMode = 'replace';
+                      isUploadModalOpen = true;
+                    }}
+                    class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left"
+                    title="Replace current chapter ({currentLessonTitle || selectedLessonId}) with a new file upload"
+                  >
+                    <RefreshCw class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                    <span>Replace Lesson</span>
+                  </button>
+                </div>
+
+                <div class="py-1">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => {
+                      isLessonActionsOpen = false;
+                      queueAllMissing();
+                    }}
+                    disabled={isQueueingMissing}
+                    class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left disabled:opacity-50"
+                    title="Scan course and queue all ungenerated study sheets (Summary, Cheatsheet, Test) in background"
+                  >
+                    {#if isQueueingMissing}
+                      <Loader2 class="w-3.5 h-3.5 text-amber-500 animate-spin shrink-0" />
+                      <span>Queueing...</span>
+                    {:else}
+                      <Sparkles class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span>Generate Missing</span>
+                    {/if}
+                  </button>
+                </div>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -1799,39 +2046,41 @@
       </div>
     </div>
 
-    <!-- Main Workspace Content Area (the scroll container for scroll memory).
-         overflow-anchor: none — restoring an offset must land exactly there;
-         without it, Chromium's scroll anchoring re-adjusts the position when
-         late-laying-out images change the article height, landing a few
-         dozen pixels short (and the drifted value gets re-saved). -->
-    <div
-      class="flex-1 overflow-y-auto p-4 sm:p-8 max-w-5xl mx-auto w-full [overflow-anchor:none]"
-      bind:this={contentScroller}
-      onscroll={handleContentScroll}
-    >
-      {#if isCourseScope ? isLoadingCourseDoc : isLoadingLesson}
+    <!-- Main Workspace Content Area (with checkpoints support). -->
+    <div class="relative flex-1 flex flex-col overflow-hidden w-full">
+      <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
+        <FloatingCheckpointTrigger
+          containerEl={contentScroller}
+          disabled={activeTab === 'schedule' || isEditing}
+          onTrigger={handleTriggerAddCheckpoint}
+        />
+      </div>
+
+      <div
+        class="relative flex-1 overflow-y-auto p-4 sm:p-8 max-w-5xl mx-auto w-full [overflow-anchor:none]"
+        bind:this={contentScroller}
+        onscroll={handleContentScroll}
+      >
+        <!-- In-page Checkpoint Markers for this file -->
+        {#if !isEditing && activeTab !== 'schedule'}
+          {#each currentFileNotes as note (note.id)}
+            <CheckpointMarker
+              checkpoint={note}
+              isOpen={openNoteIds.has(note.id)}
+              isActive={activeCheckpoint?.id === note.id && isCheckpointModalOpen}
+              onToggle={handleToggleCheckpoint}
+              onClose={handleCloseCheckpoint}
+              onEdit={handleEditCheckpoint}
+              onDelete={handleDeleteCheckpoint}
+            />
+          {/each}
+        {/if}
+
+        {#if isCourseScope ? isLoadingCourseDoc : isLoadingLesson}
         <div class="h-64 flex items-center justify-center">
           <Loader2 class="w-6 h-6 animate-spin text-stone-300" />
         </div>
       {:else}
-        <!-- Prompt Card for generated tabs (when not editing raw markdown) -->
-        {#if activeTab !== 'lesson' && !isEditing}
-          <PromptCard
-            prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
-            defaultPrompt={defaultPromptForActiveTab}
-            tabName={isCourseScope ? `Course ${tabDisplayName}` : tabDisplayName}
-            isGenerating={isCourseScope ? (activeTab === 'schedule' ? isScheduleGenerating : isGeneratingCourseDoc) : isTabGenerating}
-            onChangePrompt={handlePromptChange}
-            onRegenerate={isCourseScope
-            ? activeTab === 'schedule'
-              ? // Schedule regeneration always starts from the (adjustable) survey.
-                () => (isScheduleModalOpen = true)
-              : () => generateCourseDocument(activeTab)
-            : triggerAIGeneration}
-            onResetPrompt={() => handlePromptChange(defaultPromptForActiveTab)}
-          />
-        {/if}
-
         <!-- Top-Right Action Controls (Sticky): direct child of the scroll
              container. Negative top offsets cancel the container's py padding
              (p-4 = 16px, sm:p-8 = 32px) so the row pins ~2px below the
@@ -1866,6 +2115,38 @@
                 {/if}
               </button>
             {:else}
+              {#if isCourseScope && activeTab === 'schedule' && tabContents.schedule.trim().length > 0}
+                <button
+                  type="button"
+                  onclick={handleScheduleRebuild}
+                  disabled={isScheduleGenerating}
+                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer disabled:opacity-50"
+                  title="Rebuild schedule with preferences questionnaire"
+                >
+                  {#if isScheduleGenerating}
+                    <Loader2 class="w-3.5 h-3.5 animate-spin text-amber-500" />
+                    <span>Rebuilding...</span>
+                  {:else}
+                    <RotateCcw class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+                    <span>Rebuild with Preferences</span>
+                  {/if}
+                </button>
+              {/if}
+
+              {#if activeTab !== 'lesson'}
+                <button
+                  type="button"
+                  onclick={togglePromptCard}
+                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border backdrop-blur-sm text-xs font-medium transition shadow-xs hover:shadow-sm cursor-pointer {showPromptCard
+                    ? 'border-indigo-300 dark:border-indigo-700 bg-indigo-50/95 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 font-semibold'
+                    : 'border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 hover:bg-white dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100'}"
+                  title={showPromptCard ? 'Hide prompt card' : 'Tweak AI prompt'}
+                >
+                  <Sparkles class="w-3.5 h-3.5 {showPromptCard ? 'text-indigo-600 dark:text-indigo-400' : 'text-stone-500 dark:text-stone-400'}" />
+                  <span>Prompt</span>
+                </button>
+              {/if}
+
               <button
                 onclick={handleExportPDF}
                 disabled={isExportingPdf}
@@ -1894,6 +2175,27 @@
             {/if}
           </div>
         </div>
+
+        <!-- Prompt Card for generated tabs (when revealed and not editing raw markdown) -->
+        {#if showPromptCard && activeTab !== 'lesson' && !isEditing}
+          <div class="pt-9 sm:pt-10">
+            <PromptCard
+              prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
+              defaultPrompt={defaultPromptForActiveTab}
+              tabName={isCourseScope ? `Course ${tabDisplayName}` : tabDisplayName}
+              isGenerating={isCourseScope ? (activeTab === 'schedule' ? isScheduleGenerating : isGeneratingCourseDoc) : isTabGenerating}
+              onChangePrompt={handlePromptChange}
+              onRegenerate={isCourseScope
+              ? activeTab === 'schedule'
+                ? // Schedule regeneration always starts from the (adjustable) survey.
+                  () => (isScheduleModalOpen = true)
+                : () => generateCourseDocument(activeTab)
+              : triggerAIGeneration}
+              onResetPrompt={() => handlePromptChange(defaultPromptForActiveTab)}
+              onClose={() => (showPromptCard = false)}
+            />
+          </div>
+        {/if}
 
         <!-- Main Card -->
         <div class="relative bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-2xs group">
@@ -2022,6 +2324,7 @@
       {/if}
     </div>
   </div>
+</div>
 
   <!-- Scroll-to-top: appears once the reader is a screen or so down -->
   {#if showScrollTop}
@@ -2078,7 +2381,9 @@
       genericPrompts['course_schedule'] ||
       ''
     }
-    courseTitle={course.title}
+    courseTitle={course?.title}
+    lessonCount={course ? (course.units || []).flatMap((u) => u.lessons).length : 0}
+    course={course}
   />
 
   <!-- New custom tab modal -->
@@ -2150,4 +2455,14 @@
       </div>
     </div>
   {/if}
+
+  <CheckpointModal
+    isOpen={isCheckpointModalOpen}
+    checkpoint={activeCheckpoint}
+    onSave={handleSaveCheckpoint}
+    onDelete={handleDeleteCheckpoint}
+    onClose={() => {
+      isCheckpointModalOpen = false;
+    }}
+  />
 {/if}

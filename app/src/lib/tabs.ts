@@ -103,3 +103,74 @@ export function starterPromptForTab(displayName: string): string {
     `"${displayName}" (e.g. planning, drafting, tracking work to submit).\n`
   );
 }
+
+/**
+ * Returns the standard markdown filename for a lesson tab (e.g. `01.01.lesson.md`, `02.03.assignment.md`).
+ */
+export function tabFileName(lessonId: string, tab: string): string {
+  return `${lessonId.trim().toLowerCase()}.${tab.trim().toLowerCase()}.md`;
+}
+
+/**
+ * Returns the standard markdown filename for a course-level document (e.g. `course.summary.md`, `course.schedule.md`).
+ */
+export function courseDocFileName(tab: string): string {
+  return `course.${tab.trim().toLowerCase()}.md`;
+}
+
+/**
+ * Unified helper returning the markdown filename for either lesson or course scope.
+ */
+export function docFileName(scope: string, tab: string, isCourseScope = false): string {
+  if (isCourseScope || scope.trim().toLowerCase() === 'course') {
+    return courseDocFileName(tab);
+  }
+  return tabFileName(scope, tab);
+}
+
+/**
+ * Parses a markdown document filename (e.g. `01.01.lesson.md` or `course.summary.md`)
+ * back into its scope, lessonId, and tab slug.
+ */
+export function parseDocFileName(
+  file: string
+): { isCourseScope: boolean; lessonId: string; tab: string } | null {
+  const clean = file.trim();
+  const courseMatch = clean.match(/^course\.([a-z0-9_-]+)\.md$/i);
+  if (courseMatch) {
+    return {
+      isCourseScope: true,
+      lessonId: 'course',
+      tab: courseMatch[1].toLowerCase()
+    };
+  }
+
+  const lessonMatch = clean.match(/^([0-9]+(?:\.[0-9]+)?(?:_[a-z0-9]+)?)\.([a-z0-9_-]+)\.md$/i);
+  if (lessonMatch) {
+    return {
+      isCourseScope: false,
+      lessonId: lessonMatch[1],
+      tab: lessonMatch[2].toLowerCase()
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Builds the URL path to a course document or lesson tab.
+ */
+export function courseTabHref(
+  courseId: string,
+  scope: string,
+  tab: string,
+  isCourseScope = false
+): string {
+  const cId = (courseId || '').trim().toLowerCase();
+  const cleanTab = (tab || '').trim().toLowerCase();
+  if (isCourseScope || scope.trim().toLowerCase() === 'course') {
+    return `/courses/${cId}/course/${cleanTab}`;
+  }
+  return `/courses/${cId}/${encodeURIComponent(scope.trim().toLowerCase())}/${cleanTab}`;
+}
+

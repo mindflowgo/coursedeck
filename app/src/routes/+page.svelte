@@ -25,7 +25,6 @@
   import { apiFetch, isTauriEnvironment } from '$lib/api';
   import { stripCourseCodePrefix } from '$lib/courses';
   import { confirmDialog } from '$lib/dialog';
-  import { forgetCourseScroll, pruneScrollMemory } from '$lib/scrollMemory';
 
   let courses: CourseManifest[] = $state([]);
   let isLoading = $state(true);
@@ -69,9 +68,6 @@
       if (res.ok) {
         const data = await res.json();
         courses = data.courses || [];
-        // Drop scroll offsets for courses that no longer exist on disk
-        // (deletions happen outside the app; archived courses are still listed).
-        pruneScrollMemory(courses.map((c) => c.id));
       }
     } catch (e) {
       console.error('Failed to load courses:', e);
@@ -102,9 +98,6 @@
         alert(data.message || 'Failed to update course. Please try again.');
         return;
       }
-      // Archiving retires the course from the listings — forget the reader's
-      // tab scroll offsets for it (unarchiving does not bring them back).
-      if (patch.archived === true) forgetCourseScroll(courseId);
       await loadCourses();
     } catch (e) {
       console.error('Failed to update course metadata:', e);
@@ -458,20 +451,7 @@
           </div>
         </div>
       {/each}
-
-      <!-- Add New Course Card -->
-      <button
-        onclick={() => (isUploadModalOpen = true)}
-        class="h-full min-h-[220px] rounded-2xl border-2 border-dashed border-stone-200 dark:border-stone-800 hover:border-stone-400 dark:hover:border-stone-600 hover:bg-stone-50/50 dark:hover:bg-stone-900/50 p-6 flex flex-col items-center justify-center text-center space-y-3 transition group cursor-pointer"
-      >
-        <div class="w-10 h-10 rounded-full bg-stone-100 group-hover:bg-stone-200 text-stone-600 flex items-center justify-center transition">
-          <Plus class="w-5 h-5" />
-        </div>
-        <div>
-          <div class="text-sm font-semibold text-stone-800">Add New Course</div>
-          <p class="text-xs text-stone-400 mt-0.5">Upload a block of ILC course content (.zip)</p>
-        </div>
-      </button>
+     
     </div>
   {/if}
 </main>

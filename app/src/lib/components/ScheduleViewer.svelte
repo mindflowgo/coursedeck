@@ -92,19 +92,6 @@
           </div>
         </div>
       {/if}
-      <button
-        onclick={onRebuild}
-        disabled={isGenerating}
-        class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-800 dark:text-stone-200 text-xs font-medium hover:bg-stone-50 dark:hover:bg-stone-700 transition shadow-2xs cursor-pointer disabled:opacity-50"
-      >
-        {#if isGenerating}
-          <Loader2 class="w-3.5 h-3.5 animate-spin text-amber-500" />
-          <span>Generating...</span>
-        {:else}
-          <RotateCcw class="w-3.5 h-3.5" />
-          <span>Rebuild with new preferences</span>
-        {/if}
-      </button>
     </div>
   </div>
 
@@ -209,7 +196,7 @@
                     {/if}
                   </div>
                   {#if event.description}
-                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed [&_strong]:font-semibold [&_strong]:text-stone-800 dark:[&_strong]:text-stone-200 [&_code]:font-mono [&_code]:text-[11px] [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:bg-stone-100 dark:[&_code]:bg-stone-800 [&_em]:italic">
+                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed [&_strong]:font-semibold [&_strong]:text-stone-700 dark:[&_strong]:text-stone-300 [&_code]:font-mono [&_code]:text-[11px] [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:bg-stone-100 dark:[&_code]:bg-stone-800 [&_em]:italic">
                       {@html renderInlineMarkdown(event.description)}
                     </p>
                   {/if}

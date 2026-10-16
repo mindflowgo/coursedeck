@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import Header from '$lib/components/Header.svelte';
+  import PromptsManager from '$lib/components/PromptsManager.svelte';
   import { onMount } from 'svelte';
   import { apiFetch, isTauriEnvironment } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import {
-    Settings,
     Server,
     FolderKanban,
     RotateCw,
@@ -40,7 +42,41 @@
     type LlmCardDraft
   } from '$lib/llmClient';
 
+  import { resolveSettingsTab, type SettingsTab } from '$lib/settingsTabs';
+
   const isTauri = isTauriEnvironment();
+
+  // Tab state: 'settings' (default) or 'prompts'
+  let activeTab: SettingsTab = $state(
+    resolveSettingsTab($page.url.searchParams.get('tab'))
+  );
+
+  $effect(() => {
+    const expected = resolveSettingsTab($page.url.searchParams.get('tab'));
+    if (activeTab !== expected) {
+      activeTab = expected;
+    }
+  });
+
+  function switchTab(tab: 'settings' | 'prompts') {
+    activeTab = tab;
+    const url = new URL($page.url);
+    if (tab === 'prompts') {
+      url.searchParams.set('tab', 'prompts');
+    } else {
+      url.searchParams.delete('tab');
+    }
+    goto(url.pathname + (url.search ? url.search : ''), {
+      replaceState: true,
+      noScroll: true,
+      keepFocus: true
+    });
+    if (tab === 'prompts') {
+      requestAnimationFrame(() => {
+        window.dispatchEvent(new Event('resize'));
+      });
+    }
+  }
 
   // Storage state
   interface StorageInfo {
@@ -574,15 +610,34 @@
 
 <Header />
 
-<main class="flex-1 overflow-y-auto px-4 py-4 max-w-3xl mx-auto w-full space-y-3 text-stone-900 dark:text-stone-100">
-  <div class="flex items-center justify-between pb-1 border-b border-stone-200 dark:border-stone-800">
-    <div>
-      <h1 class="text-base font-semibold text-stone-900 dark:text-stone-100">Settings</h1>
-      <p class="text-[11px] text-stone-500 dark:text-stone-400">Appearance, course storage, AI provider, and maintenance.</p>
+<div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
+  <!-- Parent Wrapper (same width constraint as /courses) -->
+  <div class="flex-1 flex flex-col max-w-6xl mx-auto w-full px-4 sm:px-8 py-6 min-h-0 overflow-hidden">
+    <!-- Header with Settings / Prompts tabs -->
+    <div role="tablist" aria-label="Settings navigation" class="flex items-center space-x-6 border-b border-stone-200 dark:border-stone-800 pb-3 shrink-0">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'settings'}
+        onclick={() => switchTab('settings')}
+        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'settings' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
+      >
+        Settings
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'prompts'}
+        onclick={() => switchTab('prompts')}
+        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'prompts' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
+      >
+        Prompts
+      </button>
     </div>
-  </div>
 
-  <!-- Panel 1: General & Storage -->
+    <!-- Settings Tab Content -->
+    <main class="flex-1 overflow-y-auto pt-4 pb-8 space-y-4 text-stone-900 dark:text-stone-100 {activeTab === 'settings' ? '' : 'hidden'}">
+      <!-- Panel 1: General & Storage -->
   <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs divide-y divide-stone-100 dark:divide-stone-800 text-xs">
     <!-- Theme / UI Row -->
     <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -1165,5 +1220,12 @@
       {/if}
     </div>
   </section>
-</main>
+  </main>
+  
+  <!-- Prompts Tab Content -->
+  <div class="flex-1 min-h-0 mt-4 flex overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs {activeTab === 'prompts' ? '' : 'hidden'}">
+    <PromptsManager />
+  </div>
+  </div>
+</div>
 

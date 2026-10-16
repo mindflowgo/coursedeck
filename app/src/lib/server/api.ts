@@ -723,6 +723,13 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       return json({ schedules });
     }
 
+    // ---- /api/checkpoints ----
+    // All note checkpoints across non-archived courses, sorted newest to oldest.
+    if (pathname === '/api/checkpoints' && method === 'GET') {
+      const checkpoints = CourseService.listAllNoteCheckpoints();
+      return json({ checkpoints });
+    }
+
     // ---- /api/courses/:course_id/** ----
     const courseMatch = pathname.match(/^\/api\/courses\/([^/]+)(?:\/(.*))?$/);
     if (courseMatch) {
@@ -1070,6 +1077,51 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           return error(404, 'Asset not found');
         }
         return fileResponse(fullPath, { 'Cache-Control': 'public, max-age=86400' });
+      }
+
+      // ---- Checkpoints for course ----
+      // GET /api/courses/:course_id/checkpoints
+      if (subpath === 'checkpoints' && method === 'GET') {
+        const checkpoints = CourseService.getCheckpoints(courseId);
+        return json({ checkpoints });
+      }
+
+      // POST /api/courses/:course_id/checkpoints (create or update note)
+      if (subpath === 'checkpoints' && method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const file = typeof body.file === 'string' ? body.file.trim() : '';
+        const verticalPosition = typeof body.verticalPosition === 'number' ? body.verticalPosition : 0;
+        if (!file) {
+          return error(400, 'file is required');
+        }
+        const note = CourseService.addOrUpdateNoteCheckpoint(courseId, {
+          id: typeof body.id === 'string' ? body.id : undefined,
+          file,
+          verticalPosition,
+          color: typeof body.color === 'string' ? body.color : undefined,
+          noteText: typeof body.noteText === 'string' ? body.noteText : undefined
+        });
+        return json({ success: true, checkpoint: note });
+      }
+
+      // POST /api/courses/:course_id/checkpoints/position (debounced position recording)
+      if (subpath === 'checkpoints/position' && method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const file = typeof body.file === 'string' ? body.file.trim() : '';
+        const verticalPosition = typeof body.verticalPosition === 'number' ? body.verticalPosition : 0;
+        if (!file) {
+          return error(400, 'file is required');
+        }
+        const posCheckpoint = CourseService.recordPositionCheckpoint(courseId, file, verticalPosition);
+        return json({ success: true, checkpoint: posCheckpoint });
+      }
+
+      // DELETE /api/courses/:course_id/checkpoints/:id
+      const deleteCpMatch = subpath.match(/^checkpoints\/([^/]+)$/);
+      if (deleteCpMatch && method === 'DELETE') {
+        const checkpointId = deleteCpMatch[1];
+        const success = CourseService.deleteCheckpoint(courseId, checkpointId);
+        return json({ success });
       }
 
       // GET|PUT /api/courses/:course_id/:lesson_id

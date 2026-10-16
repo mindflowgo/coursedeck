@@ -10,6 +10,8 @@
     buildSchedulePrompt,
     type SchedulePreferences
   } from '$lib/schedule';
+  import type { CourseManifest } from '$lib/parser/courseIngest';
+  import { buildScheduleSkeleton, generateStudyCalendarDays } from '$lib/scheduleGenerator';
 
   interface Props {
     isOpen: boolean;
@@ -18,9 +20,19 @@
     onGenerate: (promptWithPreferences: string, preferences?: SchedulePreferences) => void;
     promptTemplate: string;
     courseTitle?: string;
+    lessonCount?: number;
+    course?: CourseManifest | null;
   }
 
-  let { isOpen, onClose, onGenerate, promptTemplate, courseTitle }: Props = $props();
+  let {
+    isOpen,
+    onClose,
+    onGenerate,
+    promptTemplate,
+    courseTitle,
+    lessonCount = 0,
+    course = null
+  }: Props = $props();
 
   let prefs = $state<SchedulePreferences>(defaultSchedulePreferences());
   let validationError = $state<string | null>(null);
@@ -33,11 +45,73 @@
   let newBlackoutLabel = $state('');
   let blackoutError = $state<string | null>(null);
 
+  const DEFAULT_TIMES = ['09:00', '13:00', '17:00'];
+
+  function getDayTime(day: number, sessionIndex: number): string {
+    const times = prefs.dayTimes?.[day];
+    if (times && times[sessionIndex]) {
+      return times[sessionIndex];
+    }
+    return DEFAULT_TIMES[sessionIndex] || '09:00';
+  }
+
+  function setDayTime(day: number, sessionIndex: number, val: string) {
+    if (!prefs.dayTimes) prefs.dayTimes = {};
+    const existing = prefs.dayTimes[day] ? [...prefs.dayTimes[day]] : [];
+    for (let i = 0; i <= sessionIndex; i++) {
+      if (!existing[i]) {
+        existing[i] = DEFAULT_TIMES[i] || '09:00';
+      }
+    }
+    existing[sessionIndex] = val;
+    prefs.dayTimes = {
+      ...prefs.dayTimes,
+      [day]: existing
+    };
+  }
+
+  const calculatedEndDate = $derived.by(() => {
+    if (!prefs.startDate || !prefs.studyDays || prefs.studyDays.length === 0) return null;
+    try {
+      if (course && course.units && course.units.length > 0) {
+        const skeleton = buildScheduleSkeleton(course, prefs);
+        if (skeleton.sessions.length > 0) {
+          return skeleton.sessions[skeleton.sessions.length - 1].date;
+        }
+      }
+      const totalSessions = Math.max(1, lessonCount || 1);
+      const daysNeeded = Math.ceil(totalSessions / Math.max(1, prefs.sessionsPerDay || 1));
+      const dates = generateStudyCalendarDays(prefs, daysNeeded);
+      return dates.length > 0 ? dates[dates.length - 1] : null;
+    } catch {
+      return null;
+    }
+  });
+
+  function formatDisplayDate(dateIso: string | null): string {
+    if (!dateIso) return '—';
+    try {
+      const date = new Date(`${dateIso}T00:00:00`);
+      if (isNaN(date.getTime())) return dateIso;
+      return date.toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      });
+    } catch {
+      return dateIso;
+    }
+  }
+
   $effect(() => {
     if (isOpen) {
       untrack(() => {
         const loaded = loadStoredSchedulePreferences() ?? defaultSchedulePreferences();
         prefs = loaded;
+        prefs.paceMode = 'steady';
+        delete prefs.targetEndDate;
+        if (!prefs.dayTimes) prefs.dayTimes = {};
         hasNotes = Boolean(loaded.notes && loaded.notes.trim().length > 0);
         validationError = null;
         blackoutError = null;
@@ -95,8 +169,32 @@
       validationError = 'Core prompt template for course schedule is missing. Please add or verify course_schedule.md in Prompts before generating.';
       return;
     }
+    const normalizedDayTimes: Record<number, string[]> = {};
+    for (const d of prefs.studyDays) {
+      normalizedDayTimes[d] = [];
+      for (let i = 0; i < prefs.sessionsPerDay; i++) {
+        normalizedDayTimes[d].push(getDayTime(d, i));
+      }
+    }
+    let totalCalendarDays: number | undefined;
+    if (prefs.startDate && calculatedEndDate) {
+      try {
+        const start = new Date(`${prefs.startDate}T00:00:00`);
+        const end = new Date(`${calculatedEndDate}T00:00:00`);
+        const diffMs = end.getTime() - start.getTime();
+        if (!isNaN(diffMs)) {
+          totalCalendarDays = Math.max(1, Math.round(diffMs / (86400 * 1000)) + 1);
+        }
+      } catch {}
+    }
+
     const effectivePrefs: SchedulePreferences = {
       ...prefs,
+      paceMode: 'steady',
+      targetEndDate: undefined,
+      calculatedEndDate: calculatedEndDate || undefined,
+      totalCalendarDays,
+      dayTimes: normalizedDayTimes,
       notes: hasNotes && prefs.notes?.trim() ? prefs.notes.trim() : undefined
     };
     storeSchedulePreferences(effectivePrefs);
@@ -107,7 +205,7 @@
 
 {#if isOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 dark:bg-black/60 backdrop-blur-xs">
-    <div class="w-full max-w-lg rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+    <div class="w-full max-w-xl rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
       <!-- Header -->
       <div class="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
         <div class="flex items-center space-x-2.5">
@@ -131,39 +229,17 @@
       </div>
 
       <div class="space-y-4">
-        <!-- Start date -->
-        <div class="space-y-1">
-          <label for="sched-start" class="text-xs font-medium text-stone-700 dark:text-stone-300">Start date</label>
-          <input
-            id="sched-start"
-            type="date"
-            bind:value={prefs.startDate}
-            class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none"
-          />
+        <!-- Lesson count statement -->
+        <div>
+          <p class="text-xs font-medium text-stone-700 dark:text-stone-300">
+            There {lessonCount === 1 ? 'is 1 lesson' : `are ${lessonCount ?? 0} lessons`} to schedule.
+          </p>
         </div>
 
-        <!-- Study days -->
-        <div class="space-y-1.5">
-          <span class="text-xs font-medium text-stone-700 dark:text-stone-300">Study days</span>
-          <div class="flex flex-wrap gap-1.5">
-            {#each WEEKDAY_LABELS as label, day}
-              <button
-                type="button"
-                onclick={() => toggleDay(day)}
-                class="px-2.5 py-1.5 rounded-lg border text-xs font-medium transition cursor-pointer {hasStudyDay(day)
-                  ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
-                  : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300 dark:hover:border-stone-500'}"
-              >
-                {label}
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        <!-- Session length + sessions per day -->
+        <!-- Session Length / Sessions/Day -->
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
-            <label for="sched-length" class="text-xs font-medium text-stone-700 dark:text-stone-300">Session length</label>
+            <label for="sched-length" class="text-xs font-medium text-stone-700 dark:text-stone-300">Session Length</label>
             <select
               id="sched-length"
               bind:value={prefs.sessionLengthMin}
@@ -175,7 +251,7 @@
             </select>
           </div>
           <div class="space-y-1">
-            <label for="sched-perday" class="text-xs font-medium text-stone-700 dark:text-stone-300">Sessions / study day</label>
+            <label for="sched-perday" class="text-xs font-medium text-stone-700 dark:text-stone-300">Sessions/Day</label>
             <select
               id="sched-perday"
               bind:value={prefs.sessionsPerDay}
@@ -188,36 +264,72 @@
           </div>
         </div>
 
-        <!-- Pace -->
+        <!-- Day Schedule -->
         <div class="space-y-1.5">
-          <span class="text-xs font-medium text-stone-700 dark:text-stone-300">Pace</span>
-          <div class="flex gap-1.5">
-            <button
-              type="button"
-              onclick={() => (prefs.paceMode = 'steady')}
-              class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition cursor-pointer {prefs.paceMode === 'steady'
-                ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
-                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300 dark:hover:border-stone-500'}"
-            >
-              Steady pace
-            </button>
-            <button
-              type="button"
-              onclick={() => (prefs.paceMode = 'target')}
-              class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition cursor-pointer {prefs.paceMode === 'target'
-                ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
-                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300 dark:hover:border-stone-500'}"
-            >
-              Target end date
-            </button>
+          <div class="flex items-center justify-between">
+            <span class="text-xs font-medium text-stone-700 dark:text-stone-300">Day Schedule</span>
+            <span class="text-[11px] text-stone-400 dark:text-stone-500">Pick study days & session times</span>
           </div>
-          {#if prefs.paceMode === 'target'}
+          <div class="overflow-x-auto pb-1 -mx-1 px-1">
+            <div class="min-w-[460px] grid grid-cols-7 gap-2">
+              {#each WEEKDAY_LABELS as label, day}
+                <div class="flex flex-col items-center gap-1.5">
+                  <button
+                    type="button"
+                    onclick={() => toggleDay(day)}
+                    class="w-full py-2 rounded-lg border text-xs font-medium transition cursor-pointer text-center {hasStudyDay(day)
+                      ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 shadow-2xs'
+                      : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:border-stone-300 dark:hover:border-stone-600 bg-white dark:bg-stone-800/40'}"
+                  >
+                    {label}
+                  </button>
+
+                  {#if hasStudyDay(day)}
+                    <div class="w-full space-y-1.5">
+                      {#each Array(prefs.sessionsPerDay) as _, sessionIdx}
+                        <input
+                          type="time"
+                          value={getDayTime(day, sessionIdx)}
+                          oninput={(e) => setDayTime(day, sessionIdx, e.currentTarget.value)}
+                          aria-label="{label} session {sessionIdx + 1} time"
+                          title="{label} session {sessionIdx + 1}"
+                          class="w-full px-1.5 py-1 rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-[11px] text-stone-900 dark:text-stone-100 text-center outline-none focus:ring-1 focus:ring-stone-400"
+                        />
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </div>
+        </div>
+
+        <!-- Start date & End date (calculated) -->
+        <div class="grid grid-cols-2 gap-3 items-start">
+          <!-- Start date -->
+          <div class="space-y-1">
+            <label for="sched-start" class="text-xs font-medium text-stone-700 dark:text-stone-300">Start date</label>
             <input
+              id="sched-start"
               type="date"
-              bind:value={prefs.targetEndDate}
+              bind:value={prefs.startDate}
               class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none"
             />
-          {/if}
+          </div>
+
+          <!-- End date -->
+          <div class="space-y-1">
+            <span class="text-xs font-medium text-stone-700 dark:text-stone-300">End date</span>
+            <div
+              class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 text-xs font-medium text-stone-800 dark:text-stone-200 flex items-center min-h-[35px]"
+            >
+              {#if calculatedEndDate}
+                <span>{formatDisplayDate(calculatedEndDate)}</span>
+              {:else}
+                <span class="text-stone-400 dark:text-stone-500">Pick study days to calculate</span>
+              {/if}
+            </div>
+          </div>
         </div>
 
         <!-- Review day toggle -->
