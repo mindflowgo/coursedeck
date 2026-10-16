@@ -1,4 +1,6 @@
 import { resolveImageSource, safeExternalHref } from "./sources";
+import { darkenBackgroundForDarkMode, lightenTextForDarkMode, parseCssColor } from "$lib/markdown/darkModeStyles";
+import { theme } from "$lib/theme.svelte";
 
 const ALLOWED_TAGS = new Set([
   "a", "abbr", "b", "big", "blockquote", "br", "caption", "cite", "code",
@@ -11,7 +13,7 @@ const ALLOWED_TAGS = new Set([
 ]);
 
 const ALLOWED_ATTRIBUTES = new Set([
-  "align", "alt", "class", "cite", "colspan", "controls", "datetime", "dir",
+  "align", "alt", "bgcolor", "class", "cite", "colspan", "controls", "datetime", "dir",
   "height", "href", "lang", "loop", "muted", "open", "poster", "reversed",
   "rowspan", "span", "src", "start", "style", "title", "type", "width",
 ]);
@@ -19,7 +21,7 @@ const ALLOWED_ATTRIBUTES = new Set([
 const URL_ATTRIBUTES = new Set(["href", "src", "poster"]);
 
 const SAFE_PROPERTIES = new Set([
-  "background-color", "border", "border-bottom", "border-collapse", "border-color",
+  "background", "background-color", "border", "border-bottom", "border-collapse", "border-color",
   "border-left", "border-radius", "border-right", "border-spacing", "border-style",
   "border-top", "border-width", "color", "font-family", "font-size", "font-style",
   "font-variant", "font-weight", "letter-spacing", "line-height", "list-style-type",
@@ -43,10 +45,35 @@ function sanitizeStyle(value: string): string | null {
     if (!SAFE_PROPERTIES.has(property)) continue;
     if (!setting || UNSAFE_VALUE.test(setting)) continue;
 
-    kept.push(`${property}: ${setting}`);
+    // Light inline backgrounds (and dark inline text) would be unreadable
+    // against the inverted dark theme; convert them to dark-mode equivalents.
+    let finalSetting = setting;
+    if (theme.isDark) {
+      const important = setting.match(/^(.*?)\s*!important\s*$/i);
+      const raw = important ? important[1].trim() : setting;
+      const suffix = important ? " !important" : "";
+      if (property === "background-color" || property === "background") {
+        finalSetting = (darkenBackgroundForDarkMode(raw) ?? raw) + suffix;
+      } else if (property === "color") {
+        finalSetting = (lightenTextForDarkMode(raw) ?? raw) + suffix;
+      }
+    }
+
+    kept.push(`${property}: ${finalSetting}`);
   }
 
   return kept.length ? kept.join("; ") : null;
+}
+
+/** Legacy `bgcolor` → a `background-color` declaration so one dark path covers both. */
+function normalizeBgcolor(clean: HTMLElement, raw: string): void {
+  // Only accept a plain colour: the style sanitizer blocks url()/expression(),
+  // and bgcolor must not smuggle those past that check.
+  if (!parseCssColor(raw)) return;
+  const color = theme.isDark ? darkenBackgroundForDarkMode(raw) ?? raw : raw;
+  const existing = clean.getAttribute("style");
+  const declaration = `background-color: ${color}`;
+  clean.setAttribute("style", existing ? `${existing}; ${declaration}` : declaration);
 }
 
 function sanitizeUrl(name: string, value: string, courseId: string): string | null {
@@ -68,6 +95,8 @@ function sanitizeElement(element: Element, courseId: string): HTMLElement | null
     const name = attribute.name.toLowerCase();
     if (!ALLOWED_ATTRIBUTES.has(name)) continue;
     if (isLink && name === "class") continue;
+    // Handled after the loop so it can merge into the sanitized style.
+    if (name === "bgcolor") continue;
 
     let value: string | null = attribute.value;
     if (name === "style") value = sanitizeStyle(value);
@@ -76,6 +105,9 @@ function sanitizeElement(element: Element, courseId: string): HTMLElement | null
 
     clean.setAttribute(isLink && name === "href" ? LINK_HREF : name, value);
   }
+
+  const bgcolor = element.getAttribute("bgcolor");
+  if (bgcolor) normalizeBgcolor(clean, bgcolor);
 
   if (isLink && clean.hasAttribute(LINK_HREF)) clean.className = LINK_CLASS;
 

@@ -18,6 +18,8 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
      - **Cheatsheet**: Quick-reference table of key terms, etc.
      - **Practice Test**: Interactive quiz runner for Ontario KICA-aligned questions (Knowledge & Understanding, Thinking & Investigation, Communication, Application) with instant scoring, feedback, and rationale reveals.
    - **Inline CodeMirror Editor**: Toggle between rich reading view and live Markdown editing with instant auto-save to disk.
+   - **Checkpoints**: An automatic **Current** bookmark (the furthest lesson whose practice test is finished) plus user-defined lesson or in-lesson location flags with renameable names and colours. See §17.
+   - **Synced Reading Progression**: Tabs share a reading position by default (50% down Summary opens Lessons at 50%); any tab kind can be made **independent** in Settings. See §3.5.
    - **Incremental Chapter Additions**: An `[+] Add Chapters` button in the workspace subheader allows uploading new lesson `.zip` archives directly to the active course. Existing customized notes and edits are strictly preserved while new chapters are parsed and indexed.
 3. **Prompts Engine (`/prompts`)**:
    - Customizable prompt templates for generating lesson summaries, cheatsheets, and KICA tests with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
@@ -87,7 +89,10 @@ app/src/
 │   ├── llmProviders.ts         # Shared provider presets/protocols (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible)
 │   ├── llmClient.ts            # Typed /api/llm client: model cards, active model, per-card connection test
 │   ├── queueStatus.svelte.ts   # Reactive global queue poll store & task listeners
-│   ├── scrollMemory.ts         # Per-tab scroll offsets in localStorage (tab_scroll:*) + stale-key pruning
+│   ├── scrollMemory.ts         # Per-tab pixel scroll offsets in localStorage (tab_scroll:*) + stale-key pruning
+│   ├── studyStateTypes.ts      # Shared study-state shapes (progress/completions/checkpoints) + progression helpers
+│   ├── studyStateClient.ts     # Typed /api/courses/:id/study-state + /api/settings/progression client
+│   ├── checkpoints.ts          # Checkpoint colour palette, flag limits and helpers
 │   ├── theme.svelte.ts         # Light / Dark / System theme manager
 │   ├── components/             # Reusable UI components
 │   │   ├── Header.svelte           # Top application navigation bar
@@ -97,6 +102,8 @@ app/src/
 │   │   ├── MarkdownViewer.svelte   # Rendered Markdown reader view with callout & image sizing
 │   │   ├── CodeMirrorEditor.svelte # CodeMirror 6 markdown editor integration
 │   │   ├── DocumentViewerModal.svelte # Fullscreen modal for viewing curriculum PDFs & diagrams
+│   │   ├── CheckpointModal.svelte  # Add-checkpoint dialog (whole lesson vs current location, colour, name)
+│   │   ├── CheckpointsDropdown.svelte # Subheader menu listing lessons with checkpoints + rename/recolour/delete
 │   │   ├── UploadModal.svelte      # Course zip/mhtml ingestion modal (requires mandatory course code)
 │   │   └── AIQueuePopover.svelte   # Popover showing live background AI generation jobs
 │   ├── editor/                 # CodeMirror 6 Obsidian-style Live Preview extensions
@@ -105,6 +112,7 @@ app/src/
 │   │   └── table.ts                # GFM table interactive editor
 │   ├── markdown/               # Markdown AST & pre-processing pipelines
 │   │   ├── tableRepair.ts          # GFM table reconstructor (fixes multiline cells & stacked tables)
+│   │   ├── darkModeStyles.ts       # Dark-mode conversion of light inline backgrounds / dark inline text
 │   │   ├── mathRenderer.ts         # KaTeX pre-parser & currency protector (extractMath / restoreMath)
 │   │   └── imageSpec.ts            # Image dimension, layout chip & icon detector
 │   ├── parser/                 # Course extraction, HTML conversion, and frontmatter
@@ -122,6 +130,7 @@ app/src/
 │       ├── api.ts                  # handleApiRequest() — Single source of truth for ALL /api/* routes
 │       ├── backup.ts               # Streaming zip backup export/import (createDataBackupZipStream)
 │       ├── courses.ts              # CourseService (lessons, tab files, course-wide payload)
+│       ├── studyState.ts           # Per-course progress/completions/checkpoints store (lessonProgress/*.json)
 │       ├── queue.ts                # GenerationQueue & worker for background AI jobs
 │       ├── paths.ts                # Filesystem paths, DATA_DIR resolution, and path asserts
 │       ├── llm.ts                  # Unified LLM client: multi-card store, active-model resolution, OpenAI-compatible + llama.cpp native transports
@@ -260,12 +269,34 @@ updatedAt: '2026-10-14'
   - Course-level custom tabs (`course.<slug>.md`) are dynamically discovered by `CourseService.discoverCourseDocs()` and surfaced in the course mode tab bar alongside built-ins.
 - Regeneration always overwrites the single file; the per-version pills and overwrite-vs-new-version choice were removed with versioning itself.
 
-### 3.5 Reader Tab Scroll Memory (`tab_scroll:*`)
-The course workspace scrolls inside a nested container, so the browser does not restore offsets between tabs. `src/lib/scrollMemory.ts` keeps them in `localStorage` instead — key `tab_scroll:<courseId>:<lessonId|course>:<tab>`, all lowercased (~40 bytes each):
-- **A first visit to a tab/page opens at the top; later visits return to the remembered offset** — via tab click, lesson switch, course ↔ lesson scope toggle, browser Back, or reload alike.
-- Offsets are written ~200 ms after scrolling pauses (flushed on `pagehide` and component teardown); offsets under 8 px are deleted rather than stored, so "at the top" and "never visited" behave identically.
-- A floating **scroll-to-top** button (fixed bottom-right, shown once scrolled past ~400 px) smooth-scrolls the workspace back to the top.
-- **Pruning:** archiving a course (`PUT /api/courses/:id/meta { archived: true }`) forgets all of that course's keys, and every courses-list load sweeps keys whose course no longer exists on disk. Offsets never reach the server, so pruning applies to the browser that performs the action.
+### 3.5 Reader Progress: Synced Tabs, Independent Tabs & Scroll Memory
+The course workspace scrolls inside a nested container, so the browser does not restore offsets between tabs. Two layers handle it:
+
+- **Shared reading progression (default)** — tabs that are *not* independent share a single reading **fraction** per scope (the lesson id, or `course`). Scrolling 50% down **Summary** opens **Lessons** at 50%. The fraction is restored as `fraction × (scrollHeight − clientHeight)` and is persisted server-side (see §3.6). `Practice Test` is **independent by default**; `Lessons`, `Summary` and `Cheatsheet` are not. Custom tabs and the course-only `Schedule` tab follow the shared group. Independent progress is configurable per tab kind in **Settings → Reading progression** (`progress_independent` in `settings.json`).
+- **Independent-tab pixel memory** — an independent tab keeps its *exact* offset in `localStorage` (key `tab_scroll:<courseId>:<scope>:<tab>`, all lowercased, ~40 bytes each) via `src/lib/scrollMemory.ts`: a first visit opens at the top, later visits return to the remembered offset. Offsets are written ~200 ms after scrolling pauses (flushed on `pagehide` and teardown); offsets under 8 px are deleted rather than stored. A floating **scroll-to-top** button appears once scrolled past ~400 px.
+- **Pruning:** archiving a course forgets all of that course's keys, and every courses-list load sweeps keys whose course no longer exists. Pixel offsets never reach the server.
+
+### 3.6 Per-Course Study State (`<dataDir>/lessonProgress/<courseId>.json`)
+One small JSON file per course holds everything the study UI remembers beyond the course files themselves:
+
+```json
+{
+  "version": 1,
+  "updatedAt": "2026-10-16T…",
+  "progress": { "01.02": { "shared": 0.5, "tabs": { "test": 0.2 } } },
+  "completions": { "02.05_assign1": "2026-10-16T…" },
+  "checkpoints": [
+    { "id": "cp_…", "lessonId": "01.02", "kind": "lesson", "anchor": null, "label": "Mid course", "color": "blue", "createdAt": "…" },
+    { "id": "cp_…", "lessonId": "02.01", "kind": "location", "anchor": "Minds On", "label": "Review point", "color": "amber", "createdAt": "…" }
+  ],
+  "currentLabel": "Current"
+}
+```
+
+- `progress` is keyed by scope; fractions below `0.01` are dropped, and **the file is deleted** when nothing is left to remember — untouched courses never grow an entry.
+- API (all on the single handler, see §7.1): `GET /api/courses/:id/study-state`; `PUT …/study-state/progress` `{scope,shared?,tab?,progress?}`; `POST …/study-state/completions` `{lessonId}`; `POST|PUT|DELETE …/study-state/checkpoints`. Because `GET /api/courses` runs `withStudy()` over every manifest, course listings carry a computed `study` summary (`currentLessonId`, `currentLabel`, `completedLessonIds`, `checkpointCount`) that is **never** written to `meta.json`.
+- The recursive data backup (§14) includes `lessonProgress/` automatically.
+
 
 ---
 
@@ -678,3 +709,20 @@ Provider presets live in the dependency-free `app/src/lib/llmProviders.ts`, shar
 - Settings UI: one card per provider with provider/base URL/model/API key/auth header/timeout fields, an inline **Add another model provider** `[+]` tile, per-card **Test** and remove, plus the **Active Model** dropdown whose options are the model ids of all added cards.
 - **Clearing is explicit.** `save_store` counts the cards that would actually survive normalization (a card without a Base URL is dropped, not stored) and rejects a save that would leave none (400 for all-unusable input, 409 without `confirmClear: true`), so no client bug or stale tab can silently wipe the configured models. An unreadable/corrupt `llm_config.json` is reported as an error (HTTP 500, file left untouched) rather than as "no models configured". Saves replace the whole list, so two Settings windows editing at once resolve last-writer-wins — close the other window before re-arranging models.
 - The frontend keeps no LLM state of its own: feature call sites ask `$lib/llmClient` for the active card (guarding "no model configured → open setup modal") and the server resolves the real config, so a stale browser cache can never generate with the wrong model.
+
+---
+
+## 17. Checkpoints & Practice-Test Completion
+
+Checkpoints are user bookmarks — "where in this course am I, and where do I want to come back to". They come in two kinds and one automatic one:
+
+### 17.1 The automatic "Current" checkpoint
+- The workspace records a **completion timestamp** for every lesson whose practice test has been submitted (`POST /api/courses/:id/study-state/completions`, fired from `QuizRunner`'s `onSubmit`). 
+- "Current" points at the **furthest-ordered lesson among all completed tests** — satisfying an earlier lesson's test again never moves it backwards. It is renameable (`currentLabel`) and uses a fixed emerald flag.
+- Where it shows: a flag before that lesson in the **Lessons dropdown**, a chip (`flag 2.5 Assignment: …`) on the course card on the home dashboard (resolved from the `study` summary), and a completion banner at the **end of that lesson** in the Lessons tab.
+
+### 17.2 Custom checkpoints
+- **Add Checkpoint** (top-right action row, immediately before **PDF**) opens `CheckpointModal`: choose **Whole lesson** (flags the lesson in the menus; max **3** per lesson, enforced server-side) or **Current location** (a flag divider at the reading position), then a name and a colour from the preset palette (`checkpoints.ts`).
+- Location anchors store a **text snippet** of the topmost visible block (captured with `document.elementFromPoint`). `MarkdownViewer` re-finds it on render and injects a `.checkpoint-divider` (flag + label) before the matching block — never inside a table's cell structure. An anchor that no longer matches simply draws nothing; the checkpoint still appears in the dropdown.
+- The **Checkpoints** dropdown (subheader, right of the lessons prev/next control) lists only lessons that carry checkpoints as `‹flag›‹flag›‹flag› Lesson name`, plus the Current row. Rows navigate to the lesson; each checkpoint can be renamed, recoloured, or deleted inline.
+- Dark mode: the reader converts light inline backgrounds (raw kept tables) and dark inline text to dark-mode equivalents via `markdown/darkModeStyles.ts`, so course tables whose cells arrive with `style="background-color:#eceff0"` stay readable.

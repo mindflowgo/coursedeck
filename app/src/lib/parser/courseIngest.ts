@@ -6,6 +6,7 @@ import { TurndownConverter } from './turndownConverter';
 import { QuestionParser } from './questionParser';
 import { serializeWithFrontmatter } from './frontmatter';
 import { optimizeCourseImages } from './imageOptimizer';
+import type { CourseStudySummary } from '../studyStateTypes';
 
 export interface CourseManifestLesson {
   id: string; // e.g. "01.02" or "01.06_assign1"
@@ -38,6 +39,8 @@ export interface CourseManifest {
   archived?: boolean;
   path?: string;
   courseDocs?: CourseDocsFlags;
+  /** Computed per-course study summary (progress/checkpoints); read-time only. */
+  study?: CourseStudySummary;
 }
 
 /** Course-level documents stored as `course.<type>.md` in the course folder. */

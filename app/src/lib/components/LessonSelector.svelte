@@ -1,13 +1,19 @@
 <script lang="ts">
   import type { CourseManifest } from '$lib/parser/courseIngest';
-  import { ChevronRight, ChevronDown, Check, Search, FileText, Bookmark, GraduationCap } from 'lucide-svelte';
+  import { ChevronRight, ChevronDown, Check, Search, FileText, Bookmark, GraduationCap, Flag } from 'lucide-svelte';
   import { isCourseTab } from '$lib/tabs';
+  import { MAX_FLAGS_SHOWN, CURRENT_CHECKPOINT_COLOR, getCheckpointColor } from '$lib/checkpoints';
+  import type { Checkpoint } from '$lib/studyStateTypes';
 
   interface Props {
     course: CourseManifest;
     selectedLessonId: string;
     activeTab?: string;
     isCourseMode?: boolean;
+    /** Every checkpoint for this course; lesson-level ones are flagged in the list. */
+    checkpoints?: Checkpoint[];
+    /** Lesson the auto "Current" checkpoint points at. */
+    currentLessonId?: string | null;
     onSelectLesson: (lessonId: string) => void;
     onSelectCourseMode?: () => void;
   }
@@ -17,9 +23,17 @@
     selectedLessonId,
     activeTab = 'lesson',
     isCourseMode = false,
+    checkpoints = [],
+    currentLessonId = null,
     onSelectLesson,
     onSelectCourseMode
   }: Props = $props();
+
+  let currentColor = $derived(getCheckpointColor(CURRENT_CHECKPOINT_COLOR));
+
+  function flagsForLesson(lessonId: string): Checkpoint[] {
+    return checkpoints.filter((c) => c.lessonId === lessonId).slice(0, MAX_FLAGS_SHOWN);
+  }
 
   let isOpen = $state(false);
   let searchQuery = $state('');
@@ -149,6 +163,12 @@
                     class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
                   >
                     <div class="flex items-center space-x-2 truncate pr-2">
+                      {#each flagsForLesson(lesson.id) as checkpoint (checkpoint.id)}
+                        <Flag class="w-3.5 h-3.5 shrink-0 {getCheckpointColor(checkpoint.color).flag}" aria-label="Checkpoint" />
+                      {/each}
+                      {#if lesson.id === currentLessonId}
+                        <Flag class="w-3.5 h-3.5 shrink-0 {currentColor.flag}" aria-label="Current checkpoint" />
+                      {/if}
                       {#if lesson.type === 'assignment'}
                         <span class="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase {isSelected ? 'bg-purple-800 text-purple-200 dark:bg-purple-300 dark:text-purple-950' : 'bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300'}">
                           Assign
