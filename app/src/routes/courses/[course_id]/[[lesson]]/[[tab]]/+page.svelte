@@ -65,6 +65,7 @@
   import FloatingCheckpointTrigger from '$lib/components/FloatingCheckpointTrigger.svelte';
   import CheckpointMarker from '$lib/components/CheckpointMarker.svelte';
   import CheckpointModal from '$lib/components/CheckpointModal.svelte';
+  import { getResumeLastPosition, resolveLastAccessedCourseRoute } from '$lib/preferences';
 
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
@@ -1683,7 +1684,22 @@
       const qLesson = $page.url.searchParams.get('lesson');
       const qTab = $page.url.searchParams.get('tab');
 
+      // Generic course open (e.g. /courses/clm3u with no lesson/tab specified)
+      const isGenericCourseOpen = !pLesson && !pTab && !qScope && !qLesson && !qTab;
+      let resumeTarget: ReturnType<typeof resolveLastAccessedCourseRoute> = null;
+      if (isGenericCourseOpen && getResumeLastPosition()) {
+        if (checkpoints.length === 0) {
+          await loadCheckpoints();
+        }
+        const allLessons = (course.units || []).flatMap((u) => u.lessons);
+        resumeTarget = resolveLastAccessedCourseRoute(courseId, checkpoints, allLessons);
+        if (resumeTarget) {
+          console.log(`[NAV] syncRoute: resolved resume target: lesson=${resumeTarget.lessonId} tab=${resumeTarget.tab} isCourseScope=${resumeTarget.isCourseScope}`);
+        }
+      }
+
       const isTargetCourse =
+        resumeTarget?.isCourseScope ||
         pLesson === 'course' ||
         pLesson === 'schedule' ||
         qScope === 'course' ||
@@ -1691,7 +1707,9 @@
 
       if (isTargetCourse) {
         let targetTab: PageTab = 'lesson';
-        if (pLesson === 'schedule' || qTab === 'schedule') {
+        if (resumeTarget?.isCourseScope) {
+          targetTab = resumeTarget.tab;
+        } else if (pLesson === 'schedule' || qTab === 'schedule') {
           targetTab = 'schedule';
         } else {
           const parsed = parseTabName(pTab) || parseTabName(qTab) || 'lesson';
@@ -1718,7 +1736,9 @@
         }
       } else {
         const allLessons = (course.units || []).flatMap((u) => u.lessons);
-        const requestedLesson = pLesson || qLesson || '';
+        const requestedLesson = (resumeTarget && !resumeTarget.isCourseScope)
+          ? resumeTarget.lessonId
+          : (pLesson || qLesson || '');
         const foundLesson = findLesson(allLessons, requestedLesson);
         const targetLesson = foundLesson ? foundLesson.id : (allLessons[0]?.id || '');
         if (!foundLesson && requestedLesson) {
@@ -1736,7 +1756,9 @@
           return;
         }
 
-        let targetTab: PageTab = parseTabName(pTab) || parseTabName(qTab) || 'lesson';
+        let targetTab: PageTab = (resumeTarget && !resumeTarget.isCourseScope)
+          ? resumeTarget.tab
+          : (parseTabName(pTab) || parseTabName(qTab) || 'lesson');
         if (targetTab === 'schedule') {
           targetTab = 'lesson';
         }

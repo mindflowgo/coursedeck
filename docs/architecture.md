@@ -85,6 +85,7 @@ app/src/
 │   ├── api.ts                  # Typed client apiFetch() and environment detection (isTauriEnvironment)
 │   ├── tabs.ts                 # CANONICAL single source of truth for tab slugs, document filenames (tabFileName, courseDocFileName, docFileName), route parsing (parseDocFileName), and URL helpers (courseTabHref)
 │   ├── checkpoint.ts           # Checkpoint domain models, 12-color sticky note palette, and color utilities
+│   ├── preferences.ts          # User preferences (e.g. Return to most recent position in course) & route resolution
 │   ├── llmProviders.ts         # Shared provider presets/protocols (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible)
 │   ├── llmClient.ts            # Typed /api/llm client: model cards, active model, per-card connection test
 │   ├── queueStatus.svelte.ts   # Reactive global queue poll store & task listeners
@@ -704,7 +705,11 @@ To maintain architectural integrity and eliminate duplicate implementations:
 ### 17.2 Checkpoint Data Model & Storage (`checkpoint.json`)
 Checkpoints are stored per course in `data/courses/<course_id>/checkpoint.json`:
 - **`type: 'position'`**:
-  Automatically records the user's vertical reading position in a file (debounced by ~600ms during scrolling). Replaces the legacy browser `localStorage` scroll memory with persistent filesystem-backed bookmarking that synchronizes across restarts and sessions.
+  Automatically records the user's vertical reading position in a file (debounced during scrolling). Replaces the legacy browser `localStorage` scroll memory with persistent filesystem-backed bookmarking that synchronizes across restarts and sessions.
+  - **In-Lesson Position Restoration**: When opening or switching to any specific lesson or tab, the viewport always restores to the recorded vertical position in that file.
+  - **Generic Course Open & Resume Toggle**: When a student opens a course generically (e.g., clicking on a course from the dashboard or header, `/courses/[course_id]`), the setting **"Return to most recent position in course"** (configurable in Settings) determines the behavior:
+    - **Enabled (Default)**: Automatically queries the newest position checkpoint across all lessons and documents for that course, deep-linking straight to the last accessed lesson/tab and restoring the scroll position.
+    - **Disabled**: Bypasses resume and returns directly to the course main page (Unit 1, Lesson 1, Tab 'lesson').
 - **`type: 'note'`**:
   User-created post-it notes attached to a specific vertical offset on a document page.
   ```json

@@ -27,11 +27,13 @@
     Monitor,
     ZoomIn,
     Plus,
-    Trash2
+    Trash2,
+    Compass
   } from 'lucide-svelte';
   import { theme } from '$lib/theme.svelte';
   import { zoom } from '$lib/zoom.svelte';
   import { ZOOM_STEPS } from '$lib/zoomLevels';
+  import { getResumeLastPosition, setResumeLastPosition } from '$lib/preferences';
   import { LLM_PROVIDER_PRESETS, getProviderPreset, isPublicIpUrl } from '$lib/llmProviders';
   import {
     createLlmCardDraft,
@@ -95,6 +97,14 @@
   let newPath = $state('');
   let migrateExisting = $state(true);
   let storageMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Resume course position preference
+  let resumeLastPosition: boolean = $state(true);
+
+  function toggleResumePosition() {
+    resumeLastPosition = !resumeLastPosition;
+    setResumeLastPosition(resumeLastPosition);
+  }
 
   // Backup state
   let isExportingBackup = $state(false);
@@ -603,6 +613,7 @@
   }
 
   onMount(() => {
+    resumeLastPosition = getResumeLastPosition();
     loadModelCards();
     loadStorageInfo();
   });
@@ -701,6 +712,32 @@
         </select>
       </div>
     {/if}
+
+    <!-- Return to Most Recent Position in Course Row -->
+    <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="flex items-start sm:items-center space-x-2">
+        <Compass class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0 mt-0.5 sm:mt-0" />
+        <div>
+          <span class="font-medium text-stone-900 dark:text-stone-100">Return to most recent position in course</span>
+          <p class="text-[11px] text-stone-400 dark:text-stone-500 mt-0.5">
+            When opening a course generically, resume at your last accessed lesson and position instead of the course main page.
+          </p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        role="switch"
+        aria-checked={resumeLastPosition}
+        aria-label="Toggle return to most recent position in course"
+        onclick={toggleResumePosition}
+        class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden {resumeLastPosition ? 'bg-stone-900 dark:bg-stone-100' : 'bg-stone-200 dark:bg-stone-700'}"
+      >
+        <span
+          class="pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white dark:bg-stone-900 shadow-md ring-0 transition duration-200 ease-in-out {resumeLastPosition ? 'translate-x-4' : 'translate-x-0'}"
+        ></span>
+      </button>
+    </div>
 
     <!-- Course Data Storage Row -->
     <div class="p-3 space-y-2">
