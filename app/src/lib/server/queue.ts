@@ -115,7 +115,8 @@ class GenerationQueue {
   }
 
   /**
-   * Enqueue specific tasks
+   * Enqueue specific tasks. The model is resolved per task at processing time
+   * from the active Settings card, so queued work follows the active model.
    */
   enqueue(
     items: Array<{
@@ -125,14 +126,9 @@ class GenerationQueue {
       tab: string;
       customPrompt?: string;
       preferences?: SchedulePreferences;
-    }>,
-    customConfig?: LLMConfig
+    }>
   ): GenerationTask[] {
     const enqueued: GenerationTask[] = [];
-
-    if (customConfig) {
-      LLMService.saveStoredConfig(customConfig);
-    }
 
     for (const item of items) {
       const lessonId = item.lessonId || (item.tab === 'schedule' ? 'schedule' : '');
@@ -170,15 +166,10 @@ class GenerationQueue {
    */
   enqueueCourseMissing(
     courseId: string,
-    tabs: Array<'summary' | 'cheatsheet' | 'test'> = ['summary', 'cheatsheet', 'test'],
-    customConfig?: LLMConfig
+    tabs: Array<'summary' | 'cheatsheet' | 'test'> = ['summary', 'cheatsheet', 'test']
   ): GenerationTask[] {
     const manifest = CourseService.getManifest(courseId);
     if (!manifest) return [];
-
-    if (customConfig) {
-      LLMService.saveStoredConfig(customConfig);
-    }
 
     const tasksToEnqueue: Array<{
       courseId: string;
@@ -204,7 +195,7 @@ class GenerationQueue {
       }
     }
 
-    return this.enqueue(tasksToEnqueue, customConfig);
+    return this.enqueue(tasksToEnqueue);
   }
 
   /**

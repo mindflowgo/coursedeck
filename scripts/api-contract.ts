@@ -10,11 +10,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { makePng, imageSize } from './test-image';
+import { killProcessTree } from './test-process';
 
 const PORT = 3199;
 const BASE = `http://127.0.0.1:${PORT}`;
 const SCRATCH = fs.mkdtempSync('/tmp/ilc-contract-');
 fs.mkdirSync(path.join(SCRATCH, 'courses'), { recursive: true });
+// Prompt templates exist in a real install; seed the ones course-doc generation
+// looks up first so those checks exercise the LLM-config gate, not a missing prompt.
+fs.mkdirSync(path.join(SCRATCH, 'prompts'), { recursive: true });
+fs.writeFileSync(path.join(SCRATCH, 'prompts', 'course_schedule.md'), 'Generate a study schedule.\n');
+fs.writeFileSync(path.join(SCRATCH, 'prompts', 'course_summary.md'), 'Summarize the course.\n');
 
 // Synthetic course with one oversized PNG (8:6 aspect) so compression runs
 // end-to-end through the compiled/bundled codec path. Images are synthesized
@@ -200,7 +206,168 @@ try {
     check('GET /api/courses → {courses: array}', c.status === 200 && Array.isArray(c.body.courses));
 
     const llm = await req('/api/llm');
-    check('GET /api/llm → {hasConfig: boolean}', llm.status === 200 && typeof llm.body.hasConfig === 'boolean');
+    check(
+      'GET /api/llm → {hasConfig, cards, activeId}',
+      llm.status === 200 && typeof llm.body.hasConfig === 'boolean' && Array.isArray(llm.body.cards) && 'activeId' in llm.body
+    );
+
+    // Multi-card store: save two models, switch the active one, verify the
+    // active card is what generation resolves (keys never echoed back).
+    const saved = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'save_store',
+        activeId: 'card_local',
+        cards: [
+          {
+            id: 'card_local',
+            label: 'Local llama.cpp',
+            provider: 'llamacpp',
+            baseUrl: 'http://127.0.0.1:9931',
+            apiKey: 'sk-local',
+            authHeaderType: 'bearer',
+            model: 'qwen2.5-7b',
+            temperature: 0.3,
+            timeoutSeconds: 150
+          },
+          {
+            id: 'card_cloud',
+            label: 'Cloud',
+            provider: 'openai_compatible',
+            baseUrl: 'https://api.example.com/v1',
+            apiKey: '',
+            authHeaderType: 'bearer',
+            model: 'gpt-4o-mini',
+            temperature: 0.2,
+            timeoutSeconds: 60
+          }
+        ]
+      })
+    });
+    check(
+      'POST /api/llm save_store → {success, activeId, cards[]}',
+      saved.status === 200 && saved.body.success === true && saved.body.activeId === 'card_local' && saved.body.cards?.length === 2
+    );
+    check('save_store never echoes API keys', saved.body.cards?.every((c: any) => !('apiKey' in c)) === true);
+
+    const afterSave = await req('/api/llm');
+    check(
+      'GET /api/llm resolves the ACTIVE card (llama.cpp native)',
+      afterSave.body.config?.id === 'card_local' &&
+        afterSave.body.config?.provider === 'llamacpp' &&
+        afterSave.body.config?.model === 'qwen2.5-7b' &&
+        afterSave.body.config?.hasApiKey === true
+    );
+
+    const switched = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set_active', id: 'card_cloud' })
+    });
+    check('POST /api/llm set_active → {success, activeId}', switched.status === 200 && switched.body.activeId === 'card_cloud');
+
+    const switchedBack = await req('/api/llm');
+    check(
+      'active switch reroutes the resolved config',
+      switchedBack.body.config?.id === 'card_cloud' && switchedBack.body.config?.model === 'gpt-4o-mini'
+    );
+
+    const unknownCard = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'set_active', id: 'nope' })
+    });
+    check('set_active unknown card → 404', unknownCard.status === 404);
+
+    // A card pointing at a port this script just released: the generate
+    // fallback must resolve it (and fail fast with an endpoint error), never
+    // demand a config in the body.
+    const deadPortProbe = Bun.serve({ port: 0, fetch: () => new Response('') });
+    const deadPort = deadPortProbe.port;
+    deadPortProbe.stop(true);
+    await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'save_store',
+        activeId: 'card_dead',
+        cards: [
+          { id: 'card_dead', label: 'Dead endpoint', provider: 'openai_compatible', baseUrl: `http://127.0.0.1:${deadPort}/v1`, apiKey: '', model: 'x', temperature: 0.3, timeoutSeconds: 30 }
+        ]
+      })
+    });
+    const noConfig = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'generate', systemPrompt: 's', userPrompt: 'u' })
+    });
+    check(
+      'generate without config resolves the ACTIVE card',
+      noConfig.status === 500 && /LLM request failed|LLM Error/i.test(String(noConfig.body.message))
+    );
+
+    // Clearing every model must be explicitly requested: an empty list from a
+    // bug or a stale tab cannot silently wipe the configured models.
+    const unconfirmedClear = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save_store', cards: [], activeId: null })
+    });
+    check(
+      'save_store with an empty list (no confirmClear) → 409 and the models survive',
+      unconfirmedClear.status === 409 && String(unconfirmedClear.body.message).includes('confirmClear')
+    );
+    const stillThere = await req('/api/llm');
+    check('unconfirmed clear left the store untouched', stillThere.body.cards?.length === 1);
+
+    // A card without a Base URL cannot be stored, so it must be rejected rather
+    // than silently dropped — dropping it would clear the working configuration.
+    const blankUrl = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'save_store',
+        activeId: null,
+        cards: [{ id: 'card_blank', label: 'Blank', provider: 'openai_compatible', baseUrl: '   ', apiKey: '', model: 'x', temperature: 0.3, timeoutSeconds: 60 }]
+      })
+    });
+    check(
+      'save_store with only Base-URL-less cards → 400 and the models survive',
+      blankUrl.status === 400 && String(blankUrl.body.message).includes('Base URL')
+    );
+    const afterBlank = await req('/api/llm');
+    check('blank-URL save left the store untouched', afterBlank.body.cards?.length === 1);
+
+    // Restore the empty store (confirmed): later checks assert behaviour with no LLM configured.
+    const cleared = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save_store', cards: [], activeId: null, confirmClear: true })
+    });
+    check('save_store clears the store with confirmClear → 0 cards', cleared.status === 200 && cleared.body.cards?.length === 0);
+
+    // An unreadable config must fail loudly (never read as "no models") and must
+    // not be overwritten by a save — that is how a recoverable config survives.
+    const configPath = path.join(SCRATCH, 'llm_config.json');
+    fs.writeFileSync(configPath, '{ not json at all', 'utf8');
+    const corruptBytes = fs.readFileSync(configPath);
+
+    const corruptGet = await req('/api/llm');
+    check('GET /api/llm on a corrupt config → 500 (not "no models")', corruptGet.status === 500);
+
+    const corruptSave = await req('/api/llm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save_store', cards: [{ id: 'x', label: 'X', provider: 'lmstudio', baseUrl: 'http://localhost:1234/v1', model: 'm', temperature: 0.3, timeoutSeconds: 60 }], activeId: 'x' })
+    });
+    check('save_store on a corrupt config → 500', corruptSave.status === 500);
+    check('corrupt config left byte-identical', Buffer.compare(corruptBytes, fs.readFileSync(configPath)) === 0);
+
+    // Repairing it recovers without a restart.
+    fs.rmSync(configPath);
+    const repaired = await req('/api/llm');
+    check('removing the broken file recovers → 200 {hasConfig:false}', repaired.status === 200 && repaired.body.hasConfig === false);
 
     const missing = await req('/api/courses/zzz9');
     check('GET unknown course → 404 {message}', missing.status === 404 && typeof missing.body.message === 'string');
@@ -311,9 +478,9 @@ try {
     const bad = await req('/api/courses/tst01/course-docs', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'calendar', content: 'x' })
+      body: JSON.stringify({ type: 'bad type!', content: 'x' })
     });
-    check('course-docs rejects unknown type → 400', bad.status === 400);
+    check('course-docs rejects a malformed type → 400', bad.status === 400);
   }
 
   console.log('\nCourse metadata (rename / archive):');
@@ -419,7 +586,7 @@ try {
     check('404 with {message}', nf.status === 404 && typeof nf.body.message === 'string');
   }
 } finally {
-  proc.kill(9);
+  killProcessTree(proc);
   try {
     fs.rmSync(SCRATCH, { recursive: true, force: true });
   } catch {}

@@ -8,7 +8,7 @@
  *
  * Usage: bun run scripts/pdf-smoke.ts
  */
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pdfMake from 'pdfmake';
@@ -61,17 +61,33 @@ interface Case {
   tab: 'lesson' | 'summary' | 'cheatsheet' | 'test';
 }
 
+function firstLessonFile(courseId: string): string {
+  try {
+    return courseId + '/' + (readdirSync(join(DATA_DIR, courseId)).find((f) => f.endsWith('.lesson.md')) ?? '');
+  } catch {
+    return '';
+  }
+}
+
 const cases: Case[] = [
   { name: 'lesson-rich', file: 'baf3m/02.06.lesson.md', tab: 'lesson' },
-  { name: 'lesson-details', file: 'clu3m/' + (readdirSync(join(DATA_DIR, 'clu3m')).find((f) => f.endsWith('.lesson.md')) ?? ''), tab: 'lesson' },
+  { name: 'lesson-details', file: firstLessonFile('clu3m'), tab: 'lesson' },
   { name: 'summary', file: 'baf3m/03.05.summary.md', tab: 'summary' },
   { name: 'test', file: 'gwl3o/04.03.test.md', tab: 'test' }
 ];
 
 let failed = 0;
+let skipped = 0;
 
 for (const c of cases) {
   if (!c.file || c.file.endsWith('/')) continue;
+  // This smoke test compiles real ingested courses; skip cases whose fixture
+  // is not present in the local data dir instead of crashing the whole suite.
+  if (!existsSync(join(DATA_DIR, c.file))) {
+    skipped++;
+    console.log(`- ${c.name}: skipped (no fixture at data/courses/${c.file})`);
+    continue;
+  }
   const raw = readFileSync(join(DATA_DIR, c.file), 'utf-8');
   const t0 = performance.now();
   let doc: any;
@@ -124,6 +140,9 @@ for (const c of cases) {
 }
 
 console.log(`\nEmbedded images stubbed: ${embeddedImages}`);
+if (skipped > 0) {
+  console.log(`${skipped} case(s) skipped (missing local course fixtures).`);
+}
 if (failed > 0) {
   console.error(`${failed} case(s) FAILED`);
   process.exit(1);

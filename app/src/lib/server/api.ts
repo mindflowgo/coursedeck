@@ -4,7 +4,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { PromptService } from './prompts';
-import { LLMService, type LLMConfig } from './llm';
+import { LLMService, type LLMConfig, type LlmModelCard } from './llm';
 import { queueManager } from './queue';
 import {
   getDataDir,
@@ -92,6 +92,16 @@ function error(status: number, message: string): Response {
   return json({ message }, status);
 }
 
+/** Store view shared by every /api/llm response (keys are never included). */
+function llmStoreState(store: ReturnType<typeof LLMService.loadStore>) {
+  const active = LLMService.activeCard(store);
+  return {
+    hasConfig: Boolean(active && active.baseUrl),
+    activeId: store.activeId,
+    cards: LLMService.summarizeCards(store)
+  };
+}
+
 function fileResponse(filePath: string, extraHeaders: Record<string, string> = {}): Response {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = MIME_TYPES[ext] || 'application/octet-stream';
@@ -137,18 +147,26 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
     // ---- /api/llm ----
     if (pathname === '/api/llm') {
       if (method === 'GET') {
-        const config = LLMService.loadStoredConfig();
+        const read = LLMService.readStore();
+        // A corrupt config must never read as "no models configured" — that is
+        // the state in which a later save would overwrite it with an empty list.
+        if (!read.ok) {
+          return error(500, 'The stored AI models could not be read (llm_config.json is unreadable or malformed). Fix or remove that file, then reload.');
+        }
+        const active = LLMService.activeCard(read.store);
         return json({
-          hasConfig: Boolean(config && config.baseUrl),
-          config: config
+          ...llmStoreState(read.store),
+          config: active
             ? {
-                provider: config.provider,
-                baseUrl: config.baseUrl,
-                model: config.model,
-                authHeaderType: config.authHeaderType,
-                temperature: config.temperature,
-                timeoutSeconds: config.timeoutSeconds,
-                hasApiKey: Boolean(config.apiKey)
+                id: active.id,
+                label: active.label,
+                provider: active.provider,
+                baseUrl: active.baseUrl,
+                model: active.model,
+                authHeaderType: active.authHeaderType,
+                temperature: active.temperature,
+                timeoutSeconds: active.timeoutSeconds,
+                hasApiKey: Boolean(active.apiKey && active.apiKey.trim())
               }
             : null
         });
@@ -159,29 +177,61 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         const action = body.action as string | undefined;
         const config = body.config as LLMConfig | undefined;
         const { systemPrompt, userPrompt, sessionId } = body;
-        if (!config) return error(400, 'LLM config is required');
 
-        if (config.baseUrl) {
-          LLMService.saveStoredConfig(config);
+        // Card-store actions (Settings model manager)
+        if (action === 'save_store') {
+          const submittedCards = Array.isArray(body.cards) ? body.cards : [];
+          const activeId = typeof body.activeId === 'string' ? body.activeId : null;
+
+          const read = LLMService.readStore();
+          if (!read.ok) {
+            return error(500, 'The stored AI models could not be read, so they were left untouched. Fix or remove llm_config.json, then reload.');
+          }
+
+          // Count what would SURVIVE persistence, not what was posted: a card
+          // with a blank Base URL is dropped by normalization, so treating the
+          // raw length as "models to store" would let one half-filled card clear
+          // a working configuration.
+          const usableCards = LLMService.normalizeCards(submittedCards);
+          if (submittedCards.length > 0 && usableCards.length === 0) {
+            return error(400, 'Every model needs a Base URL — nothing was saved, so your existing models are unchanged.');
+          }
+          // Removing every model is destructive and irreversible once AI features
+          // depend on it, so it must be requested explicitly.
+          if (usableCards.length === 0 && read.store.cards.length > 0 && body.confirmClear !== true) {
+            return error(409, `Refusing to remove all ${read.store.cards.length} configured model(s). Resend with confirmClear: true if that is really intended.`);
+          }
+
+          LLMService.replaceCards(submittedCards, activeId);
+          return json({ success: true, ...llmStoreState(LLMService.loadStore()) });
         }
-        if (sessionId && !config.sessionId) {
-          config.sessionId = sessionId as string;
+        if (action === 'set_active') {
+          const id = typeof body.id === 'string' ? body.id : '';
+          if (!LLMService.setActiveCard(id)) return error(404, 'Model card not found');
+          return json({ success: true, ...llmStoreState(LLMService.loadStore()) });
         }
 
-        if (action === 'save_config') {
-          return json({ success: true, message: 'LLM configuration saved' });
-        }
-        if (action === 'test') {
-          const result = await LLMService.testConnection(config);
-          return json(result);
-        }
-        if (action === 'generate') {
+        // Generation actions accept an explicit config (ad-hoc testing) or fall
+        // back to the ACTIVE card, so every AI feature routes through it.
+        if (action === 'test' || action === 'generate') {
+          const explicit = config && typeof config.baseUrl === 'string' && config.baseUrl.trim() ? config : null;
+          const effective = explicit ?? LLMService.loadStoredConfig();
+          if (!effective || !effective.baseUrl) {
+            return error(400, 'No AI model configured. Add a model in Settings → AI Models.');
+          }
+          if (sessionId && !effective.sessionId) {
+            effective.sessionId = sessionId as string;
+          }
+
+          if (action === 'test') {
+            return json(await LLMService.testConnection(effective));
+          }
           if (!systemPrompt || !userPrompt) {
             return error(400, 'systemPrompt and userPrompt are required for generation');
           }
           try {
             const result = await LLMService.generateResult(
-              config,
+              effective,
               systemPrompt as string,
               userPrompt as string
             );
@@ -191,6 +241,22 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             return error(500, err instanceof Error ? err.message : 'LLM generation failed');
           }
         }
+
+        // Legacy single-config save (AI setup modal): updates the active card.
+        if (action === 'save_config') {
+          if (!config || typeof config.baseUrl !== 'string' || !config.baseUrl.trim()) {
+            return error(400, 'A Base URL is required to save an AI model');
+          }
+          // Don't overwrite a config that exists but could not be parsed — the
+          // user may be able to repair it, and this path would discard it.
+          if (!LLMService.readStore().ok) {
+            return error(500, 'The stored AI models could not be read, so they were left untouched. Fix or remove llm_config.json, then reload.');
+          }
+          LLMService.saveStoredConfig(config);
+          const store = LLMService.loadStore();
+          return json({ success: true, message: 'LLM configuration saved', activeId: store.activeId });
+        }
+
         return error(400, `Unknown action: ${action}`);
       }
     }
@@ -203,19 +269,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       }
       if (method === 'POST') {
         const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-        const {
-          action,
-          courseId,
-          lessonId,
-          lessonTitle,
-          prompt,
-          customPrompt,
-          customConfig
-        } = body;
-
-        if (customConfig) {
-          LLMService.saveStoredConfig(customConfig as LLMConfig);
-        }
+        const { action, courseId, lessonId, lessonTitle, prompt, customPrompt } = body;
 
         if (action === 'enqueue') {
           if (!courseId) {
@@ -233,6 +287,11 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             } catch {
               return error(400, `Invalid tab: ${JSON.stringify(singleTab)}`);
             }
+            // 'lesson' is the ingested source document; regenerating it would
+            // overwrite the course text, so only study-material tabs generate.
+            if (singleTab === 'lesson') {
+              return error(400, "Invalid tab: 'lesson' is the source lesson and cannot be generated");
+            }
             if (!lessonId && singleTab !== 'schedule') {
               return error(400, 'lessonId is required to generate a lesson tab');
             }
@@ -248,7 +307,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                 preferences: body.preferences as SchedulePreferences | undefined
               }
             ];
-            const enqueued = queueManager.enqueue(items, customConfig as LLMConfig | undefined);
+            const enqueued = queueManager.enqueue(items);
             return json({
               success: true,
               enqueued,
@@ -283,7 +342,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               lessonTitle: String(lessonTitle || lessonId),
               tab: t
             }));
-            const enqueued = queueManager.enqueue(items, customConfig as LLMConfig | undefined);
+            const enqueued = queueManager.enqueue(items);
             return json({
               success: true,
               enqueued,
@@ -292,11 +351,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             });
           }
 
-          const enqueued = queueManager.enqueueCourseMissing(
-            String(courseId),
-            lessonTabs,
-            customConfig as LLMConfig | undefined
-          );
+          const enqueued = queueManager.enqueueCourseMissing(String(courseId), lessonTabs);
           return json({
             success: true,
             enqueued,
@@ -851,25 +906,22 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
 
           // 3. Active LLM config
-          const config = (body.customConfig as LLMConfig) || LLMService.loadStoredConfig();
+          const config = LLMService.loadStoredConfig();
           if (!config || !config.baseUrl) {
             return error(400, 'Active LLM configuration is required. Please configure your LLM settings.');
           }
 
           // Schedules are enqueued into the background queue to avoid blocking
           if (type === 'schedule') {
-            const enqueued = queueManager.enqueue(
-              [
-                {
-                  courseId,
-                  lessonId: 'schedule',
-                  lessonTitle: 'Course Study Schedule',
-                  tab: 'schedule',
-                  customPrompt: systemPrompt
-                }
-              ],
-              config
-            );
+            const enqueued = queueManager.enqueue([
+              {
+                courseId,
+                lessonId: 'schedule',
+                lessonTitle: 'Course Study Schedule',
+                tab: 'schedule',
+                customPrompt: systemPrompt
+              }
+            ]);
             return json({
               success: true,
               status: 'generating',

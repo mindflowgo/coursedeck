@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { zipSync } from 'fflate';
 import { makePng } from './test-image';
+import { killProcessTree } from './test-process';
 
 const PORT = 3194;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -75,22 +76,22 @@ try {
   check('frontmatter parses (Bun.YAML round-trip)', fm !== null && typeof fm === 'object' && 'title' in fm, mdText.slice(0, 80));
   check('asset extracted from zip', fs.existsSync(path.join(courseDir, 'assets', 'img', 'pic.png')));
 
-  // Lesson save + save-as-new-version
+  // Lesson save (one file per lesson+tab; versioning was removed from the app)
   const putRes = await fetch(`${BASE}/api/courses/gtest1/01.01`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tab: 'summary', content: '# S\n\ncontent v1' })
   });
   const putBody: any = await putRes.json();
-  check('lesson PUT save', putRes.status === 200 && putBody.success === true && typeof putBody.versionId === 'string', JSON.stringify(putBody));
+  check('lesson PUT save → {success, filename}', putRes.status === 200 && putBody.success === true && typeof putBody.filename === 'string', JSON.stringify(putBody));
 
   const putRes2 = await fetch(`${BASE}/api/courses/gtest1/01.01`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tab: 'summary', content: '# S\n\ncontent v2', asNewVersion: true })
+    body: JSON.stringify({ tab: 'summary', content: '# S\n\ncontent v2' })
   });
   const putBody2: any = await putRes2.json();
-  check('save-as-new-version', putRes2.status === 200 && putBody2.success === true, JSON.stringify(putBody2));
+  check('lesson PUT overwrite save → {success}', putRes2.status === 200 && putBody2.success === true, JSON.stringify(putBody2));
 
   // Course-docs GET (aggregated notes)
   const notesRes = await fetch(`${BASE}/api/courses/gtest1/course-docs?type=notes`);
@@ -117,7 +118,7 @@ try {
   const impBody: any = await imp.json();
   check('backup import restores', imp.status === 200 && impBody.success === true && impBody.filesRestored > 0, JSON.stringify(impBody).slice(0, 120));
 } finally {
-  proc.kill(9);
+  killProcessTree(proc);
   try {
     fs.rmSync(SCRATCH, { recursive: true, force: true });
   } catch {}

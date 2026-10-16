@@ -1,17 +1,58 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLlmConfigPath } from './paths';
+import { getProviderPreset, protocolForProvider, type LlmCardSummary } from '../llmProviders';
+
+export type LlmAuthHeaderType = 'bearer' | 'api_key' | 'both';
 
 export interface LLMConfig {
-  provider: 'openai_compatible' | 'ollama' | 'gemini';
+  /** Provider preset id; selects the transport (see `../llmProviders`). */
+  provider: string;
   baseUrl: string;
   apiKey?: string;
-  authHeaderType?: 'bearer' | 'api_key' | 'both';
+  authHeaderType?: LlmAuthHeaderType;
   model?: string;
   temperature?: number;
   sessionId?: string;
   /** Per-request LLM deadline in seconds (Settings → Request Timeout, 30–150). */
   timeoutSeconds?: number;
+  /** Store card this config came from, when known (per-card API key fallback). */
+  cardId?: string;
+}
+
+/** One model-provider card in Settings. */
+export interface LlmModelCard {
+  id: string;
+  label: string;
+  provider: string;
+  baseUrl: string;
+  apiKey?: string;
+  authHeaderType?: LlmAuthHeaderType;
+  model?: string;
+  temperature?: number;
+  timeoutSeconds?: number;
+}
+
+/** Persisted multi-card store (`data/llm_config.json`, version 2). */
+export interface LlmStore {
+  version: 2;
+  activeId: string | null;
+  cards: LlmModelCard[];
+}
+
+const CARD_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+
+function newCardId(): string {
+  return `card_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Collapses non-finite temperatures/timeouts into sane defaults. */
+function cleanNumber(value: unknown, fallback: number, min: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= min ? value : fallback;
+}
+
+function cleanAuthType(value: unknown): LlmAuthHeaderType {
+  return value === 'api_key' || value === 'both' ? value : 'bearer';
 }
 
 /**
@@ -42,6 +83,24 @@ export function resolveCompletionsUrl(baseUrl: string): string {
   return `${clean}/v1/chat/completions`;
 }
 
+/**
+ * llama.cpp's native endpoints live beside (not under) the OAI-compatible one,
+ * so OAI-style base URLs users paste from other providers are normalized
+ * instead of rejected.
+ */
+export function resolveLlamaCppUrl(baseUrl: string, endpoint: 'completion' | 'apply-template'): string {
+  if (!baseUrl) return '';
+  const clean = baseUrl
+    .trim()
+    .replace(/\/+$/, '')
+    // Strip any completion-flavoured suffix, with or without the OAI /v1 prefix.
+    .replace(/\/(v1\/)?(chat\/)?completions?$/i, '')
+    .replace(/\/(completion|apply-template)$/i, '')
+    .replace(/\/v1$/i, '')
+    .replace(/\/+$/, '');
+  return `${clean}/${endpoint}`;
+}
+
 export function timeoutMessage(timeoutMs: number): string {
   return (
     `LLM request timed out after ${Math.round(timeoutMs / 1000)}s. ` +
@@ -63,37 +122,184 @@ export const LLM_HEARTBEAT_INTERVAL_MS = 30_000;
 
 
 export class LLMService {
-  static loadStoredConfig(): LLMConfig | null {
+  /**
+   * Reads the store and reports whether it was actually readable.
+   *
+   * An unreadable/corrupt file must not be presented as "no models
+   * configured": callers that can overwrite it (the Settings model manager)
+   * would then save an empty list over a recoverable configuration.
+   */
+  static readStore(): { ok: boolean; store: LlmStore } {
+    const empty: LlmStore = { version: 2, activeId: null, cards: [] };
     try {
       const p = getLlmConfigPath();
-      if (fs.existsSync(p)) {
-        return JSON.parse(fs.readFileSync(p, 'utf8'));
-      }
+      if (!fs.existsSync(p)) return { ok: true, store: empty };
+      return { ok: true, store: LLMService.migrateStore(JSON.parse(fs.readFileSync(p, 'utf8'))) };
     } catch {
-      // Gracefully handle unreadable/sandboxed paths without throwing or logging noisy warnings
+      return { ok: false, store: empty };
     }
-    return null;
   }
 
-  static saveStoredConfig(config: LLMConfig): void {
+  /** Lenient read for generation paths: an unreadable file simply means "not configured". */
+  static loadStore(): LlmStore {
+    return LLMService.readStore().store;
+  }
+
+  static saveStore(store: LlmStore): void {
     try {
       const p = getLlmConfigPath();
       fs.mkdirSync(path.dirname(p), { recursive: true });
-      const existing = LLMService.loadStoredConfig();
-      const apiKey = (config.apiKey && config.apiKey.trim())
-        ? config.apiKey.trim()
-        : (existing?.apiKey || '');
-      const cleanConfig: LLMConfig = {
-        ...config,
-        apiKey,
-        model: config.model ? config.model.trim() : '',
-        timeoutSeconds: config.timeoutSeconds ?? existing?.timeoutSeconds
-      };
-      fs.writeFileSync(p, JSON.stringify(cleanConfig, null, 2), 'utf8');
-      console.log(`[LLM Config Saved] Base URL: ${cleanConfig.baseUrl}, Model: ${cleanConfig.model || '(server default)'}`);
+      const clean = LLMService.migrateStore(store);
+      // Blank API keys mean "keep the stored one" — the client never receives keys.
+      const previous = LLMService.loadStore();
+      for (const card of clean.cards) {
+        if (!card.apiKey) {
+          card.apiKey = previous.cards.find((c) => c.id === card.id)?.apiKey ?? '';
+        }
+      }
+      if (clean.cards.length === 0 && previous.cards.length > 0) {
+        console.warn(
+          `[LLM Store] Clearing the model list (${previous.cards.length} card(s) removed) — AI features will report "no model configured" until a model is added.`
+        );
+      }
+      fs.writeFileSync(p, JSON.stringify(clean, null, 2), 'utf8');
+      const active = LLMService.activeCard(clean);
+      console.log(
+        `[LLM Store Saved] ${clean.cards.length} model(s) | Active: ${active ? `${active.label} → ${active.model || '(server default)'}` : '(none)'}`
+      );
     } catch (e) {
-      console.warn('Failed to save stored LLM config:', e);
+      console.warn('Failed to save stored LLM store:', e);
     }
+  }
+
+  /** The card every AI feature routes through; falls back to the first card. */
+  static activeCard(store: LlmStore): LlmModelCard | null {
+    return store.cards.find((c) => c.id === store.activeId) ?? store.cards[0] ?? null;
+  }
+
+  /**
+   * Resolves the active model card as a call-ready `LLMConfig`.
+   *
+   * This is the single routing point for "all AI features use the ACTIVE model":
+   * the queue worker, course-doc generation, schedule enrichment and Ask-AI all
+   * obtain their config here, so switching the active card in Settings changes
+   * every consumer without touching their call sites.
+   */
+  static loadStoredConfig(): LLMConfig | null {
+    const card = LLMService.activeCard(LLMService.loadStore());
+    if (!card || !card.baseUrl) return null;
+    return {
+      provider: card.provider,
+      baseUrl: card.baseUrl,
+      apiKey: card.apiKey,
+      authHeaderType: card.authHeaderType,
+      model: card.model,
+      temperature: card.temperature,
+      timeoutSeconds: card.timeoutSeconds,
+      cardId: card.id
+    };
+  }
+
+  /**
+   * Legacy single-config write path (AI setup modal): updates the active card
+   * in place, or creates the first card when the store is empty.
+   */
+  static saveStoredConfig(config: LLMConfig): void {
+    const store = LLMService.loadStore();
+    const existing = config.cardId
+      ? store.cards.find((c) => c.id === config.cardId)
+      : LLMService.activeCard(store);
+
+    const card: LlmModelCard = {
+      id: existing?.id ?? newCardId(),
+      label: existing?.label || getProviderPreset(config.provider).label,
+      provider: config.provider,
+      baseUrl: config.baseUrl,
+      apiKey:
+        typeof config.apiKey === 'string' && config.apiKey.trim()
+          ? config.apiKey.trim()
+          : (existing?.apiKey ?? ''),
+      authHeaderType: config.authHeaderType ?? existing?.authHeaderType ?? 'bearer',
+      // A blank string clears the model id (server default); a non-string keeps the stored one.
+      model: typeof config.model === 'string' ? config.model.trim() : (existing?.model ?? ''),
+      temperature: config.temperature ?? existing?.temperature ?? 0.3,
+      timeoutSeconds: config.timeoutSeconds ?? existing?.timeoutSeconds ?? 150
+    };
+
+    LLMService.saveStore({
+      version: 2,
+      activeId: existing?.id ?? card.id,
+      cards: existing ? store.cards.map((c) => (c.id === existing.id ? card : c)) : [...store.cards, card]
+    });
+  }
+
+  static setActiveCard(id: string): boolean {
+    const store = LLMService.loadStore();
+    if (!store.cards.some((c) => c.id === id)) return false;
+    LLMService.saveStore({ ...store, activeId: id });
+    return true;
+  }
+
+  /** Replaces the card list wholesale (Settings model manager) — order preserved. */
+  static replaceCards(cards: LlmModelCard[], activeId: string | null): LlmStore {
+    LLMService.saveStore({ version: 2, activeId, cards });
+    return LLMService.loadStore();
+  }
+
+  /** Strips API keys so the client sees only connection metadata. */
+  static summarizeCards(store: LlmStore): LlmCardSummary[] {
+    return store.cards.map(({ apiKey, ...card }) => ({ ...card, hasApiKey: Boolean(apiKey && apiKey.trim()) }));
+  }
+
+  /**
+   * Normalizes an incoming card list exactly the way persistence will, so a
+   * caller can tell how many cards would actually survive a save. Cards without
+   * a Base URL are unusable and are dropped — code that treats the raw array
+   * length as "how many models will be stored" would miss that.
+   */
+  static normalizeCards(raw: unknown): LlmModelCard[] {
+    return LLMService.migrateStore({ version: 2, activeId: null, cards: Array.isArray(raw) ? raw : [] }).cards;
+  }
+
+  /**
+   * Accepts the version-2 store or the legacy flat single-config file and
+   * always returns a normalized store. Cards must carry a non-empty baseUrl;
+   * anything else is dropped rather than persisted as a broken entry.
+   */
+  private static migrateStore(raw: any): LlmStore {
+    const rawCards: any[] = Array.isArray(raw?.cards)
+      ? raw.cards
+      : // Legacy shape: one flat config object (pre multi-card installs).
+        raw && typeof raw.baseUrl === 'string' && raw.baseUrl.trim()
+        ? [{ ...raw, id: 'card_default', label: getProviderPreset(raw.provider).label }]
+        : [];
+
+    const cards: LlmModelCard[] = [];
+    const seenIds = new Set<string>();
+    for (const c of rawCards) {
+      const baseUrl = typeof c?.baseUrl === 'string' ? c.baseUrl.trim() : '';
+      if (!baseUrl) continue;
+      const provider = getProviderPreset(typeof c?.provider === 'string' ? c.provider : undefined).id;
+      let id = typeof c?.id === 'string' && CARD_ID_PATTERN.test(c.id) ? c.id : newCardId();
+      while (seenIds.has(id)) id = newCardId();
+      seenIds.add(id);
+      cards.push({
+        id,
+        label: typeof c?.label === 'string' && c.label.trim() ? c.label.trim() : getProviderPreset(provider).label,
+        provider,
+        baseUrl,
+        apiKey: typeof c?.apiKey === 'string' ? c.apiKey.trim() : '',
+        authHeaderType: cleanAuthType(c?.authHeaderType),
+        model: typeof c?.model === 'string' ? c.model.trim() : '',
+        temperature: cleanNumber(c?.temperature, 0.3, 0),
+        // Capped so a huge persisted value cannot make Bun clamp the timer to
+        // 1ms (which would fail every request with an instant timeout).
+        timeoutSeconds: Math.min(cleanNumber(c?.timeoutSeconds, 150, 1), 3600)
+      });
+    }
+
+    const activeId = cards.some((c) => c.id === raw?.activeId) ? raw.activeId : (cards[0]?.id ?? null);
+    return { version: 2, activeId, cards };
   }
 
   /**
@@ -119,6 +325,59 @@ export class LLMService {
     return configuredMs;
   }
 
+  /**
+   * Renders system+user turns into a single prompt string for llama.cpp's
+   * native `/completion` endpoint, preferring the server's own chat template
+   * (`/apply-template`) so each model is fed the format it was trained on.
+   * Any failure — older build without the endpoint, network error — degrades
+   * to a plain transcript instead of failing the generation.
+   */
+  private static async buildLlamaCppPrompt(
+    config: LLMConfig,
+    headers: Record<string, string>,
+    systemPrompt: string,
+    userPrompt: string,
+    timeoutMs: number
+  ): Promise<string> {
+    const fallback = `${systemPrompt}\n\n${userPrompt}`;
+    const templateUrl = resolveLlamaCppUrl(config.baseUrl, 'apply-template');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(timeoutMs, 20_000));
+    try {
+      const response = await fetch(templateUrl, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        }),
+        signal: controller.signal
+      });
+      if (!response.ok) {
+        console.warn(
+          `[LLM API] llama.cpp /apply-template unavailable (HTTP ${response.status}) at ${templateUrl}; falling back to a plain system+user prompt — output quality may be lower on this build.`
+        );
+        return fallback;
+      }
+      const data = await response.json();
+      const templated = typeof data?.prompt === 'string' ? data.prompt : '';
+      if (!templated.trim()) {
+        console.warn('[LLM API] llama.cpp /apply-template returned no prompt; falling back to a plain system+user prompt.');
+        return fallback;
+      }
+      return templated;
+    } catch (err: any) {
+      console.warn(
+        `[LLM API] llama.cpp /apply-template failed (${err?.message || err}); falling back to a plain system+user prompt.`
+      );
+      return fallback;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   static async generateResult(
     config: LLMConfig,
     systemPrompt: string,
@@ -128,7 +387,10 @@ export class LLMService {
     const timeoutMs = LLMService.resolveRequestTimeoutMs(config, options?.timeoutMs);
     const heartbeatMs = options?.heartbeatMs ?? LLM_HEARTBEAT_INTERVAL_MS;
     const emit = options?.onLog;
-    const primaryUrl = resolveCompletionsUrl(config.baseUrl);
+    const isLlamaCppNative = protocolForProvider(config.provider) === 'llamacpp_native';
+    const primaryUrl = isLlamaCppNative
+      ? resolveLlamaCppUrl(config.baseUrl, 'completion')
+      : resolveCompletionsUrl(config.baseUrl);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
     };
@@ -140,8 +402,21 @@ export class LLMService {
       }
     } catch {}
 
-    // Use passed key or fallback to stored key
-    const rawKey = (config.apiKey && config.apiKey.trim()) || LLMService.loadStoredConfig()?.apiKey || '';
+    // Use the caller's key, else the stored key of the SAME card when the
+    // request targets that card's endpoint — a posted cardId can therefore
+    // never forward one card's key to a different host. Endpoints are compared
+    // resolved, so equivalent URL spellings (…:1234 vs …:1234/v1) still match.
+    const storedCard = LLMService.loadStore().cards.find((c) => c.id === config.cardId);
+    const endpointOf = (baseUrl: string, provider: string | undefined) =>
+      protocolForProvider(provider) === 'llamacpp_native'
+        ? resolveLlamaCppUrl(baseUrl, 'completion')
+        : resolveCompletionsUrl(baseUrl);
+    // Each side resolves with its OWN provider protocol, so a changed protocol
+    // (different endpoint path, same host) also drops the stored key.
+    const sameEndpoint = Boolean(
+      storedCard && endpointOf(storedCard.baseUrl, storedCard.provider) === endpointOf(config.baseUrl, config.provider)
+    );
+    const rawKey = (config.apiKey && config.apiKey.trim()) || (sameEndpoint ? storedCard!.apiKey : '') || '';
     if (rawKey.trim()) {
       const trimmedKey = rawKey.trim();
       const cleanKey = trimmedKey.replace(/^bearer\s+/i, '');
@@ -156,16 +431,36 @@ export class LLMService {
       }
     }
 
-    const payload: Record<string, any> = {
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ]
-    };
+    /**
+     * llama.cpp's native `/completion` takes a single templated prompt rather
+     * than a messages array, so the model's own chat template is applied first
+     * via `/apply-template` (falling back to a plain system+user transcript on
+     * older builds that do not expose that endpoint).
+     */
+    let nativePrompt: string | null = null;
+    if (isLlamaCppNative) {
+      nativePrompt = await LLMService.buildLlamaCppPrompt(config, headers, systemPrompt, userPrompt, timeoutMs);
+    }
 
-    if (config.model && config.model.trim()) {
+    const payload: Record<string, any> = isLlamaCppNative
+      ? {
+          prompt: nativePrompt,
+          // -1: generate until the model stops or the context fills, matching
+          // the chat endpoints' behaviour (llama.cpp's own default).
+          n_predict: -1,
+          cache_prompt: true,
+          stream: true
+        }
+      : {
+          stream: true,
+          stream_options: { include_usage: true },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        };
+
+    if (!isLlamaCppNative && config.model && config.model.trim()) {
       payload.model = config.model.trim();
     }
 
@@ -173,7 +468,7 @@ export class LLMService {
       payload.temperature = config.temperature;
     }
 
-    if (config.sessionId && config.sessionId.trim()) {
+    if (!isLlamaCppNative && config.sessionId && config.sessionId.trim()) {
       payload.session_id = config.sessionId.trim();
     }
 
@@ -339,7 +634,11 @@ export class LLMService {
                   if (dataStr === '[DONE]') continue;
                   try {
                     const parsed = JSON.parse(dataStr);
+                    // OpenAI shape: choices[0].delta.content. llama.cpp native
+                    // /completion shape: top-level content (its `stop` flag and
+                    // `timings` ride along on the same objects).
                     const delta = parsed.choices?.[0]?.delta;
+                    const textChunk = isLlamaCppNative ? parsed.content : delta?.content;
                     if (delta?.reasoning_content) {
                       const now = Date.now();
                       if (now - lastLogAt >= 10_000) {
@@ -347,16 +646,24 @@ export class LLMService {
                         lastLogAt = now;
                       }
                     }
-                    if (delta?.content) {
-                      streamCompletion += delta.content;
+                    if (textChunk) {
+                      streamCompletion += textChunk;
                       const now = Date.now();
                       if (now - lastLogAt >= 10_000) {
-                        emit?.('info', `📝 Generating schedule… ${streamCompletion.length.toLocaleString()} chars (${Math.round((now - startedAt) / 1000)}s)`);
+                        emit?.('info', `📝 Generating… ${streamCompletion.length.toLocaleString()} chars (${Math.round((now - startedAt) / 1000)}s)`);
                         lastLogAt = now;
                       }
                     }
                     if (parsed.usage) {
                       streamUsage = parsed.usage;
+                    } else if (isLlamaCppNative && (parsed.tokens_evaluated !== undefined || parsed.timings?.predicted_n !== undefined)) {
+                      // llama.cpp reports token counts as tokens_evaluated/timings
+                      // rather than a usage object.
+                      streamUsage = {
+                        prompt_tokens: parsed.tokens_evaluated,
+                        completion_tokens: parsed.timings?.predicted_n,
+                        total_tokens: (parsed.tokens_evaluated ?? 0) + (parsed.timings?.predicted_n ?? 0)
+                      };
                     }
                   } catch {}
                 }
@@ -440,7 +747,7 @@ export class LLMService {
     let res = await fetchWithRetry(primaryUrl, bodyJson);
 
     // Fallback: If 404 and primary had appended /v1/chat/completions, try direct /chat/completions
-    if (res.status === 404 && !config.baseUrl.includes('/v1')) {
+    if (res.status === 404 && !isLlamaCppNative && !config.baseUrl.includes('/v1')) {
       const cleanBase = config.baseUrl.trim().replace(/\/+$/, '');
       const fallbackUrl = `${cleanBase}/chat/completions`;
       if (fallbackUrl !== primaryUrl) {
@@ -475,8 +782,16 @@ export class LLMService {
     if (completion === undefined) {
       try {
         const data = JSON.parse(res.bodyText);
-        completion = data.choices?.[0]?.message?.content || '';
-        usage = data.usage;
+        completion = isLlamaCppNative
+          ? (typeof data.content === 'string' ? data.content : '')
+          : (data.choices?.[0]?.message?.content || '');
+        usage = data.usage ?? (isLlamaCppNative && data.tokens_evaluated !== undefined
+          ? {
+              prompt_tokens: data.tokens_evaluated,
+              completion_tokens: data.timings?.predicted_n,
+              total_tokens: (data.tokens_evaluated ?? 0) + (data.timings?.predicted_n ?? 0)
+            }
+          : undefined);
       } catch {
         completion = res.bodyText;
       }

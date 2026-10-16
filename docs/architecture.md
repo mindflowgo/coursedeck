@@ -23,7 +23,7 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
    - Customizable prompt templates for generating lesson summaries, cheatsheets, and KICA tests with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
 4. **Settings (`/settings`)**:
    - Data storage path configuration (default: `data/courses`).
-   - LLM endpoint configuration (OpenAI-compatible, Ollama, Gemini, OpenRouter) with connection testing.
+   - **AI Models**: a list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown — every AI feature (Ask AI, summaries, cheatsheets, tests, schedules) routes through the active card. See §16.
    - Manual re-index and re-parse triggers.
 
 ---
@@ -84,6 +84,8 @@ To accelerate code navigation and prevent exhaustive searches across the codebas
 app/src/
 ├── lib/
 │   ├── api.ts                  # Typed client apiFetch() and environment detection (isTauriEnvironment)
+│   ├── llmProviders.ts         # Shared provider presets/protocols (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible)
+│   ├── llmClient.ts            # Typed /api/llm client: model cards, active model, per-card connection test
 │   ├── queueStatus.svelte.ts   # Reactive global queue poll store & task listeners
 │   ├── scrollMemory.ts         # Per-tab scroll offsets in localStorage (tab_scroll:*) + stale-key pruning
 │   ├── theme.svelte.ts         # Light / Dark / System theme manager
@@ -122,7 +124,7 @@ app/src/
 │       ├── courses.ts              # CourseService (lessons, tab files, course-wide payload)
 │       ├── queue.ts                # GenerationQueue & worker for background AI jobs
 │       ├── paths.ts                # Filesystem paths, DATA_DIR resolution, and path asserts
-│       ├── llm.ts                  # Unified LLM provider client (OpenAI, Ollama, Gemini, OpenRouter)
+│       ├── llm.ts                  # Unified LLM client: multi-card store, active-model resolution, OpenAI-compatible + llama.cpp native transports
 │       └── prompts.ts              # PromptService for template storage in data/prompts/
 └── routes/                     # SvelteKit page routes
     ├── +layout.svelte              # Root shell with global navigation and theme initialization
@@ -652,3 +654,27 @@ The rendering lifecycle in both the on-screen reader (`MarkdownViewer.svelte`) a
 #### 6. Escaped Pipes in Table Cells
 - **The Rule**: Table cells containing literal pipes must escape them as `\|`. The helper `splitTableCells` respects escaped pipes when parsing cells so column counts remain accurate.
 
+
+---
+
+## 16. Multi-Model Provider Cards & Active-Model Routing
+
+Students mix cloud and local models (an LM Studio box at home, a llama.cpp server on the study desktop, a cloud key for heavy course-wide exams). Settings → **AI Models** manages them as **model cards**; exactly one card is **active**, and every AI feature runs through it.
+
+### 16.1 Store & Active Resolution
+- Persisted in `data/llm_config.json` as a versioned store: `{ version: 2, activeId, cards: [ { id, label, provider, baseUrl, apiKey, authHeaderType, model, temperature, timeoutSeconds } ] }`.
+- Legacy installs (flat single-config JSON) are migrated on read into one card, active — no user action required.
+- `LLMService.loadStoredConfig()` resolves the **active card** and is the single routing point: the queue worker, schedule enrichment, course-doc generation and the `/api/llm` generate action all obtain their config there. Switching the Active Model in Settings therefore reroutes every feature — including work already sitting in the queue — without touching call sites.
+- API keys live per card. `GET /api/llm` never returns a key (only `hasApiKey`); `POST save_store` keeps a card's stored key whenever the submitted key field is blank.
+
+### 16.2 Provider Protocols
+Provider presets live in the dependency-free `app/src/lib/llmProviders.ts`, shared by the server transport layer and the Settings UI:
+- **OpenAI-compatible** (`/v1/chat/completions`, `messages` array): OpenAI, DeepSeek, OpenRouter, vLLM, **LM Studio** (`http://localhost:1234/v1`), **Ollama** (`/v1`), Gemini (OpenAI endpoint).
+- **llama.cpp native** (`llamacpp_native`): `llama-server`'s non-OAI `POST /completion`, which takes a single `prompt`, streams SSE `{content, stop}` chunks terminated by `data: [DONE]`, and reports token counts via `tokens_evaluated`/`timings.predicted_n`. The chat template is applied server-side first via `POST /apply-template` (falling back to a plain system+user transcript on older builds). OAI-style base URLs (`.../v1`, `.../v1/chat/completions`) pasted into a llama.cpp card are normalized to the native endpoints.
+
+### 16.3 API & UI Surface
+- `GET /api/llm` → `{ hasConfig, config (active card summary), activeId, cards[] }`.
+- `POST /api/llm` actions: `save_store` (whole card list + activeId), `set_active`, `test` (a posted card or the active one), `generate` (config optional — falls back to the active card), `save_config` (legacy single-config path used by the first-run setup modal; updates the active card). A blank key in `test`/`generate` reuses the referenced card's stored key only while the request targets that same card's endpoint (compared resolved, so equivalent URL spellings still match) — a posted `cardId` can never forward one card's key to a different host.
+- Settings UI: one card per provider with provider/base URL/model/API key/auth header/timeout fields, an inline **Add another model provider** `[+]` tile, per-card **Test** and remove, plus the **Active Model** dropdown whose options are the model ids of all added cards.
+- **Clearing is explicit.** `save_store` counts the cards that would actually survive normalization (a card without a Base URL is dropped, not stored) and rejects a save that would leave none (400 for all-unusable input, 409 without `confirmClear: true`), so no client bug or stale tab can silently wipe the configured models. An unreadable/corrupt `llm_config.json` is reported as an error (HTTP 500, file left untouched) rather than as "no models configured". Saves replace the whole list, so two Settings windows editing at once resolve last-writer-wins — close the other window before re-arranging models.
+- The frontend keeps no LLM state of its own: feature call sites ask `$lib/llmClient` for the active card (guarding "no model configured → open setup modal") and the server resolves the real config, so a stale browser cache can never generate with the wrong model.
