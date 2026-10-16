@@ -70,12 +70,24 @@ export function validateSchedulePreferences(p: SchedulePreferences): string | nu
 }
 
 /**
+ * Strips any previous `## STUDENT PREFERENCES (authoritative)` block from a prompt template string.
+ */
+export function stripStudentPreferencesBlock(text: string | null | undefined): string {
+  if (!text) return '';
+  return text
+    .replace(/(?:\r?\n)*##\s*STUDENT PREFERENCES\s*\(authoritative\)[\s\S]*?(?=(?:\r?\n)##\s+(?!STUDENT PREFERENCES)|$)/gi, (match, offset, full) => {
+      const rest = full.slice(offset + match.length);
+      return rest.trim() && offset > 0 ? '\n' : '';
+    })
+    .trimEnd();
+}
+
+/**
  * Appends the authoritative STUDENT PREFERENCES block the course_schedule
- * prompt template expects. The combined string becomes the system prompt and
- * is persisted in the schedule's frontmatter for re-generation.
+ * prompt template expects. Clears any previous preferences block first to prevent duplicates.
  */
 export function buildSchedulePrompt(template: string, prefs: SchedulePreferences): string {
-
+  const cleanTemplate = stripStudentPreferencesBlock(template);
   const days = [...prefs.studyDays].sort().map((d) => WEEKDAY_LABELS[d]).join('/');
   const lines: string[] = [
     '',
@@ -121,7 +133,7 @@ export function buildSchedulePrompt(template: string, prefs: SchedulePreferences
   if (prefs.notes?.trim()) {
     lines.push(`- Additional notes from the student: ${prefs.notes.trim()}`);
   }
-  return `${template.trimEnd()}\n\n${lines.join('\n')}\n`;
+  return `${cleanTemplate}\n\n${lines.join('\n')}\n`;
 }
 
 const STORAGE_KEY = 'ilc_schedule_prefs';
@@ -150,6 +162,7 @@ export function loadStoredSchedulePreferences(): SchedulePreferences | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as SchedulePreferences;
     if (!parsed.startDate || !Array.isArray(parsed.studyDays)) return null;
+    parsed.studyDays = parsed.studyDays.map((d) => Number(d)).filter((n) => !isNaN(n));
     // Migration for prefs stored before includeReviews existed (default: on).
     if (typeof parsed.includeReviews !== 'boolean') parsed.includeReviews = true;
     if (!Array.isArray(parsed.blackoutDates)) parsed.blackoutDates = [];

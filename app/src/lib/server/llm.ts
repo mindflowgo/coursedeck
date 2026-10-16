@@ -181,23 +181,17 @@ export class LLMService {
       ? `Bearer ${headers['Authorization'].slice(7, 11)}***`
       : (headers['api-key'] ? 'api-key: ***' : 'None');
 
-    const isDebug = process.env.DEBUG_LLM === 'true' || process.env.NODE_ENV === 'development';
-    if (isDebug) {
-      const systemPreview = systemPrompt.length > 200 ? systemPrompt.slice(0, 200) + '...' : systemPrompt;
-      const userPreview = userPrompt.length > 200 ? userPrompt.slice(0, 200) + '...' : userPrompt;
-      console.log('\n=================== [LLM API Request] ===================');
-      console.log(`Endpoint:    ${primaryUrl}`);
-      console.log(`Session ID:  ${payload.session_id || 'none'}`);
-      console.log(`Model:       ${payload.model || '(server default)'}`);
-      console.log(`Timeout:     ${Math.round(timeoutMs / 1000)}s (per attempt)`);
-      console.log(`Auth Header: ${authHeaderDisplay}`);
-      console.log(`System Prompt Preview:\n${systemPreview}`);
-      console.log(`\nUser Prompt Length: ${userPrompt.length.toLocaleString()} chars (~${Math.round(userPrompt.length / 4).toLocaleString()} tokens)`);
-      console.log(`User Prompt Preview:\n${userPreview}`);
-      console.log('=========================================================\n');
-    } else {
-      console.log(`[LLM API Request] Model: ${payload.model || 'default'} | Endpoint: ${primaryUrl} (~${Math.round(userPrompt.length / 4)} tokens) | timeout: ${Math.round(timeoutMs / 1000)}s (per attempt)`);
-    }
+    console.log('\n=================== [LLM API Request Package] ===================');
+    console.log(`Endpoint:    ${primaryUrl}`);
+    console.log(`Session ID:  ${payload.session_id || 'none'}`);
+    console.log(`Model:       ${payload.model || '(server default)'}`);
+    console.log(`Timeout:     ${Math.round(timeoutMs / 1000)}s (per attempt)`);
+    console.log(`Auth Header: ${authHeaderDisplay}`);
+    console.log(`\n--- SYSTEM PROMPT (${systemPrompt.length.toLocaleString()} chars) ---`);
+    console.log(systemPrompt);
+    console.log(`\n--- USER PROMPT (${userPrompt.length.toLocaleString()} chars, ~${Math.round(userPrompt.length / 4).toLocaleString()} tokens) ---`);
+    console.log(userPrompt);
+    console.log('=================================================================\n');
     emit?.('info', `Request sent to ${payload.model || 'default model'} — waiting for the model to respond…`);
 
     /**
@@ -489,11 +483,15 @@ export class LLMService {
       : (usage ? ` | usage: ${JSON.stringify(usage)}` : '');
 
     console.log(`[LLM API Success] Generated ${safeCompletion.length.toLocaleString()} characters${tokensInfo}.\n`);
+    console.log('=================== [LLM Response Content] ===================');
+    console.log(safeCompletion);
+    console.log('==============================================================\n');
 
     emit?.(
       'info',
       `✅ Response received in ${Math.round(res.elapsedMs / 1000)}s — ${safeCompletion.length.toLocaleString()} chars${tokensInfo}`
     );
+    emit?.('info', `\n--- LLM RESPONSE CONTENT (${safeCompletion.length.toLocaleString()} chars) ---\n${safeCompletion}\n-------------------------------------------------------------`);
 
     return { completion: safeCompletion, usage };
   }

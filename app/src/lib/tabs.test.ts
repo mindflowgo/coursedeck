@@ -43,11 +43,14 @@ describe('isTabSlug', () => {
 });
 
 describe('isCustomTabSlug', () => {
-  it('is false for built-in tabs', () => {
+  it('is false for built-in and reserved tabs', () => {
     expect(isCustomTabSlug('lesson')).toBe(false);
     expect(isCustomTabSlug('summary')).toBe(false);
     expect(isCustomTabSlug('cheatsheet')).toBe(false);
     expect(isCustomTabSlug('test')).toBe(false);
+    expect(isCustomTabSlug('schedule')).toBe(false);
+    expect(isCustomTabSlug('course')).toBe(false);
+    expect(isCustomTabSlug('notes')).toBe(false);
   });
 
   it('is true for other valid slugs', () => {

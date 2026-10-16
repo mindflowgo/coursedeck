@@ -3,13 +3,44 @@ import { PromptService } from './prompts';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
-import { defaultSchedulePreferences, type SchedulePreferences } from '../schedule';
+import {
+  defaultSchedulePreferences,
+  buildSchedulePrompt,
+  stripStudentPreferencesBlock,
+  type SchedulePreferences
+} from '../schedule';
 import {
   buildScheduleSkeleton,
   applyEnrichmentPatches,
   verifyStructuralEquivalence,
-  type SessionEnrichmentPatch
+  type SessionEnrichmentPatch,
+  type PlannedSession,
+  type ScheduleSkeleton
 } from '../scheduleGenerator';
+import { ScheduleParser } from '../parser/scheduleParser';
+
+export interface ScheduleDebugInfo {
+  rruleTimeline: {
+    dates: string[];
+    totalSessions: number;
+    markdownSkeleton: string;
+    sessions: PlannedSession[];
+  };
+  llmRequest: {
+    systemPrompt: string;
+    userPrompt: string;
+    model?: string;
+    endpoint?: string;
+  };
+  llmResponse?: {
+    rawCompletion: string;
+    patchesCount: number;
+    patches: SessionEnrichmentPatch[];
+    applied: boolean;
+    gatePassed: boolean;
+    error?: string;
+  };
+}
 
 export interface GenerationTask {
   id: string; // e.g. "gwl3o:01.01:summary" or "gwl3o:schedule"
@@ -25,6 +56,7 @@ export interface GenerationTask {
   startedAt?: string;
   completedAt?: string;
   tokensUsed?: number;
+  scheduleDebug?: ScheduleDebugInfo;
 }
 
 export interface QueueLogEntry {
@@ -46,20 +78,99 @@ export interface QueueStatus {
   recentLogs: QueueLogEntry[];
 }
 
-function extractJsonPatches(completion: string): SessionEnrichmentPatch[] {
+function tryParseJsonArrayOrObject(text: string): SessionEnrichmentPatch[] {
   try {
-    const trimmed = completion.trim();
-    const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-    const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
-    const arrayStart = candidate.indexOf('[');
-    const arrayEnd = candidate.lastIndexOf(']');
+    // Strip trailing commas before closing braces/brackets
+    const sanitized = text.replace(/,\s*([}\]])/g, '$1').trim();
+
+    // Look for JSON array [ ... ]
+    const arrayStart = sanitized.indexOf('[');
+    const arrayEnd = sanitized.lastIndexOf(']');
     if (arrayStart >= 0 && arrayEnd > arrayStart) {
-      const parsed = JSON.parse(candidate.slice(arrayStart, arrayEnd + 1));
-      if (Array.isArray(parsed)) return parsed;
+      const candidate = sanitized.slice(arrayStart, arrayEnd + 1);
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.filter(
+          (p) => p && typeof p === 'object' && (p.sessionKey || p.title || p.description)
+        );
+      }
     }
-    const parsed = JSON.parse(candidate);
-    return Array.isArray(parsed) ? parsed : [];
+
+    // Look for JSON object { ... }
+    const objStart = sanitized.indexOf('{');
+    const objEnd = sanitized.lastIndexOf('}');
+    if (objStart >= 0 && objEnd > objStart) {
+      const candidate = sanitized.slice(objStart, objEnd + 1);
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === 'object' && parsed !== null) {
+        for (const key of ['sessions', 'patches', 'items', 'schedule', 'data', 'enrichment']) {
+          if (Array.isArray(parsed[key])) {
+            return parsed[key].filter(
+              (p: any) => p && typeof p === 'object' && (p.sessionKey || p.title || p.description)
+            );
+          }
+        }
+      }
+    }
+
+    return [];
   } catch {
+    return [];
+  }
+}
+
+function extractJsonPatches(completion: string, skeleton?: ScheduleSkeleton): SessionEnrichmentPatch[] {
+  try {
+    // 1. Strip reasoning / thinking tags (<think>...</think>)
+    const cleaned = completion.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+    // 2. Try markdown code fences first
+    const codeFenceRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
+    let fenceMatch: RegExpExecArray | null;
+    while ((fenceMatch = codeFenceRegex.exec(cleaned)) !== null) {
+      const codeBlock = fenceMatch[1].trim();
+      const parsed = tryParseJsonArrayOrObject(codeBlock);
+      if (parsed.length > 0) return parsed;
+    }
+
+    // 3. Try parsing directly or finding bracketed array in cleaned text
+    const directParsed = tryParseJsonArrayOrObject(cleaned);
+    if (directParsed.length > 0) return directParsed;
+
+    // 4. Fallback: If the model generated a full Markdown schedule (e.g. - [ ] **Study** ...),
+    // extract titles and descriptions from the markdown events and match to skeleton sessions!
+    if (skeleton && skeleton.sessions.length > 0 && cleaned.includes('- [ ]')) {
+      const parsedSchedule = ScheduleParser.parseMarkdown(cleaned);
+      if (parsedSchedule.events.length > 0) {
+        const patchesFromMd: SessionEnrichmentPatch[] = [];
+        const usedIndices = new Set<number>();
+        for (const ev of parsedSchedule.events) {
+          const idx = skeleton.sessions.findIndex(
+            (s, i) =>
+              !usedIndices.has(i) &&
+              s.lessonId === ev.lessonId &&
+              s.type.toLowerCase() === ev.type.toLowerCase()
+          );
+          if (idx >= 0) {
+            usedIndices.add(idx);
+            const sess = skeleton.sessions[idx];
+            patchesFromMd.push({
+              sessionKey: sess.sessionKey,
+              title: ev.title && ev.title !== ev.type ? ev.title : undefined,
+              description: ev.description
+            });
+          }
+        }
+        if (patchesFromMd.length > 0) {
+          console.log(`[Schedule] Fallback parser recovered ${patchesFromMd.length} patches from Markdown schedule output.`);
+          return patchesFromMd;
+        }
+      }
+    }
+
+    return [];
+  } catch (err) {
+    console.warn('[Schedule] extractJsonPatches error:', err);
     return [];
   }
 }
@@ -369,55 +480,110 @@ class GenerationQueue {
         let finalMarkdown = skeleton.markdown;
         let tokensUsed: number | undefined;
 
+        const uniqueDates = Array.from(new Set(skeleton.sessions.map((s) => s.date)));
+
+        // Output full RRule course-timeline to console.log
+        console.log('\n=================== [SCHEDULE BUILDER: RRULE TIMELINE] ===================');
+        console.log(`Course:               ${nextTask.courseId.toUpperCase()}`);
+        console.log(`Study Days Filter:    ${[...prefs.studyDays].sort().join(', ')}`);
+        console.log(`Total Dates (RRule):  ${uniqueDates.length} days (${uniqueDates[0] || 'none'} → ${uniqueDates[uniqueDates.length - 1] || 'none'})`);
+        console.log(`Dates Generated:      ${uniqueDates.join(', ')}`);
+        console.log(`Total Planned Slots:  ${skeleton.sessions.length} sessions`);
+        console.log('\n--- FULL SKELETON MARKDOWN (Generated by RRule) ---');
+        console.log(skeleton.markdown);
+        console.log('\n--- STRUCTURED PLANNED SESSIONS ---');
+        console.log(JSON.stringify(skeleton.sessions, null, 2));
+        console.log('==========================================================================\n');
+
         this.addLog(
           'info',
           `[Schedule] Deterministic calendar generated for ${nextTask.courseId.toUpperCase()} (${skeleton.sessions.length} sessions across preferred study days).`
         );
 
+        // Clean base prompt (stripping any previous STUDENT PREFERENCES block)
+        const rawPrompt = nextTask.customPrompt?.trim();
+        const basePrompt = stripStudentPreferencesBlock(
+          rawPrompt ||
+          PromptService.getPrompt('course_schedule')?.content ||
+          ''
+        );
+
+        let systemPromptForLLM = basePrompt;
+        if (!systemPromptForLLM || systemPromptForLLM.trim().length === 0) {
+          systemPromptForLLM =
+            'You are an Ontario academic learning coach. Return a JSON array of session enrichment objects with "sessionKey", "title", and "description" (active-recall retrieval tasks). Output ONLY valid JSON.';
+        }
+
+        // Student preferences are handled client-side when we generate the calendar.
+        // The LLM does not need preferences, so we do not send them to the model.
+        // Commented out as we may re-enable in the future:
+        /*
+        if (prefs.notes && prefs.notes.trim().length > 0 && !systemPromptForLLM.includes(prefs.notes.trim())) {
+          systemPromptForLLM += `\n\nStudent Notes & Focus Areas:\n${prefs.notes.trim()}`;
+        }
+        */
+
+        if (!/sessionKey/i.test(systemPromptForLLM)) {
+          systemPromptForLLM +=
+            '\n\n## Output Format\nReturn ONLY a valid JSON array of session enrichment objects with "sessionKey", "title", and "description". Follow the description guidelines specified above for each session.';
+        }
+
+        const enrichmentPayload = CourseService.buildEnrichmentPayload(skeleton.sessions, efforts);
+
+        const effectiveConfig: LLMConfig = {
+          ...config,
+          model: config.model ? config.model.trim() : '',
+          sessionId: config.sessionId || `${nextTask.courseId}-schedule`
+        };
+
+        // Output actual content sent to the LLM to console.log
+        console.log('\n=================== [SCHEDULE BUILDER: CONTENT SENT TO LLM] ===================');
+        console.log(`Course:      ${nextTask.courseId.toUpperCase()}`);
+        console.log(`Endpoint:    ${effectiveConfig.baseUrl}`);
+        console.log(`Model:       ${effectiveConfig.model || '(server default)'}`);
+        console.log(`Session ID:  ${effectiveConfig.sessionId}`);
+        console.log(`\n--- SYSTEM PROMPT (${systemPromptForLLM.length.toLocaleString()} chars) ---`);
+        console.log(systemPromptForLLM);
+        console.log(`\n--- USER PROMPT / ENRICHMENT PAYLOAD (${enrichmentPayload.length.toLocaleString()} chars, ~${Math.round(enrichmentPayload.length / 4).toLocaleString()} tokens) ---`);
+        console.log(enrichmentPayload);
+        console.log('===============================================================================\n');
+
+        this.addLog(
+          'info',
+          `\n=================== [ILC AI Request: SCHEDULE ENRICHMENT] ===================\n` +
+          `Course:      ${nextTask.courseId.toUpperCase()}\n` +
+          `Endpoint:    ${effectiveConfig.baseUrl}\n` +
+          `Model:       ${effectiveConfig.model || '(server default)'}\n` +
+          `Session ID:  ${effectiveConfig.sessionId}\n` +
+          `Payload:     ${enrichmentPayload.length.toLocaleString()} chars (~${Math.round(enrichmentPayload.length / 4).toLocaleString()} tokens), ${skeleton.sessions.length} sessions to enrich\n` +
+          `========================================================================`
+        );
+
+        let rawCompletion = '';
+        let patches: SessionEnrichmentPatch[] = [];
+        let applied = false;
+        let gatePassed = false;
+        let enrichmentError: string | undefined;
+
         // 2. Attempt lightweight LLM JSON Patch Enrichment
         try {
-          let systemPrompt = PromptService.getPrompt('course_schedule_enrichment')?.content;
-          if (!systemPrompt || systemPrompt.trim().length === 0) {
-            systemPrompt =
-              'You are an Ontario academic learning coach. Return a JSON array of session enrichment objects with "sessionKey", "title", and "description" (active-recall retrieval tasks). Output ONLY valid JSON.';
-          }
-          if (prefs.notes && prefs.notes.trim().length > 0) {
-            systemPrompt += `\n\nStudent Notes & Focus Areas:\n${prefs.notes.trim()}`;
-          }
-
-          const enrichmentPayload = CourseService.buildEnrichmentPayload(skeleton.sessions, efforts);
-
-          const effectiveConfig: LLMConfig = {
-            ...config,
-            model: config.model ? config.model.trim() : '',
-            sessionId: config.sessionId || `${nextTask.courseId}-schedule`
-          };
-
-          this.addLog(
-            'info',
-            `\n=================== [ILC AI Request: SCHEDULE ENRICHMENT] ===================\n` +
-            `Course:      ${nextTask.courseId.toUpperCase()}\n` +
-            `Endpoint:    ${effectiveConfig.baseUrl}\n` +
-            `Model:       ${effectiveConfig.model || '(server default)'}\n` +
-            `Session ID:  ${effectiveConfig.sessionId}\n` +
-            `Payload:     ${enrichmentPayload.length.toLocaleString()} chars (~${Math.round(enrichmentPayload.length / 4).toLocaleString()} tokens), ${skeleton.sessions.length} sessions to enrich\n` +
-            `========================================================================`
-          );
-
           // 120s floor gives reasoning models ample headroom without timing out
           const timeoutMs = LLMService.resolveRequestTimeoutMs(effectiveConfig, 120_000, { isFloor: true });
-          const result = await LLMService.generateResult(effectiveConfig, systemPrompt, enrichmentPayload, {
+          const result = await LLMService.generateResult(effectiveConfig, systemPromptForLLM, enrichmentPayload, {
             timeoutMs,
             onLog: (level, message) => this.addLog(level, message)
           });
 
           tokensUsed = result.usage?.total_tokens;
+          rawCompletion = result.completion;
 
-          const patches = extractJsonPatches(result.completion);
+          patches = extractJsonPatches(result.completion, skeleton);
           if (patches.length > 0) {
             const enriched = applyEnrichmentPatches(skeleton, patches);
-            if (verifyStructuralEquivalence(skeleton, enriched)) {
+            gatePassed = verifyStructuralEquivalence(skeleton, enriched);
+            if (gatePassed) {
               finalMarkdown = enriched;
+              applied = true;
               this.addLog(
                 'info',
                 `[Schedule] LLM enrichment applied successfully (${patches.length} patches spliced).`
@@ -431,24 +597,69 @@ class GenerationQueue {
           } else {
             this.addLog(
               'warn',
-              `[Schedule] No valid JSON patches found in LLM response. Retaining deterministic skeleton.`
+              `[Schedule] No valid JSON patches found in LLM response (${result.completion.length.toLocaleString()} chars). Retaining deterministic skeleton.`
             );
           }
+
+          // Output exact data sent back from the LLM to console.log
+          console.log('\n=================== [SCHEDULE BUILDER: EXACT DATA RECEIVED FROM LLM] ===================');
+          console.log(`Course:                            ${nextTask.courseId.toUpperCase()}`);
+          console.log(`Total Tokens:                      ${tokensUsed ?? 'unknown'}`);
+          console.log(`Extracted Patches Count:           ${patches.length}`);
+          console.log(`Structural Equivalence Gate:       ${gatePassed ? 'PASSED' : 'FAILED'}`);
+          console.log(`Patches Applied to Skeleton:       ${applied ? 'YES' : 'NO'}`);
+          console.log('\n--- EXACT RAW LLM RESPONSE ---');
+          console.log(rawCompletion);
+          console.log('\n--- PARSED JSON PATCHES ---');
+          console.log(JSON.stringify(patches, null, 2));
+          console.log('========================================================================================\n');
         } catch (enrichErr: any) {
+          enrichmentError = enrichErr?.message || String(enrichErr);
+          console.error('\n=================== [SCHEDULE BUILDER: LLM ERROR] ===================');
+          console.error(`Course: ${nextTask.courseId.toUpperCase()}`);
+          console.error('LLM Enrichment Error Details:', enrichErr);
+          console.error('====================================================================\n');
           this.addLog(
             'warn',
-            `[Schedule] LLM enrichment skipped (${enrichErr?.message || 'timeout/error'}). Retaining deterministic skeleton.`
+            `[Schedule] LLM enrichment skipped (${enrichmentError}). Retaining deterministic skeleton.`
           );
         }
 
-        // 3. Serialize frontmatter with provenance preferences
+        // Attach debug information to nextTask
+        nextTask.scheduleDebug = {
+          rruleTimeline: {
+            dates: uniqueDates,
+            totalSessions: skeleton.sessions.length,
+            markdownSkeleton: skeleton.markdown,
+            sessions: skeleton.sessions
+          },
+          llmRequest: {
+            systemPrompt: systemPromptForLLM,
+            userPrompt: enrichmentPayload,
+            model: effectiveConfig.model || '(server default)',
+            endpoint: effectiveConfig.baseUrl
+          },
+          llmResponse: {
+            rawCompletion,
+            patchesCount: patches.length,
+            patches,
+            applied,
+            gatePassed,
+            error: enrichmentError
+          }
+        };
+
+        // 3. Serialize frontmatter with provenance preferences and updated prompt
+        // Clear previous (## STUDENT PREFERENCES (authoritative)) before appending new ones in frontmatter
+        const frontmatterPrompt = buildSchedulePrompt(basePrompt, prefs);
         const parsed = parseFrontmatter(finalMarkdown.trim());
         const finalWithFrontmatter = serializeWithFrontmatter(
           {
             ...parsed.frontmatter,
             type: 'course_schedule',
             updatedAt: new Date().toISOString().split('T')[0],
-            preferences: prefs
+            preferences: prefs,
+            prompt: frontmatterPrompt
           },
           parsed.body.trim()
         );

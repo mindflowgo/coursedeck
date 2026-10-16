@@ -225,9 +225,12 @@ describe('QuestionParser', () => {
     for (const relPath of testFiles) {
       const fullPath = path.resolve(process.cwd(), '..', relPath);
       const filePath = fs.existsSync(fullPath) ? fullPath : path.resolve(process.cwd(), relPath);
-      if (!fs.existsSync(filePath)) continue;
-
-      const content = fs.readFileSync(filePath, 'utf8');
+      let content: string;
+      try {
+        content = fs.readFileSync(filePath, 'utf8');
+      } catch {
+        continue;
+      }
       const quiz = QuestionParser.parseMarkdown(content);
       expect(quiz.questions.length).toBeGreaterThan(0);
 

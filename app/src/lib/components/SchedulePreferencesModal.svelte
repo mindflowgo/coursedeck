@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { CalendarDays, X, AlertCircle, ChevronDown } from 'lucide-svelte';
   import {
     WEEKDAY_LABELS,
@@ -23,6 +24,7 @@
 
   let prefs = $state<SchedulePreferences>(defaultSchedulePreferences());
   let validationError = $state<string | null>(null);
+  let hasNotes = $state(false);
 
   // Blackout date accordion & addition inputs
   let isBlackoutExpanded = $state(false);
@@ -33,21 +35,29 @@
 
   $effect(() => {
     if (isOpen) {
-      prefs = loadStoredSchedulePreferences() ?? defaultSchedulePreferences();
-      validationError = null;
-      blackoutError = null;
-      newBlackoutStart = '';
-      newBlackoutEnd = '';
-      newBlackoutLabel = '';
-      isBlackoutExpanded = false;
+      untrack(() => {
+        const loaded = loadStoredSchedulePreferences() ?? defaultSchedulePreferences();
+        prefs = loaded;
+        hasNotes = Boolean(loaded.notes && loaded.notes.trim().length > 0);
+        validationError = null;
+        blackoutError = null;
+        newBlackoutStart = '';
+        newBlackoutEnd = '';
+        newBlackoutLabel = '';
+        isBlackoutExpanded = false;
+      });
     }
   });
 
+  function hasStudyDay(day: number): boolean {
+    return Array.isArray(prefs.studyDays) && prefs.studyDays.some((d) => Number(d) === day);
+  }
+
   function toggleDay(day: number) {
-    if (prefs.studyDays.includes(day)) {
-      prefs.studyDays = prefs.studyDays.filter((d) => d !== day);
+    if (hasStudyDay(day)) {
+      prefs.studyDays = prefs.studyDays.filter((d) => Number(d) !== day);
     } else {
-      prefs.studyDays = [...prefs.studyDays, day];
+      prefs.studyDays = [...prefs.studyDays, day].sort((a, b) => a - b);
     }
   }
 
@@ -82,11 +92,15 @@
     validationError = validateSchedulePreferences(prefs);
     if (validationError) return;
     if (!promptTemplate || promptTemplate.trim().length === 0) {
-      validationError = 'Core prompt template for course schedule is missing. Please add or verify course_schedule_enrichment.md in Prompts before generating.';
+      validationError = 'Core prompt template for course schedule is missing. Please add or verify course_schedule.md in Prompts before generating.';
       return;
     }
-    storeSchedulePreferences(prefs);
-    onGenerate(buildSchedulePrompt(promptTemplate, prefs), prefs);
+    const effectivePrefs: SchedulePreferences = {
+      ...prefs,
+      notes: hasNotes && prefs.notes?.trim() ? prefs.notes.trim() : undefined
+    };
+    storeSchedulePreferences(effectivePrefs);
+    onGenerate(buildSchedulePrompt(promptTemplate, effectivePrefs), effectivePrefs);
     onClose();
   }
 </script>
@@ -136,7 +150,7 @@
               <button
                 type="button"
                 onclick={() => toggleDay(day)}
-                class="px-2.5 py-1.5 rounded-lg border text-xs font-medium transition cursor-pointer {prefs.studyDays.includes(day)
+                class="px-2.5 py-1.5 rounded-lg border text-xs font-medium transition cursor-pointer {hasStudyDay(day)
                   ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
                   : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300 dark:hover:border-stone-500'}"
               >
@@ -206,6 +220,20 @@
           {/if}
         </div>
 
+        <!-- Review day toggle -->
+        <div class="space-y-1">
+          <label class="flex items-center space-x-2.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              bind:checked={prefs.includeReviews}
+              class="w-4 h-4 rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:bg-stone-800 focus:ring-stone-400"
+            />
+            <span class="text-xs font-medium text-stone-700 dark:text-stone-300">
+              Include review day (1/unit)
+            </span>
+          </label>
+        </div>
+
         <!-- Catch-up buffer days toggle -->
         <div class="space-y-1">
           <label class="flex items-center space-x-2.5 cursor-pointer select-none">
@@ -218,45 +246,6 @@
               Include catch-up buffer days (~1 per week)
             </span>
           </label>
-          <p class="text-[11px] text-stone-500 dark:text-stone-400 pl-6.5">
-            Inserts buffer sessions to prevent falling behind on unexpected delays.
-          </p>
-        </div>
-
-        <!-- Review sessions toggle + intensity -->
-        <div class="space-y-1.5">
-          <span class="text-xs font-medium text-stone-700 dark:text-stone-300">Schedule review time?</span>
-          <div class="flex gap-1.5">
-            <button
-              type="button"
-              onclick={() => (prefs.includeReviews = true)}
-              class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition cursor-pointer {prefs.includeReviews
-                ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
-                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300 dark:hover:border-stone-500'}"
-            >
-              Yes — schedule reviews
-            </button>
-            <button
-              type="button"
-              onclick={() => (prefs.includeReviews = false)}
-              class="flex-1 px-3 py-2 rounded-lg border text-xs font-medium transition cursor-pointer {!prefs.includeReviews
-                ? 'border-stone-900 dark:border-stone-100 bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
-                : 'border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:border-stone-300 dark:hover:border-stone-500'}"
-            >
-              No — study sessions only
-            </button>
-          </div>
-          {#if prefs.includeReviews}
-            <select
-              id="sched-review"
-              bind:value={prefs.reviewIntensity}
-              class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none cursor-pointer"
-            >
-              <option value="light">Light — short recall checks</option>
-              <option value="standard">Standard — review 2–3 days after each lesson</option>
-              <option value="heavy">Heavy — frequent reviews + weekly recaps</option>
-            </select>
-          {/if}
         </div>
 
         <!-- Holiday / Blackout Dates (Expandable) -->
@@ -345,16 +334,27 @@
           {/if}
         </div>
 
-        <!-- Notes -->
-        <div class="space-y-1">
-          <label for="sched-notes" class="text-xs font-medium text-stone-700 dark:text-stone-300">Notes <span class="text-stone-400">(optional — away days, constraints)</span></label>
-          <textarea
-            id="sched-notes"
-            rows="2"
-            bind:value={prefs.notes}
-            placeholder="e.g. away Oct 20–24; prefer lighter Fridays"
-            class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none resize-none"
-          ></textarea>
+        <!-- Notes checkbox & textarea -->
+        <div class="space-y-1.5">
+          <label class="flex items-center space-x-2.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              bind:checked={hasNotes}
+              class="w-4 h-4 rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:bg-stone-800 focus:ring-stone-400"
+            />
+            <span class="text-xs font-medium text-stone-700 dark:text-stone-300">
+              Notes <span class="text-stone-400 dark:text-stone-500 font-normal">(optional — away days, constraints)</span>
+            </span>
+          </label>
+          {#if hasNotes}
+            <textarea
+              id="sched-notes"
+              rows="2"
+              bind:value={prefs.notes}
+              placeholder="e.g. away Oct 20–24; prefer lighter Fridays"
+              class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none resize-none"
+            ></textarea>
+          {/if}
         </div>
 
         {#if validationError}

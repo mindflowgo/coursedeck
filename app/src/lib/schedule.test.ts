@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test';
-import { formatScheduleDateLabel, getScheduleEndDateLabel } from './schedule';
+import {
+  formatScheduleDateLabel,
+  getScheduleEndDateLabel,
+  stripStudentPreferencesBlock,
+  buildSchedulePrompt,
+  defaultSchedulePreferences
+} from './schedule';
 
 describe('formatScheduleDateLabel', () => {
   const ref2026 = new Date('2026-10-15T12:00:00');
@@ -60,3 +66,82 @@ preferences:
     expect(getScheduleEndDateLabel([], '', '', ref2026)).toBeNull();
   });
 });
+
+describe('stripStudentPreferencesBlock', () => {
+  it('strips student preferences block when at the end of the text', () => {
+    const text = `# Custom Schedule Prompt
+Generate an active-recall study schedule.
+
+## STUDENT PREFERENCES (authoritative):
+- Start date: 2026-10-01
+- Study days: Mon/Wed/Fri
+- Session length: 60 minutes
+`;
+    const stripped = stripStudentPreferencesBlock(text);
+    expect(stripped).toBe(`# Custom Schedule Prompt
+Generate an active-recall study schedule.`);
+  });
+
+  it('strips student preferences block when followed by another heading', () => {
+    const text = `# Custom Schedule Prompt
+## STUDENT PREFERENCES (authoritative):
+- Start date: 2026-10-01
+- Study days: Mon/Wed/Fri
+
+## OUTPUT INSTRUCTIONS
+Please return markdown.`;
+    const stripped = stripStudentPreferencesBlock(text);
+    expect(stripped).toBe(`# Custom Schedule Prompt
+
+## OUTPUT INSTRUCTIONS
+Please return markdown.`);
+  });
+
+  it('handles null, undefined, or empty string gracefully', () => {
+    expect(stripStudentPreferencesBlock(null)).toBe('');
+    expect(stripStudentPreferencesBlock(undefined)).toBe('');
+    expect(stripStudentPreferencesBlock('')).toBe('');
+  });
+});
+
+describe('buildSchedulePrompt', () => {
+  it('clears previous student preferences block before appending new ones', () => {
+    const templateWithOldPrefs = `# Course Schedule Generator
+
+## STUDENT PREFERENCES (authoritative):
+- Start date: 2025-01-01
+- Study days: Mon
+- Session length: 30 minutes
+- Max sessions per study day: 1
+- Pace: no fixed deadline
+- Review intensity: standard
+- Additional notes from the student: old notes
+`;
+
+    const newPrefs = defaultSchedulePreferences(new Date('2026-10-15T12:00:00'));
+    newPrefs.startDate = '2026-11-01';
+    newPrefs.studyDays = [2, 4]; // Tue/Thu
+    newPrefs.sessionLengthMin = 90;
+    newPrefs.sessionsPerDay = 2;
+    newPrefs.notes = 'new focus notes';
+
+    const result = buildSchedulePrompt(templateWithOldPrefs, newPrefs);
+
+    // Should only have ONE ## STUDENT PREFERENCES (authoritative) block
+    const matches = result.match(/##\s*STUDENT PREFERENCES\s*\(authoritative\)/gi);
+    expect(matches).not.toBeNull();
+    expect(matches?.length).toBe(1);
+
+    // Old values should be gone
+    expect(result).not.toContain('2025-01-01');
+    expect(result).not.toContain('old notes');
+
+    // New values should be present
+    expect(result).toContain('- Start date: 2026-11-01');
+    expect(result).toContain('- Study days: Tue/Thu');
+    expect(result).toContain('- Session length: 90 minutes');
+    expect(result).toContain('- Max sessions per study day: 2');
+    expect(result).toContain('- Additional notes from the student: new focus notes');
+  });
+});
+

@@ -208,7 +208,7 @@ describe('buildScheduleSkeleton', () => {
     expect(perLessonReviews.length).toBe(0);
   });
 
-  it('splits high density lessons when effort signals indicate high density', () => {
+  it('schedules exactly one study session per content lesson without splitting', () => {
     const prefs: SchedulePreferences = {
       ...defaultSchedulePreferences(),
       startDate: '2026-10-19',
@@ -231,9 +231,9 @@ describe('buildScheduleSkeleton', () => {
     const lesson1Sessions = skeleton.sessions.filter(
       (s) => s.lessonId === '01.01' && s.type === 'study'
     );
-    expect(lesson1Sessions.length).toBe(2);
-    expect(lesson1Sessions[0].title).toContain('Part 1');
-    expect(lesson1Sessions[1].title).toContain('Part 2');
+    expect(lesson1Sessions.length).toBe(1);
+    expect(lesson1Sessions[0].title).toBe('Personal Management Skills');
+    expect(lesson1Sessions[0].title).not.toContain('Part');
   });
 
   it('omits review entries when includeReviews is false', () => {

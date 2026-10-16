@@ -6,6 +6,7 @@
     toggleEventDone,
     eventHref,
     isLinkableSection,
+    renderInlineMarkdown,
     type ScheduleEvent
   } from '$lib/parser/scheduleParser';
   import { scheduleTypeClasses } from '$lib/schedule';
@@ -198,17 +199,19 @@
                     <button
                       type="button"
                       onclick={() => goto(eventHref(courseId, event))}
-                      class="text-sm font-medium hover:underline hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer text-left {event.done ? 'line-through text-stone-400 dark:text-stone-500' : 'text-stone-900 dark:text-stone-100'}"
+                      class="text-sm font-medium hover:underline hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer text-left {event.done ? 'line-through text-stone-400 dark:text-stone-500' : 'text-stone-900 dark:text-stone-100'} [&_strong]:font-semibold [&_code]:font-mono"
                       title="Open {event.lessonId}{event.section ? ` (${event.section})` : ''}"
                     >
-                      {event.title}
+                      {@html renderInlineMarkdown(event.title)}
                     </button>
                     {#if event.durationMin}
                       <span class="text-[10px] text-stone-400 dark:text-stone-500 whitespace-nowrap">({event.durationMin}m)</span>
                     {/if}
                   </div>
                   {#if event.description}
-                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">{event.description}</p>
+                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed [&_strong]:font-semibold [&_strong]:text-stone-800 dark:[&_strong]:text-stone-200 [&_code]:font-mono [&_code]:text-[11px] [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:bg-stone-100 dark:[&_code]:bg-stone-800 [&_em]:italic">
+                      {@html renderInlineMarkdown(event.description)}
+                    </p>
                   {/if}
                 </div>
               </div>

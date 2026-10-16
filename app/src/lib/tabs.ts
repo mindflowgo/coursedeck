@@ -48,9 +48,9 @@ export function isTabSlug(slug: string): boolean {
   return TAB_SLUG_PATTERN.test(slug);
 }
 
-/** True for any tab slug that is not one of the fixed built-ins. */
+/** True for any tab slug that is not one of the fixed built-ins or reserved tabs. */
 export function isCustomTabSlug(slug: string): boolean {
-  return isTabSlug(slug) && !(BUILT_IN_TABS as readonly string[]).includes(slug);
+  return isTabSlug(slug) && !(RESERVED_TABS as readonly string[]).includes(slug);
 }
 
 /** `assignment` → `Assignment`, `practice_questions` → `Practice Questions`. */

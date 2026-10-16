@@ -91,20 +91,9 @@
       .sort();
   });
 
-  // Custom course tabs discovered from course.*.md files on disk
-  let courseCustomTabs = $derived.by(() => {
-    const docs = course?.courseDocs;
-    if (!docs) return [];
-    return Object.keys(docs)
-      .filter((slug) => isCustomTabSlug(slug) && Boolean(docs[slug]))
-      .sort();
-  });
-
+  // Custom tabs are lesson-only; overall course scope only has built-in course tabs.
   function hasCourseDoc(tab: string): boolean {
-    if (tab === 'lesson') return true;
-    if (['summary', 'cheatsheet', 'test', 'schedule'].includes(tab)) return true;
-    const docs = course?.courseDocs;
-    return Boolean(docs && docs[tab]);
+    return isCourseTab(tab);
   }
 
   // New-tab modal state
@@ -336,70 +325,26 @@
 
     if (!promptWithPreferences || promptWithPreferences.trim().length === 0) {
       alert(
-        'Core prompt template for course schedule is missing. Please add course_schedule_enrichment.md in Prompts before generating.'
+        'Core prompt template for course schedule is missing. Please add course_schedule.md in Prompts before generating.'
       );
       return;
     }
 
-    // Show the user exactly what is being fed to the AI (browser console).
-    const marker = 'STUDENT PREFERENCES (authoritative):';
-    const markerAt = promptWithPreferences.indexOf(marker);
-    const templateChars = markerAt >= 0 ? markerAt + marker.length : promptWithPreferences.length;
-    const prefLines = markerAt >= 0 ? promptWithPreferences.slice(templateChars) : '';
-    const prefItems = prefLines
-      ? prefLines
-          .split('\n')
-          .map((l) => l.trim())
-          .filter(Boolean)
-      : [];
-
-    let schedulePreview: { payload?: string; stats?: any } | null = null;
-    try {
-      const previewRes = await apiFetch(`/api/courses/${courseId}/course-docs?type=schedule&preview=true`);
-      if (previewRes.ok) {
-        schedulePreview = await previewRes.json();
-      }
-    } catch (e) {
-      console.warn('[Schedule AI] Could not pre-fetch payload preview:', e);
-    }
-
-    const payloadChars = schedulePreview?.stats?.payloadChars ?? schedulePreview?.payload?.length ?? 0;
-    const payloadEstTokens = Math.round(payloadChars / 4);
-    const systemEstTokens = Math.round(promptWithPreferences.length / 4);
-    const totalEstTokens = systemEstTokens + payloadEstTokens;
-
     console.group(
-      `[Schedule AI] Data being sent to AI for ${(courseId || '').toUpperCase()} (${(promptWithPreferences.length + payloadChars).toLocaleString()} chars, ~${totalEstTokens.toLocaleString()} tokens)`
+      `%c[Schedule Builder] Enqueueing Generation for ${(courseId || '').toUpperCase()}`,
+      'color: #2563eb; font-weight: bold;'
     );
     console.log('Target Model & Endpoint:', {
       model: localConfig.model || '(server default)',
       provider: localConfig.provider || 'openai_compatible',
       baseUrl: localConfig.baseUrl
     });
-    console.log(`1. System Prompt (${promptWithPreferences.length.toLocaleString()} chars, ~${systemEstTokens.toLocaleString()} tokens):`, {
-      templateChars,
-      studentPreferences: prefItems.length > 0 ? prefItems : '(none — template only)'
-    });
-    console.log(`2. Course Payload (${payloadChars.toLocaleString()} chars, ~${payloadEstTokens.toLocaleString()} tokens):`, {
-      lessons: schedulePreview?.stats?.lessons,
-      assignments: schedulePreview?.stats?.assignments,
-      totalContentWords: schedulePreview?.stats?.totalWords,
-      densityMix: schedulePreview?.stats?.density
-    });
-    if (schedulePreview?.stats?.items && schedulePreview.stats.items.length > 0) {
-      console.log(`3. Itemized Course Breakdown (${schedulePreview.stats.items.length} items):`);
-      console.table(
-        schedulePreview.stats.items.map((it: any) => ({
-          'Lesson ID': it.lessonId,
-          'Unit': it.unitNumber,
-          'Title': it.lessonTitle,
-          'Kind': it.type,
-          'Words': it.words,
-          'Density': it.density || 'none',
-          'Excerpt Chars': it.excerptChars
-        }))
-      );
-    }
+    console.log('--- SYSTEM PROMPT TEMPLATE & PREFERENCES ---\n' + promptWithPreferences);
+    console.log('--- PREFERENCES OBJECT ---', preferences);
+    console.log(
+      'Note: The background worker will generate the deterministic RRule timeline and send the enrichment request to the LLM. ' +
+      'When complete, the full RRule timeline, exact LLM request, and exact LLM response will be logged here.'
+    );
     console.groupEnd();
 
     try {
@@ -443,7 +388,7 @@
   async function generateCourseDocument(type: PageTab, opts?: { customPrompt?: string }) {
     if (type === 'lesson' || !['summary', 'cheatsheet', 'test', 'schedule'].includes(type)) return;
 
-    const promptKey = type === 'schedule' ? 'course_schedule_enrichment' : `course_${type}`;
+    const promptKey = type === 'schedule' ? 'course_schedule' : `course_${type}`;
     const activePrompt =
       opts?.customPrompt ||
       parsedActiveTab.frontmatter.prompt ||
@@ -1057,51 +1002,112 @@
           }
 
           const generatedMarkdown = tabContents.schedule;
+          const debug = task.scheduleDebug;
+
+          console.group(
+            `%c[Schedule Builder] Full LLM & RRule Log for ${(task.courseId || '').toUpperCase()}`,
+            'color: #059669; font-weight: bold; font-size: 13px;'
+          );
+
+          // 1. Full Course-Timeline generated by RRule
+          console.group('%c1. Full Course-Timeline Generated by RRule', 'font-weight: bold; color: #2563eb;');
+          if (debug?.rruleTimeline) {
+            console.log(
+              `Generated Study Dates (${debug.rruleTimeline.dates?.length || 0} days):`,
+              debug.rruleTimeline.dates
+            );
+            console.log(
+              `Planned Sessions (${debug.rruleTimeline.totalSessions || debug.rruleTimeline.sessions?.length || 0} slots):`,
+              debug.rruleTimeline.sessions
+            );
+            console.log('--- FULL SKELETON MARKDOWN (Generated by RRule) ---\n' + debug.rruleTimeline.markdownSkeleton);
+          } else {
+            console.log('(RRule timeline metadata not available in task object)');
+          }
+          console.groupEnd();
+
+          // 2. Actual Content Sent to the LLM
+          console.group('%c2. Actual Content Sent to LLM', 'font-weight: bold; color: #7c3aed;');
+          if (debug?.llmRequest) {
+            console.log('Target Model & Endpoint:', {
+              model: debug.llmRequest.model,
+              endpoint: debug.llmRequest.endpoint
+            });
+            console.log('--- SYSTEM PROMPT ---\n' + debug.llmRequest.systemPrompt);
+            console.log('--- USER PROMPT (ENRICHMENT PAYLOAD) ---\n' + debug.llmRequest.userPrompt);
+          } else {
+            console.log('(LLM request metadata not available in task object)');
+          }
+          console.groupEnd();
+
+          // 3. Exact Data Sent Back from the LLM
+          console.group('%c3. Exact Data Sent Back from LLM', 'font-weight: bold; color: #0d9488;');
+          if (debug?.llmResponse) {
+            console.log('--- EXACT RAW LLM RESPONSE ---\n' + (debug.llmResponse.rawCompletion || '(empty response)'));
+            console.log(`Extracted JSON Patches (${debug.llmResponse.patchesCount}):`, debug.llmResponse.patches);
+            console.log('Enrichment Applied to Skeleton:', debug.llmResponse.applied);
+            console.log('Structural Equivalence Gate Passed:', debug.llmResponse.gatePassed);
+            if (debug.llmResponse.error) {
+              console.warn('Enrichment Notice / Error:', debug.llmResponse.error);
+            }
+          } else {
+            console.warn('No LLM response recorded (enrichment may have timed out or failed).');
+          }
+          console.groupEnd();
+
+          // 4. Itemized Checklist Events Parsed from Final Output
           if (generatedMarkdown && generatedMarkdown.trim().length > 0) {
             const parsed = ScheduleParser.parseMarkdown(generatedMarkdown);
-            console.group(
-              `%c[Schedule AI] Generation complete: ${generatedMarkdown.length.toLocaleString()} chars (~${Math.round(generatedMarkdown.length / 4).toLocaleString()} tokens) | ${parsed.events.length} events parsed`,
-              'color: #059669; font-weight: bold;'
+            console.groupCollapsed(`4. Parsed Checklist Events (${parsed.events.length} items):`);
+            console.table(
+              parsed.events.map((e) => ({
+                Date: e.date,
+                Day: e.dayLabel || '—',
+                Type: e.type,
+                Lesson: `${e.lessonId}${e.section ? `/${e.section}` : ''}`,
+                Title: e.title,
+                Duration: e.durationMin ? `${e.durationMin}m` : '—',
+                Focus: e.description || '—'
+              }))
             );
-            console.log('Result Summary:', {
-              outputChars: generatedMarkdown.length,
-              outputEstTokens: Math.round(generatedMarkdown.length / 4),
-              parsedEventsCount: parsed.events.length,
-              title: parsed.title,
-              summaryLine: parsed.summaryLine,
-              tokensUsed: task.tokensUsed
-            });
-
-            if (parsed.events.length > 0) {
-              console.groupCollapsed(`Itemized Schedule Events (${parsed.events.length} items):`);
-              console.table(
-                parsed.events.map((e) => ({
-                  Date: e.date,
-                  Day: e.dayLabel || '—',
-                  Type: e.type,
-                  Lesson: `${e.lessonId}${e.section ? `/${e.section}` : ''}`,
-                  Title: e.title,
-                  Duration: e.durationMin ? `${e.durationMin}m` : '—',
-                  Focus: e.description || '—'
-                }))
-              );
-              console.groupEnd();
-            } else {
-              console.warn(
-                '%c[Schedule AI] Warning: 0 checklist events were parsed from model output! Inspect full raw response below.',
-                'color: #dc2626; font-weight: bold;'
-              );
-            }
-
-            console.groupCollapsed('Full Raw LLM Response (click to expand):');
-            console.log(generatedMarkdown);
-            console.groupEnd();
-
             console.groupEnd();
           }
+
+          // 5. Final Saved Schedule (Markdown)
+          console.groupCollapsed('5. Final Saved Schedule (Markdown)');
+          console.log(generatedMarkdown);
+          console.groupEnd();
+
+          console.groupEnd();
         }
       } else if (task.status === 'failed') {
         console.error(`[ILC AI Failed] ${label} for ${task.lessonId}: ${task.error}`);
+        if (task.tab === 'schedule' && task.scheduleDebug) {
+          const debug = task.scheduleDebug;
+          console.group(
+            `%c[Schedule Builder] Failed Generation Inspection for ${(task.courseId || '').toUpperCase()}`,
+            'color: #dc2626; font-weight: bold;'
+          );
+          if (debug.rruleTimeline) {
+            console.group('Full Course-Timeline Generated by RRule');
+            console.log('Skeleton Markdown:\n' + debug.rruleTimeline.markdownSkeleton);
+            console.log('Planned Sessions:', debug.rruleTimeline.sessions);
+            console.groupEnd();
+          }
+          if (debug.llmRequest) {
+            console.group('Actual Content Sent to LLM');
+            console.log('System Prompt:\n' + debug.llmRequest.systemPrompt);
+            console.log('User Prompt (Enrichment Payload):\n' + debug.llmRequest.userPrompt);
+            console.groupEnd();
+          }
+          if (debug.llmResponse) {
+            console.group('Exact Data Sent Back from LLM');
+            console.log('Raw Completion:\n' + debug.llmResponse.rawCompletion);
+            console.log('Error:', debug.llmResponse.error);
+            console.groupEnd();
+          }
+          console.groupEnd();
+        }
         saveSuccessMessage = `⚠️ ${label} generation failed`;
         setTimeout(() => {
           saveSuccessMessage = '';
@@ -1821,18 +1827,6 @@
             <CalendarDays class="w-3.5 h-3.5" />
             <span>Schedule</span>
           </button>
-
-          <!-- {#each courseCustomTabs as slug (slug)}
-            <div class="relative group/tab">
-              <button
-                onclick={() => switchTab(slug)}
-                class="flex items-center px-3 py-1 rounded-md transition {activeTab === slug ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-                title="Custom course tab — course.{slug}.md"
-              >
-                <span>{customTabDisplayName(slug)}</span>
-              </button>
-            </div>
-          {/each} -->
         {/if}
       </div>
     </div>
@@ -2111,7 +2105,11 @@
     isOpen={isScheduleModalOpen}
     onClose={() => (isScheduleModalOpen = false)}
     onGenerate={handleScheduleGenerate}
-    promptTemplate={genericPrompts['course_schedule_enrichment'] || genericPrompts['course_schedule'] || ''}
+    promptTemplate={
+      (activeTab === 'schedule' && isCourseScope && parsedActiveTab.frontmatter.prompt) ||
+      genericPrompts['course_schedule'] ||
+      ''
+    }
     courseTitle={course.title}
   />
 

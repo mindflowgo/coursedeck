@@ -15,6 +15,7 @@
     ScheduleParser,
     toggleEventDone,
     eventHref,
+    renderInlineMarkdown,
     type ScheduleEvent
   } from '$lib/parser/scheduleParser';
   import { scheduleTypeClasses, getScheduleEndDateLabel } from '$lib/schedule';
@@ -236,7 +237,7 @@
                       onclick={() => goto(eventHref(course.courseId, event))}
                       class="text-sm font-medium hover:underline hover:text-indigo-600 dark:hover:text-indigo-400 transition cursor-pointer text-left truncate {event.done ? 'line-through text-stone-400 dark:text-stone-500' : 'text-stone-900 dark:text-stone-100'}"
                       title="Open {event.lessonId}{event.section ? ` (${event.section})` : ''}"
-                    >{event.title}</button>
+                    >{@html renderInlineMarkdown(event.title)}</button>
                     <button
                       type="button"
                       onclick={() => goto(eventHref(course.courseId, event))}
@@ -315,7 +316,7 @@
                         {new Date(`${event.date}T00:00:00`).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}
                       </span>
                       <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide shrink-0 {scheduleTypeClasses(event.type)}">{event.type}</span>
-                      <span class="text-stone-700 dark:text-stone-200 truncate">{event.title}</span>
+                      <span class="text-stone-700 dark:text-stone-200 truncate">{@html renderInlineMarkdown(event.title)}</span>
                     </div>
                   {/each}
                 </div>

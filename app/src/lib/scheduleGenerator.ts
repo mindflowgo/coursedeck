@@ -207,33 +207,13 @@ export function buildScheduleSkeleton(
     const unit = course.units[uIdx];
 
     for (const lesson of unit.lessons) {
-      const effort = effortMap.get(lesson.id);
-      const isHighDensity = effort?.summaryDensity === 'high' || (effort?.wordCount || 0) > 3000;
-
       if (lesson.type === 'lesson') {
-        if (isHighDensity && prefs.sessionLengthMin >= 60) {
-          // Split conceptually dense lessons into two study sessions
-          plannedSessions.push({
-            type: 'study',
-            lessonId: lesson.id,
-            title: `${lesson.title} (Part 1)`,
-            durationMin: Math.round(prefs.sessionLengthMin * 0.75)
-          });
-          plannedSessions.push({
-            type: 'study',
-            lessonId: lesson.id,
-            title: `${lesson.title} (Part 2)`,
-            durationMin: Math.round(prefs.sessionLengthMin * 0.75)
-          });
-        } else {
-          plannedSessions.push({
-            type: 'study',
-            lessonId: lesson.id,
-            title: lesson.title,
-            durationMin: prefs.sessionLengthMin
-          });
-        }
-
+        plannedSessions.push({
+          type: 'study',
+          lessonId: lesson.id,
+          title: lesson.title,
+          durationMin: prefs.sessionLengthMin
+        });
       } else if (lesson.type === 'assignment') {
         // Assignments receive max 2 sessions: [ASSIGNMENT] work session, followed by [SUBMIT]
         const workTitle = /assignment/i.test(lesson.title)
@@ -376,14 +356,23 @@ export function applyEnrichmentPatches(
   patches: SessionEnrichmentPatch[]
 ): string {
   const patchMap = new Map<string, SessionEnrichmentPatch>();
+  const lessonTypeMap = new Map<string, SessionEnrichmentPatch>();
+
   for (const p of patches) {
     if (p.sessionKey) {
-      patchMap.set(p.sessionKey, p);
+      const cleanKey = p.sessionKey.trim();
+      patchMap.set(cleanKey, p);
+      // Strip ISO date prefix if present (e.g. "2026-10-15:01.01:study" -> "01.01:study")
+      const noDateKey = cleanKey.replace(/^\d{4}-\d{2}-\d{2}:/, '');
+      if (!lessonTypeMap.has(noDateKey)) {
+        lessonTypeMap.set(noDateKey, p);
+      }
     }
   }
 
   const enrichedSessions: PlannedSession[] = skeleton.sessions.map((session) => {
-    const patch = patchMap.get(session.sessionKey);
+    const noDate = `${session.lessonId}:${session.type}${session.section ? `:${session.section}` : ''}`;
+    const patch = patchMap.get(session.sessionKey) || lessonTypeMap.get(noDate) || patchMap.get(session.lessonId);
     if (!patch) return session;
 
     return {
@@ -412,12 +401,16 @@ export function verifyStructuralEquivalence(
   let enrichedParsed;
   try {
     enrichedParsed = ScheduleParser.parseMarkdown(enrichedMarkdown);
-  } catch {
+  } catch (err) {
+    console.warn('[Schedule Gate Failure] ScheduleParser threw an exception:', err);
     return false;
   }
 
   // Event count must match exactly
   if (enrichedParsed.events.length !== originalSkeleton.sessions.length) {
+    console.warn(
+      `[Schedule Gate Failure] Event count mismatch: parsed ${enrichedParsed.events.length} vs skeleton ${originalSkeleton.sessions.length}`
+    );
     return false;
   }
 
@@ -431,6 +424,9 @@ export function verifyStructuralEquivalence(
       enriched.type.toLowerCase() !== original.type.toLowerCase() ||
       enriched.lessonId !== original.lessonId
     ) {
+      console.warn(
+        `[Schedule Gate Failure] Mismatch at slot ${i}: enriched=[date:${enriched.date}, type:${enriched.type}, lesson:${enriched.lessonId}] vs original=[date:${original.date}, type:${original.type}, lesson:${original.lessonId}]`
+      );
       return false;
     }
   }

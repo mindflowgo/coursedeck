@@ -7,7 +7,9 @@
 node_modules/
 .svelte-kit/
 app/build/
-data/
+data
+data.old
+app/data
 tauri/target/
 tauri/server
 tauri/server.exe

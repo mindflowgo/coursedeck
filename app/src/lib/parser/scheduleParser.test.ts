@@ -3,6 +3,7 @@ import {
   ScheduleParser,
   toggleEventDone,
   eventHref,
+  renderInlineMarkdown,
   type ScheduleEvent
 } from './scheduleParser';
 
@@ -240,3 +241,36 @@ describe('eventHref', () => {
     expect(eventHref('mcr3u', { lessonId: 'course' })).toBe('/courses/mcr3u/course');
   });
 });
+
+describe('renderInlineMarkdown', () => {
+  it('renders bold markdown in sentences with strong tags', () => {
+    const input =
+      'This lesson examines the two primary **human rights statutes**—the **Canadian Human Rights Act** and **provincial human rights codes**—that protect Canadians from **discrimination**. It explores the **grounds** of discrimination, the **complaint process**, and available **remedies**.';
+    const html = renderInlineMarkdown(input);
+
+    expect(html).toContain('<strong>human rights statutes</strong>');
+    expect(html).toContain('<strong>Canadian Human Rights Act</strong>');
+    expect(html).toContain('<strong>provincial human rights codes</strong>');
+    expect(html).toContain('<strong>discrimination</strong>');
+    expect(html).toContain('<strong>grounds</strong>');
+    expect(html).toContain('<strong>complaint process</strong>');
+    expect(html).toContain('<strong>remedies</strong>');
+  });
+
+  it('renders inline code and italic while escaping raw html tags', () => {
+    const input = 'Check *terms* and `code_snippet` with <script>alert(1)</script>';
+    const html = renderInlineMarkdown(input);
+
+    expect(html).toContain('<em>terms</em>');
+    expect(html).toContain('<code>code_snippet</code>');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('handles empty or undefined inputs without throwing', () => {
+    expect(renderInlineMarkdown('')).toBe('');
+    expect(renderInlineMarkdown(null)).toBe('');
+    expect(renderInlineMarkdown(undefined)).toBe('');
+  });
+});
+

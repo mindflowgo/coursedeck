@@ -865,7 +865,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                   lessonId: 'schedule',
                   lessonTitle: 'Course Study Schedule',
                   tab: 'schedule',
-                  customPrompt: systemPrompt
+                  customPrompt: systemPrompt,
+                  preferences: (body.preferences as SchedulePreferences) || undefined
                 }
               ],
               config

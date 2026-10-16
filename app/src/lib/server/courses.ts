@@ -707,7 +707,7 @@ export class CourseService {
     }
 
     lines.push('\n# Scheduled Sessions Requiring Enrichment\n');
-    lines.push('Generate a title and retrieval-practice description for each sessionKey below:\n');
+    lines.push('Generate a title and description for each sessionKey below strictly following the guidelines and instructions provided in the system prompt:\n');
 
     const sessionsToEnrich = sessions.map((s) => ({
       sessionKey: s.sessionKey,

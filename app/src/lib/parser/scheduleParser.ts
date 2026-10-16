@@ -1,5 +1,6 @@
 import { parseFrontmatter } from './frontmatter';
 import { TAB_SLUG_PATTERN } from '../tabs';
+import { Marked } from 'marked';
 
 export interface ScheduleEvent {
   done: boolean;
@@ -330,3 +331,29 @@ export function eventHref(
 
 /** Convenience re-export so callers can round-trip like other parsers. */
 export { parseFrontmatter };
+
+const inlineMarked = new Marked({ gfm: true, breaks: false });
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Safely renders inline Markdown (such as **bold**, *italic*, `code`) into HTML,
+ * escaping raw HTML tags to prevent XSS.
+ */
+export function renderInlineMarkdown(text: string | null | undefined): string {
+  if (!text) return '';
+  const escaped = escapeHtml(text);
+  try {
+    return inlineMarked.parseInline(escaped) as string;
+  } catch {
+    return escaped;
+  }
+}
+

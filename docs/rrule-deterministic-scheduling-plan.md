@@ -446,7 +446,7 @@ With the **JSON Patch Contract**:
 - Calendar structure, dates, and checkboxes are **100% immune to LLM corruption** by construction.
 - Partial completions degrade gracefully: any unpatched session retains its default deterministic title.
 
-### 5.2 System Prompt (`data/prompts/course_schedule_enrichment.md`)
+### 5.2 System Prompt (`data/prompts/course_schedule.md`)
 
 ```markdown
 # Course Schedule Enrichment
@@ -567,7 +567,7 @@ try {
   // Load system prompt template (or custom prompt if provided)
   let systemPrompt = nextTask.customPrompt;
   if (!systemPrompt) {
-    systemPrompt = PromptService.getPrompt('course_schedule_enrichment');
+    systemPrompt = PromptService.getPrompt('course_schedule');
   }
 
   // 120s floor allows comfortable reasoning without timing out
@@ -681,7 +681,7 @@ A dedicated test suite `app/src/lib/scheduleGenerator.test.ts` will verify:
 
 3. **Phase 3: Server Inventory & Enrichment**
    - Implement `CourseService.computeCourseEfforts` in `app/src/lib/server/courses.ts`.
-   - Create `data/prompts/course_schedule_enrichment.md`.
+   - Update `data/prompts/course_schedule.md`.
    - Deprecate legacy `buildSchedulePrompt` in `schedule.ts`.
 
 4. **Phase 4: Queue Integration & Verification**
