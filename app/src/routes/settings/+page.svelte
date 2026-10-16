@@ -233,7 +233,8 @@
         authHeaderType: card.authHeaderType,
         model: card.model,
         temperature: card.temperature,
-        timeoutSeconds: card.timeoutSeconds
+        timeoutSeconds: card.timeoutSeconds,
+        sendSessionId: card.sendSessionId
       },
       card.id
     );
@@ -1032,6 +1033,22 @@
                 {/each}
               </select>
             </div>
+          </div>
+
+          <!-- Optional Send session_id checkbox -->
+          <div class="pt-0.5">
+            <label for="send-session-id-{card.id}" class="inline-flex items-center space-x-1.5 text-[11px] text-stone-600 dark:text-stone-400 select-none cursor-pointer">
+              <input
+                id="send-session-id-{card.id}"
+                type="checkbox"
+                bind:checked={card.sendSessionId}
+                class="rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:text-stone-100 focus:ring-stone-900 h-3.5 w-3.5 cursor-pointer"
+              />
+              <span>Send session ID (<code>session_id</code>)</span>
+            </label>
+            <p class="text-[10px] text-stone-400 dark:text-stone-500 pl-5">
+              Keep unchecked if your provider rejects extra inputs with HTTP 400.
+            </p>
           </div>
 
           {#if isPublicIpUrl(card.baseUrl)}

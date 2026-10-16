@@ -235,6 +235,120 @@ describe('multi-card store', () => {
     );
     expect(authHeaders[1]).toBe('Bearer sk-secret');
   });
+
+  it('persists and migrates the sendSessionId setting', () => {
+    writeConfig({
+      version: 2,
+      activeId: 'card_strict',
+      cards: [
+        { id: 'card_strict', label: 'Strict Provider', provider: 'openai_compatible', baseUrl: 'https://strict.example/v1', sendSessionId: true }
+      ]
+    });
+
+    const store = LLMService.loadStore();
+    expect(store.cards[0].sendSessionId).toBe(true);
+
+    const activeConfig = LLMService.loadStoredConfig();
+    expect(activeConfig?.sendSessionId).toBe(true);
+
+    // Legacy migration defaults sendSessionId to false
+    writeConfig({
+      provider: 'openai_compatible',
+      baseUrl: 'https://legacy.example/v1'
+    });
+    const migratedStore = LLMService.loadStore();
+    expect(migratedStore.cards[0].sendSessionId).toBe(false);
+  });
+});
+
+describe('sendSessionId option', () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('excludes session_id from payload when sendSessionId is false or omitted', async () => {
+    let capturedBody: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+
+    await LLMService.generateResult(
+      { provider: 'openai_compatible', baseUrl: 'https://api.openai.com/v1', sessionId: 'test-session-123' },
+      'system',
+      'user',
+      { timeoutMs: 5_000 }
+    );
+
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.session_id).toBeUndefined();
+    expect('session_id' in capturedBody).toBe(false);
+  });
+
+  it('includes session_id in payload when sendSessionId is true', async () => {
+    let capturedBody: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+
+    await LLMService.generateResult(
+      { provider: 'openai_compatible', baseUrl: 'https://api.openai.com/v1', sessionId: 'test-session-123', sendSessionId: true },
+      'system',
+      'user',
+      { timeoutMs: 5_000 }
+    );
+
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.session_id).toBe('test-session-123');
+  });
+
+  it('testConnection does not send session_id when sendSessionId is false or omitted', async () => {
+    let capturedBody: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+
+    const res = await LLMService.testConnection({
+      provider: 'openai_compatible',
+      baseUrl: 'https://api.openai.com/v1'
+    });
+
+    expect(res.success).toBe(true);
+    expect(capturedBody).not.toBeNull();
+    expect('session_id' in capturedBody).toBe(false);
+  });
+
+  it('testConnection sends session_id when sendSessionId is true', async () => {
+    let capturedBody: any = null;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      capturedBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+
+    const res = await LLMService.testConnection({
+      provider: 'openai_compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      sendSessionId: true
+    });
+
+    expect(res.success).toBe(true);
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.session_id).toBe('test-session');
+  });
 });
 
 describe('llama.cpp native transport', () => {

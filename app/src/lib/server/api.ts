@@ -167,6 +167,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                 authHeaderType: active.authHeaderType,
                 temperature: active.temperature,
                 timeoutSeconds: active.timeoutSeconds,
+                sendSessionId: active.sendSessionId ?? false,
                 hasApiKey: Boolean(active.apiKey && active.apiKey.trim())
               }
             : null

@@ -22,6 +22,7 @@
 
   const REQUEST_TIMEOUT_STEPS: readonly number[] = [30, 60, 90, 120, 150, 300, 600];
   let timeoutSeconds = $state(150);
+  let sendSessionId = $state(false);
 
   let isTesting = $state(false);
   let isSaving = $state(false);
@@ -42,6 +43,7 @@
             authHeaderType = data.config.authHeaderType || 'bearer';
             temperature = data.config.temperature ?? 0.3;
             timeoutSeconds = data.config.timeoutSeconds ?? 150;
+            sendSessionId = Boolean(data.config.sendSessionId);
             hasStoredApiKey = Boolean(data.config.hasApiKey);
           }
         })
@@ -80,7 +82,8 @@
             authHeaderType,
             model: cleanModel,
             temperature,
-            timeoutSeconds
+            timeoutSeconds,
+            sendSessionId
           }
         })
       });
@@ -114,7 +117,8 @@
             authHeaderType,
             model,
             temperature,
-            timeoutSeconds
+            timeoutSeconds,
+            sendSessionId
           }
         })
       });
@@ -249,6 +253,22 @@
             {/each}
           </select>
           <p class="text-[10px] text-stone-400 dark:text-stone-500">Raise this if generation fails with "timed out" (slow providers need more).</p>
+        </div>
+
+        <!-- Optional Send session_id checkbox -->
+        <div class="pt-1">
+          <label for="modal-send-session-id" class="inline-flex items-center space-x-2 text-xs text-stone-700 dark:text-stone-300 select-none cursor-pointer">
+            <input
+              id="modal-send-session-id"
+              type="checkbox"
+              bind:checked={sendSessionId}
+              class="rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:text-stone-100 focus:ring-stone-900 h-3.5 w-3.5 cursor-pointer"
+            />
+            <span>Send session ID (<code>session_id</code>)</span>
+          </label>
+          <p class="text-[10px] text-stone-400 dark:text-stone-500 pl-5.5">
+            Keep unchecked if your provider rejects extra inputs with HTTP 400.
+          </p>
         </div>
       </div>
 

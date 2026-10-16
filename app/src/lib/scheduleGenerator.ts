@@ -1,9 +1,13 @@
-import rrulePkg from 'rrule';
+import * as rruleModule from 'rrule';
 import type { SchedulePreferences } from './schedule';
 
-// Handle CJS / ESM interop across Vite SSR, Node, and Bun
-const rruleModule: any = (rrulePkg as any)?.default || rrulePkg;
-const RRule: typeof import('rrule').RRule = rruleModule.RRule || rruleModule;
+// Handle CJS / ESM interop across Vite SSR (Node), Bun runtime, and Bun compiled binary
+const rruleAny: any = rruleModule;
+const RRule: typeof import('rrule').RRule =
+  rruleAny.RRule ||
+  rruleAny['default']?.RRule ||
+  rruleAny['default'] ||
+  rruleAny;
 import type { CourseManifest } from './parser/courseIngest';
 import { ScheduleParser } from './parser/scheduleParser';
 

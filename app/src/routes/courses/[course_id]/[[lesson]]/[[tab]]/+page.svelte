@@ -86,7 +86,7 @@
 
   // Custom tabs discovered from this lesson's tab files on disk
   let customTabs = $derived.by(() => {
-    if (!lessonBundle) return [];
+    if (!lessonBundle?.tabs) return [];
     return Object.keys(lessonBundle.tabs)
       .filter((slug) => isCustomTabSlug(slug))
       .sort();
@@ -628,6 +628,13 @@
 
       if (res.ok) {
         const data: LessonContentBundle = await res.json();
+        // Defensive normalization: guarantee data.tabs exists
+        if (!data.tabs) {
+          data.tabs = {};
+          if ((data as any).summary) data.tabs.summary = (data as any).summary;
+          if ((data as any).cheatsheet) data.tabs.cheatsheet = (data as any).cheatsheet;
+          if ((data as any).test) data.tabs.test = (data as any).test;
+        }
         lessonBundle = data;
         selectedLessonId = lessonId;
 
@@ -643,7 +650,7 @@
           ...data.tabs
         };
         originalContents = { ...tabContents };
-        console.log(`[NAV] loadLesson "${lessonId}" ✓ tabs=[${Object.keys(data.tabs).join(', ') || 'none'}]`);
+        console.log(`[NAV] loadLesson "${lessonId}" ✓ tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}]`);
       } else {
         console.warn(`[NAV] loadLesson "${lessonId}" failed: HTTP ${res.status}`);
       }
@@ -1556,7 +1563,7 @@
 
         // A URL naming a custom tab the lesson doesn't have yet (schedule
         // deep link, bookmark) creates the tab file so it can be used.
-        if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs[targetTab]) {
+        if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs?.[targetTab]) {
           await createCustomTab(targetTab, customTabDisplayName(targetTab));
           if (routeMovedOn()) throw ROUTE_MOVED_ON;
         }

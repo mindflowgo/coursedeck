@@ -91,7 +91,7 @@ export async function setActiveLlmCard(id: string): Promise<void> {
 
 /** Tests one card without saving it; blank apiKey falls back to the stored key. */
 export async function testLlmCard(
-  card: { id?: string; provider: string; baseUrl: string; apiKey?: string; authHeaderType?: string; model?: string; temperature?: number; timeoutSeconds?: number },
+  card: { id?: string; provider: string; baseUrl: string; apiKey?: string; authHeaderType?: string; model?: string; temperature?: number; timeoutSeconds?: number; sendSessionId?: boolean },
   storedId?: string
 ): Promise<{ success: boolean; message: string }> {
   try {
@@ -121,6 +121,7 @@ export function createLlmCardDraft(): LlmCardDraft {
     model: '',
     temperature: 0.3,
     timeoutSeconds: 150,
+    sendSessionId: false,
     apiKey: '',
     hasApiKey: false
   };

@@ -78,6 +78,7 @@ export interface LlmCardSummary {
   model?: string;
   temperature?: number;
   timeoutSeconds?: number;
+  sendSessionId?: boolean;
   hasApiKey: boolean;
 }
 

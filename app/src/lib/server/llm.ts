@@ -14,6 +14,8 @@ export interface LLMConfig {
   model?: string;
   temperature?: number;
   sessionId?: string;
+  /** Whether to send session_id in the JSON payload (default false to prevent 400 errors from strict providers). */
+  sendSessionId?: boolean;
   /** Per-request LLM deadline in seconds (Settings → Request Timeout, 30–150). */
   timeoutSeconds?: number;
   /** Store card this config came from, when known (per-card API key fallback). */
@@ -31,6 +33,7 @@ export interface LlmModelCard {
   model?: string;
   temperature?: number;
   timeoutSeconds?: number;
+  sendSessionId?: boolean;
 }
 
 /** Persisted multi-card store (`data/llm_config.json`, version 2). */
@@ -196,6 +199,7 @@ export class LLMService {
       model: card.model,
       temperature: card.temperature,
       timeoutSeconds: card.timeoutSeconds,
+      sendSessionId: card.sendSessionId,
       cardId: card.id
     };
   }
@@ -223,7 +227,8 @@ export class LLMService {
       // A blank string clears the model id (server default); a non-string keeps the stored one.
       model: typeof config.model === 'string' ? config.model.trim() : (existing?.model ?? ''),
       temperature: config.temperature ?? existing?.temperature ?? 0.3,
-      timeoutSeconds: config.timeoutSeconds ?? existing?.timeoutSeconds ?? 150
+      timeoutSeconds: config.timeoutSeconds ?? existing?.timeoutSeconds ?? 150,
+      sendSessionId: config.sendSessionId !== undefined ? config.sendSessionId : (existing?.sendSessionId ?? false)
     };
 
     LLMService.saveStore({
@@ -294,7 +299,8 @@ export class LLMService {
         temperature: cleanNumber(c?.temperature, 0.3, 0),
         // Capped so a huge persisted value cannot make Bun clamp the timer to
         // 1ms (which would fail every request with an instant timeout).
-        timeoutSeconds: Math.min(cleanNumber(c?.timeoutSeconds, 150, 1), 3600)
+        timeoutSeconds: Math.min(cleanNumber(c?.timeoutSeconds, 150, 1), 3600),
+        sendSessionId: Boolean(c?.sendSessionId)
       });
     }
 
@@ -468,7 +474,7 @@ export class LLMService {
       payload.temperature = config.temperature;
     }
 
-    if (!isLlamaCppNative && config.sessionId && config.sessionId.trim()) {
+    if (!isLlamaCppNative && config.sendSessionId && config.sessionId && config.sessionId.trim()) {
       payload.session_id = config.sessionId.trim();
     }
 
@@ -822,7 +828,7 @@ export class LLMService {
     try {
       const testConfig = {
         ...config,
-        sessionId: config.sessionId || 'test-session'
+        sessionId: config.sendSessionId ? (config.sessionId || 'test-session') : undefined
       };
       const testRes = await this.generate(testConfig, 'You are a test assistant.', 'Reply with "OK"');
       if (testRes.toLowerCase().includes('ok')) {
