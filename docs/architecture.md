@@ -329,13 +329,13 @@ In Svelte 5, reactive effects (`$effect`) track all synchronous signals read wit
 
 The project root coordinates both the SvelteKit 5 web app and Tauri v2 desktop application through Bun:
 - `bun run dev`: Runs Vite dev server for web testing (`http://localhost:5173`).
-- `bun run build`: Typechecks and builds production bundles via SvelteKit.
+- `bun run build`: Builds the production SvelteKit bundles (`vite build`; typechecking is `bun run check`).
 - `bun run parse`: Executes the Bun ingestion engine on `data/courses/` archives.
-- `bun run tauri:dev`: Builds the SvelteKit app and launches the native Tauri v2 macOS desktop window.
-- `bun run check`: App svelte-check **plus** `tsc --noEmit` over `server/index.ts` and shared server modules (root `tsconfig.json`, `@types/bun`) — a broken sidecar can never pass CI.
-- `bun run test`: Sidecar API contract tests (`scripts/api-contract.ts`) plus the PDF pipeline smoke test.
+- `bun run tauri:dev`: Builds the SvelteKit app and launches the native Tauri v2 desktop window (both platforms).
+- `bun run check`: App svelte-check **plus** `tsc --noEmit` over `server/index.ts` and shared server modules (root `tsconfig.json`, `@types/bun`) — a broken sidecar can never pass CI. Note it reads only `.d.ts` files, so it cannot catch a module-interop problem in the compiled path (see §7.1c).
+- `bun run test`: `bun run server:compile` first (so the compiled path is gated at all), then unit tests (`bun test app/src`), the sidecar API contract suite, the sidecar and active-model end-to-end suites, and the PDF pipeline smoke test.
 - `bun run server:compile`: Produces the standalone sidecar binary `tauri/server` (`.exe` on Windows) via `bun build --compile`.
-- `bun run tauri:build:win` / `tauri:build:mac`: Platform bundles (`--bundles nsis` / `dmg`); `bundle.resources: ["server*"]` picks up whichever binary name the platform produced.
+- `bun run tauri:build:win` / `tauri:build:mac`: Platform bundles (`--bundles nsis` / `dmg`); `bundle.resources: ["server*"]` picks up whichever binary name the platform produced. Close any running copy of the app first: it holds `target/release/server.exe`, so Tauri's resource-copy step fails with a bare `os error 32` (or the linker reports `LNK1114`). `scripts/preflight-build.ts` probes those binaries up front and aborts with a message naming the locked file; it runs from `tauri/`'s `build` / `build:win` (so `tauri:build`, `tauri:build:win` inherit it) and from the portable build. The `tauri/` package's `build:portable` / `build:win:portable` entries delegate to the root scripts so they can never package a stale frontend or sidecar.
 
 ### 7.1 Backend Sidecar & the Single API Layer
 Packaged desktop builds have no SvelteKit server, and the dev/web app has no compiled sidecar — both serve the **same HTTP API from one implementation**:
@@ -343,7 +343,7 @@ Packaged desktop builds have no SvelteKit server, and the dev/web app has no com
 - **SvelteKit side**: a single catch-all adapter (`src/routes/api/[...path]/+server.ts`, 3 lines per verb) delegates to the shared handler during `bun run dev` and web builds.
 - **Sidecar side**: `server/index.ts` compiles to a standalone executable (`tauri/server` / `server.exe`) and delegates to the same handler, adding only the loopback transport, CORS for Tauri webview origins, and SPA static serving. If its port is already owned by another instance it exits cleanly instead of crashing.
 - **Frontend**: `apiFetch(path, init)` (`app/src/lib/api.ts`) applies the environment base URL (dev server vs `http://127.0.0.1:3182`) at every call site. The old global `window.fetch` monkey-patch (`initApiInterceptor`) is gone; `isTauriEnvironment()` is the single environment detection export.
-- **Compiled-binary-safe dependencies only**: `Bun.Image` (compression), `Bun.YAML` (frontmatter), `fflate` (zip). Native npm modules (sharp, zip-bun) cannot load inside `bun build --compile` executables and must not be added to this path.
+- **Compiled-binary-safe dependencies only**: `Bun.Image` (compression), `Bun.YAML` (frontmatter, with a `js-yaml` fallback), `fflate` (zip). Native npm modules (sharp, zip-bun) cannot load inside `bun build --compile` executables and must not be added to this path.
 - **Hardened spawn** (`tauri/src/lib.rs`): per-platform binary lookup (`server`/`server.exe` in resources and beside the executable, bun fallback including `%USERPROFILE%\.bun\bin\bun.exe`), stdout/stderr captured to `<data_dir>/backend.log`, spawn failures logged, and the main window is held back until the backend port answers (10s cap) so the UI never appears before the API is reachable.
 - **Loopback-only**: the sidecar binds `127.0.0.1` and emits CORS headers solely for recognized origins (localhost/127.0.0.1 ports and the Tauri webview origins `tauri://localhost` / `http://tauri.localhost`).
 
@@ -355,9 +355,17 @@ Runs **on Windows only** (gated with a clear message elsewhere). Produces in `ta
 
 Data-directory resolution order (Rust, `get_default_data_dir` / `find_course_dir`): settings `data_dir` → `DATA_DIR` env → `cwd/data` → `cwd/../data` → **`<exe-dir>/data`** (portable layout; checked after cwd so the NSIS launcher's `$EXEDIR` cwd still wins over its `%TEMP%` extraction dir) → app-data dir.
 
+### 7.1c Module interop rule for the compiled path
+`bun run check` and `bun run test`'s source runs resolve modules through each tool's lenient runtime interop, so they cannot see how `bun build --compile` or SvelteKit's Node-based postbuild `analyse` will link a dependency. Both build paths do, and they disagree:
+
+- **Bun's bundler** resolves a package's ESM entry (`module` field) and fails if the import form does not exist there — e.g. a default import of a package whose ESM file only has named exports.
+- **Node (SvelteKit's postbuild `analyse`)** ignores `module`. A package with an `exports` map still resolves to a real ESM file (which is why `js-yaml`, `cheerio`, `marked` and `fflate` are fine here), but without one it falls back to `main` — usually CJS, where named imports exist only if Node's `cjs-module-lexer` can see them. A webpack-bundled CJS package (rrule) defeats that entirely: `import * as ns from 'rrule'` yields `ns.RRule === undefined`.
+
+`rrule` satisfies neither, so `scheduleGenerator.ts` imports the named export and `app/vite.config.ts` inlines it for SSR (`ssr.noExternal: ['rrule']`) — inlining keeps Node from ever resolving the CJS build. The same rule applies to any future dependency in this graph: prefer packages with an `exports` map, and import the form that actually exists in the entry each tool picks. Each gate covers one half — `bun run test` compiles the sidecar (Bun's bundler), while the Node half only surfaces in `bun run build`, `bun run dev`, or any `tauri:build*` (all of which build the frontend), so run one of those after touching a dependency on this path.
+
 ### 7.2 Verification gates (root scripts)
 - `bun run check` — app svelte-check **plus** `tsc --noEmit` over the sidecar and shared server modules.
-- `bun run test` — three suites: `scripts/api-contract.ts` (response-shape contracts), `scripts/sidecar-e2e.ts` (ingest → save → save-as-new-version → course-docs → theme → backup roundtrip against a live sidecar on scratch data), and the PDF pipeline smoke test.
+- `bun run test` — `bun run server:compile` first (the only gate that links the compiled sidecar, see §7.1c), then the unit tests (`bun test app/src`) and four script suites: `scripts/api-contract.ts` (response-shape contracts), `scripts/sidecar-e2e.ts` (ingest → save → save-as-new-version → course-docs → theme → backup roundtrip against a live sidecar on scratch data), `scripts/active-model-e2e.ts` (model cards + active-model routing), and the PDF pipeline smoke test.
 
 ### 7.3 Audit findings — resolution status
 - ✅ **Sidecar type errors / contract drift** (queue `addTasks`, `getAllPrompts`, `collectLessonDocs`, missing `/api/parse`, `saveLessonTab` signature, duplicate `success` key): fixed, and structurally prevented going forward — dev server and sidecar now share one handler (`api.ts`).
@@ -392,7 +400,14 @@ Students reading any course material (Full Lesson, Summary, Cheatsheet) can high
    - The target snippet in the paragraph above is underlined with a dotted amber anchor (`<mark class="ai-note-anchor">`).
    - Hovering over either the post-it note or the anchor text triggers synchronized highlighting.
    - Clicking the anchor text smoothly scrolls to and expands the post-it note.
-   - Each note includes an inline `[✕]` action allowing instant deletion with disk synchronization.
+   - Each note includes an inline `[✕]` action that opens the built-in minimalist `ConfirmDialog.svelte` (not the native OS dialog) and, once confirmed, deletes the note.
+
+### 8.2 Note Removal (`removeAnnotation`)
+`removeAnnotation(markdown, targetText, query)` scans the document line by line for `> [!USERNOTE]` blocks and removes the best-matching one. A block is one contiguous run of lines whose first character is `>` — the boundary the reader's own note regex uses — so a marker quoted inside an answer (`> [!NOTE]`, even `> [!USERNOTE]`) stays part of that note, and adjacent notes must be blank-line separated (which `insertAnnotationAfterText` always produces). The reader's callout pass runs before its note pass, so a marker-only line inside an answer can additionally render as its own callout card there; it is still text inside the stored answer, and deleting the note removes it.
+- Both anchors are scored: the annotated passage and the student's question. A block matching both outranks one matching a single anchor, so two notes on the same passage are told apart by their question; the reader's `data-target` is the note's own stored text, unescaped (`\"` → `"`), so targets containing quotes match exactly.
+- A length-guarded substring pass follows for notes whose stored text drifted. Ties on score — including equal partial matches — resolve to the first block in the document.
+- Removal is offset-based: the matched block plus the single blank separator line it was inserted with are cut out, leaving CRLF endings and unrelated blank-line runs byte-identical. A note that ends the document instead leaves exactly one trailing newline, collapsing the whitespace it had left behind.
+- The caller (`handleDeleteNote`) assigns the returned Markdown to `tabContents[activeTab]` and saves, which re-renders the reader and persists the change to disk. `removed: false` means nothing was written.
 
 ---
 

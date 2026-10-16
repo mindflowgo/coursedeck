@@ -8,6 +8,31 @@ export interface UserNoteData {
   answer: string;
 }
 
+/** Opens an AI study note callout. */
+const NOTE_START_PATTERN = /^\s*>\s*\[!USERNOTE\]/i;
+const TARGET_COMMENT_PATTERN = /<!--\s*target:\s*"([\s\S]*?)"\s*-->/i;
+/** Shorter matches than this are too ambiguous for the looser comparison. */
+const MIN_PARTIAL_ANCHOR_LENGTH = 4;
+
+/**
+ * A note is one blockquote run: every line whose first character is `>` belongs
+ * to it, so a marker quoted inside an answer (`> [!NOTE]`, even `> [!USERNOTE]`)
+ * never splits the block, and adjacent notes must be blank-line separated —
+ * which `insertAnnotationAfterText` always produces. The reader's note regex
+ * consumes that same run, so a deletion removes the answer whole. (The reader's
+ * callout pass runs first, so a marker-only line inside an answer may also
+ * render as its own callout card; that text is part of the stored answer and is
+ * removed with the note.)
+ */
+function isNoteBodyLine(line: string): boolean {
+  return line.startsWith('>');
+}
+
+/** Mirrors the reader's own decode of the stored target text. */
+function unescapeTargetText(text: string): string {
+  return text.replace(/\\"/g, '"').trim();
+}
+
 /**
  * Formats a user note into standard GFM callout block.
  */
@@ -90,35 +115,100 @@ export function insertAnnotationAfterText(
 }
 
 /**
- * Removes an annotation block matching the target text or query.
+ * Removes the `> [!USERNOTE]` callout matching `targetText` (the annotated
+ * passage) and/or `query` (the student's question). Both are matched when both
+ * are supplied, so two notes on the same passage are told apart by their
+ * question; either alone falls back to whichever the note carries.
+ *
+ * Line-based on purpose: a regex over the whole document cannot match a target
+ * that contains a `"` (the note stores it escaped as `\"`, see `formatUserNote`)
+ * and its `$` terminator misses a note sitting at the end of the file — both
+ * left the note in place. Scan note blocks, match, splice out exactly the
+ * matched block plus the blank line that separated it, and leave every other
+ * byte of the document untouched.
  */
 export function removeAnnotation(
   markdown: string,
-  targetTextOrQuery: string
+  targetText: string,
+  query = ''
 ): { updatedMarkdown: string; removed: boolean } {
-  if (!markdown || !targetTextOrQuery) {
+  const anchors = [targetText, query].map((anchor) => (anchor || '').trim()).filter(Boolean);
+  if (!markdown || anchors.length === 0) {
     return { updatedMarkdown: markdown, removed: false };
   }
 
-  const cleanAnchor = escapeRegex(targetTextOrQuery.trim().replace(/^"|"$/g, ''));
-  // Regex to match the callout block containing the anchor
-  const noteRegex = new RegExp(
-    `>\\s*\\[!USERNOTE\\][^\n]*${cleanAnchor}[\\s\\S]*?(?:\\n\\s*\\n|$)`,
-    'i'
-  );
-
-  let updated = markdown.replace(noteRegex, '\n\n');
-  if (updated === markdown) {
-    // Also try matching target comment
-    const targetCommentRegex = new RegExp(
-      `>\\s*\\[!USERNOTE\\][\\s\\S]*?<!--\\s*target:\\s*"[^"]*${cleanAnchor}[^"]*"\\s*-->[\\s\\S]*?(?:\\n\\s*\\n|$)`,
-      'i'
-    );
-    updated = markdown.replace(targetCommentRegex, '\n\n');
+  // Split on '\n' alone so each line keeps its own '\r'; offsets are then the
+  // only thing the splice needs and everything outside it stays byte-identical.
+  const lines = markdown.split('\n');
+  const lineStarts: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    lineStarts.push(offset);
+    offset += line.length + 1;
   }
 
-  // Clean up any double blank lines
-  updated = updated.replace(/\n{3,}/g, '\n\n');
-  const removed = updated !== markdown;
-  return { updatedMarkdown: updated, removed };
+  let best: { start: number; end: number; score: number } | null = null;
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!NOTE_START_PATTERN.test(lines[i])) continue;
+
+    let end = i;
+    while (end + 1 < lines.length && isNoteBodyLine(lines[end + 1])) {
+      end += 1;
+    }
+
+    const blockQuery = lines[i].replace(NOTE_START_PATTERN, '').trim();
+    const targetMatch = lines.slice(i, end + 1).join('\n').match(TARGET_COMMENT_PATTERN);
+    const blockTarget = targetMatch ? unescapeTargetText(targetMatch[1]) : '';
+
+    // Exact identity is what the reader's delete button always supplies; the
+    // looser comparison only rescues notes whose stored text drifted (hand
+    // edits, whitespace/collapse differences) and needs enough text on both
+    // sides to be safe.
+    let score = 0;
+    for (const anchor of anchors) {
+      if (blockTarget === anchor || blockQuery === anchor) {
+        score += 2;
+      } else if (
+        anchor.length >= MIN_PARTIAL_ANCHOR_LENGTH &&
+        ((blockQuery.includes(anchor)) ||
+          (blockTarget.length >= MIN_PARTIAL_ANCHOR_LENGTH &&
+            (blockTarget.includes(anchor) || anchor.includes(blockTarget))))
+      ) {
+        score += 1;
+      }
+    }
+
+    // Strictly greater, so the first of equally good candidates wins.
+    if (score > 0 && (best === null || score > best.score)) {
+      best = { start: i, end, score };
+      if (score === anchors.length * 2) break;
+    }
+    i = end;
+  }
+
+  if (!best) {
+    return { updatedMarkdown: markdown, removed: false };
+  }
+
+  // Cut from the note's first character to the start of the line after it...
+  const cutStart = lineStarts[best.start];
+  let cutEnd = best.end + 1 < lines.length ? lineStarts[best.end + 1] : markdown.length;
+
+  // ...plus the blank separator line the note was inserted with, but only when
+  // real content follows it: a note that ends the document instead hands that
+  // trailing whitespace back below so the file keeps a single final newline.
+  const separator = lines[best.end + 1];
+  if (separator !== undefined && separator.trim() === '' && best.end + 2 < lines.length) {
+    cutEnd = lineStarts[best.end + 2];
+  }
+
+  const head = markdown.slice(0, cutStart);
+  const tail = markdown.slice(cutEnd);
+  if (tail.trim() === '') {
+    const eol = markdown.includes('\r\n') ? '\r\n' : '\n';
+    return { updatedMarkdown: `${head.replace(/\s+$/, '')}${eol}`, removed: true };
+  }
+
+  return { updatedMarkdown: `${head}${tail}`, removed: true };
 }

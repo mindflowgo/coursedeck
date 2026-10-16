@@ -5,7 +5,7 @@
   import DOMPurify from 'dompurify';
   import { getApiBaseUrl } from '$lib/api';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
-  import { confirmDialog } from '$lib/dialog';
+  import ConfirmDialog from './ConfirmDialog.svelte';
   import { onMount } from 'svelte';
   import {
     afterPaint,
@@ -90,6 +90,15 @@
   let { markdown, courseId, onDeleteNote, onOpenDocument }: Props = $props();
 
   let containerEl: HTMLElement | null = $state(null);
+
+  /** Note awaiting confirmation, held until the reader confirms the deletion. */
+  let pendingNoteDelete: { target: string; query: string } | null = $state(null);
+
+  function confirmNoteDelete() {
+    const pending = pendingNoteDelete;
+    pendingNoteDelete = null;
+    if (pending) onDeleteNote?.(pending.target, pending.query);
+  }
 
   function escapeHtml(str: string): string {
     return str
@@ -565,13 +574,10 @@
     if (delBtn) {
       e.preventDefault();
       e.stopPropagation();
-      const query = delBtn.getAttribute('data-query') || '';
-      const target = delBtn.getAttribute('data-target') || '';
-      confirmDialog('Delete this AI study note?', 'Delete Study Note').then((confirmed) => {
-        if (confirmed) {
-          onDeleteNote?.(target, query);
-        }
-      });
+      pendingNoteDelete = {
+        target: delBtn.getAttribute('data-target') || '',
+        query: delBtn.getAttribute('data-query') || ''
+      };
       return;
     }
 
@@ -681,6 +687,17 @@
 >
   {@html renderedHtml}
 </div>
+
+<!-- Sibling of the reader (not inside it): `.markdown-section` uses
+     content-visibility, which would otherwise become the fixed overlay's box. -->
+<ConfirmDialog
+  isOpen={pendingNoteDelete !== null}
+  title="Delete this AI note?"
+  message="The note is removed from this document and the change is saved to disk."
+  confirmLabel="Delete note"
+  onConfirm={confirmNoteDelete}
+  onCancel={() => (pendingNoteDelete = null)}
+/>
 
 <style>
   :global(.postit-card summary::-webkit-details-marker),

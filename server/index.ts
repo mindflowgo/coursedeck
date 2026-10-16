@@ -122,4 +122,9 @@ try {
 
 console.log(`[ILC Backend] Running on http://127.0.0.1:${server.port}`);
 console.log(`[ILC Backend] Data directory: ${getDataDir()}`);
-console.log(`[ILC Backend] Frontend dist: ${APP_BUILD_DIR}`);
+// Only meaningful from a repo checkout: inside a compiled sidecar
+// `import.meta.dir` points into the bundled executable, so the resolved path
+// is not a real directory and static serving is skipped.
+if (fs.existsSync(APP_BUILD_DIR)) {
+  console.log(`[ILC Backend] Frontend dist: ${APP_BUILD_DIR}`);
+}

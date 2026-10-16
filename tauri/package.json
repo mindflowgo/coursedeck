@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "bun run ../scripts/preflight-build.ts && tauri build",
     "build:mac": "tauri build --bundles dmg",
-    "build:win": "tauri build --bundles nsis",
-    "build:portable": "bun run ../scripts/build-portable.ts",
-    "build:win:portable": "bun run ../scripts/build-portable.ts",
+    "build:win": "bun run ../scripts/preflight-build.ts && tauri build --bundles nsis",
+    "build:portable": "bun run --cwd .. tauri:build:portable",
+    "build:win:portable": "bun run --cwd .. tauri:build:win:portable",
     "cargo:check": "cargo check",
     "cargo:build": "cargo build --release"
   },

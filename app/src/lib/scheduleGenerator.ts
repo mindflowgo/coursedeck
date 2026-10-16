@@ -1,9 +1,10 @@
-import rrulePkg from 'rrule';
+// Named import on purpose: rrule's ESM entry (`module` field) has no default
+// export, so the old `import rrulePkg from 'rrule'` shim typechecked and ran
+// under Vite/Bun's runtime interop but broke `bun build --compile` (used by
+// `bun run server:compile` and both Tauri build paths).
+import { RRule } from 'rrule';
 import type { SchedulePreferences } from './schedule';
 
-// Handle CJS / ESM interop across Vite SSR, Node, and Bun
-const rruleModule: any = (rrulePkg as any)?.default || rrulePkg;
-const RRule: typeof import('rrule').RRule = rruleModule.RRule || rruleModule;
 import type { CourseManifest } from './parser/courseIngest';
 import { ScheduleParser } from './parser/scheduleParser';
 

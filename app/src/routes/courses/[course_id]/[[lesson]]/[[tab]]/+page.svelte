@@ -1245,7 +1245,7 @@
 
   function handleDeleteNote(targetText: string, query: string) {
     const current = tabContents[activeTab] || '';
-    const { updatedMarkdown, removed } = removeAnnotation(current, targetText || query);
+    const { updatedMarkdown, removed } = removeAnnotation(current, targetText, query);
     if (removed) {
       tabContents[activeTab] = updatedMarkdown;
       saveCurrentTab();
@@ -1834,8 +1834,12 @@
         <!-- Top-Right Action Controls (Sticky): direct child of the scroll
              container. Negative top offsets cancel the container's py padding
              (p-4 = 16px, sm:p-8 = 32px) so the row pins ~2px below the
-             header line instead of 16-32px down. -->
-        <div class="sticky -top-[14px] sm:-top-[30px] z-30 flex justify-end px-8 sm:px-12 pt-0.5 mt-1 -mb-[30px] pointer-events-none">
+             header line instead of 16-32px down.
+             z-[15] is deliberate: above the article's own floating overlays
+             (image size toolbar, z-10) but below the header (z-20), because
+             this workspace creates no stacking context — at z-30 the buttons
+             painted over the header and its open popovers. -->
+        <div class="sticky -top-[14px] sm:-top-[30px] z-[15] flex justify-end px-8 sm:px-12 pt-0.5 mt-1 -mb-[30px] pointer-events-none">
           <div class="pointer-events-auto flex items-center space-x-2">
             {#if isEditing}
               <button

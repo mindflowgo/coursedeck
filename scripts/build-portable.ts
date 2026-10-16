@@ -16,6 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { zipSync } from 'fflate';
+import { assertReleaseArtifactsWritable } from './preflight-build';
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const TAURI_DIR = path.join(ROOT_DIR, 'tauri');
@@ -108,7 +109,11 @@ function main(): void {
 
   console.log(`[Portable Build] Preparing portable build for ${productName} v${version}...`);
 
-  // 2. Locate makensis.exe (for the optional single-file launcher)
+  // 2. A running copy of the app owns the release binaries it was built from;
+  //    fail here with an actionable message rather than inside cargo.
+  assertReleaseArtifactsWritable();
+
+  // 3. Locate makensis.exe (for the optional single-file launcher)
   function findMakeNsis(): string | null {
     const whichCmd = 'where.exe';
     const checkPath = spawnSync(whichCmd, ['makensis'], { encoding: 'utf-8' });
@@ -139,7 +144,9 @@ function main(): void {
     console.log(`[Portable Build] Using NSIS compiler: ${makensisPath}`);
   }
 
-  // 3. Ensure the backend sidecar is compiled (tauri/server.exe)
+  // 4. Ensure the backend sidecar is compiled (tauri/server.exe). The root
+  //    wrapper (`tauri:build:portable`) always compiles it first, so reaching
+  //    this branch means the script was run directly.
   const serverBinaryName = 'server.exe';
   const serverBinaryPath = path.join(TAURI_DIR, serverBinaryName);
   if (!fs.existsSync(serverBinaryPath)) {
@@ -152,25 +159,40 @@ function main(): void {
     if (compileRes.status !== 0) {
       fail('Failed to compile server sidecar.');
     }
+  } else {
+    // Freshness is the caller's job (or `bun run server:compile`); print it so
+    // a stale sidecar is visible in the build log rather than silently shipped.
+    const stats = fs.statSync(serverBinaryPath);
+    console.log(
+      `[Portable Build] Packaging sidecar ${serverBinaryName} ` +
+        `(${(stats.size / (1024 * 1024)).toFixed(1)} MB, built ${stats.mtime.toISOString()}).`
+    );
   }
 
-  // 4. Build the Tauri release executable without bundling. The caller
+  // 5. Build the Tauri release executable without bundling. The caller
   //    (tauri:build:portable) already built the frontend, so the config
   //    override skips beforeBuildCommand to avoid a redundant second build.
   const portableConfPath = path.join(TAURI_DIR, 'tauri.portable.conf.json');
-  fs.writeFileSync(portableConfPath, JSON.stringify({ build: { beforeBuildCommand: '' } }, null, 2));
-  console.log('[Portable Build] Building Tauri binary (release mode, no-bundle)...');
-  const tauriBuildRes = spawnSync(
-    'bunx',
-    ['tauri', 'build', '--no-bundle', '--config', 'tauri.portable.conf.json'],
-    { cwd: TAURI_DIR, stdio: 'inherit', shell: true }
-  );
-  fs.unlinkSync(portableConfPath);
+  const tauriBuildRes = (() => {
+    fs.writeFileSync(portableConfPath, JSON.stringify({ build: { beforeBuildCommand: '' } }, null, 2));
+    console.log('[Portable Build] Building Tauri binary (release mode, no-bundle)...');
+    try {
+      return spawnSync(
+        'bunx',
+        ['tauri', 'build', '--no-bundle', '--config', 'tauri.portable.conf.json'],
+        { cwd: TAURI_DIR, stdio: 'inherit', shell: true }
+      );
+    } finally {
+      // The override is temporary config, not an artifact: never leave it behind
+      // (it would show up as an untracked file in tauri/).
+      if (fs.existsSync(portableConfPath)) fs.unlinkSync(portableConfPath);
+    }
+  })();
   if (tauriBuildRes.status !== 0) {
     fail('Tauri build failed.');
   }
 
-  // 5. Verify built binaries (cargo names the binary after the package, not productName)
+  // 6. Verify built binaries (cargo names the binary after the package, not productName)
   const releaseDir = path.join(TAURI_DIR, 'target', 'release');
   const mainExeName = 'ilc-study-tool.exe';
   const mainExePath = path.join(releaseDir, mainExeName);
@@ -178,7 +200,7 @@ function main(): void {
     fail(`Main executable not found at: ${mainExePath}`);
   }
 
-  // 6. Assemble the version-stamped portable folder (PRIMARY artifact)
+  // 7. Assemble the version-stamped portable folder (PRIMARY artifact)
   const portableBundleDir = path.join(releaseDir, 'bundle', 'portable');
   fs.mkdirSync(portableBundleDir, { recursive: true });
 
@@ -191,7 +213,7 @@ function main(): void {
   fs.copyFileSync(serverBinaryPath, path.join(unpackedAppDir, serverBinaryName));
   fs.writeFileSync(path.join(unpackedAppDir, 'README-Portable.txt'), portableReadmeText(productName, version), 'utf-8');
 
-  // 7. Zip + checksum (primary distribution artifact)
+  // 8. Zip + checksum (primary distribution artifact)
   const zipPath = path.join(portableBundleDir, `${folderName}.zip`);
   console.log('[Portable Build] Zipping portable folder...');
   zipDirectory(unpackedAppDir, zipPath, folderName);
@@ -204,7 +226,7 @@ function main(): void {
   console.log(`  sha256: ${checksum}`);
   console.log(`- Unpacked Folder:        ${unpackedAppDir}`);
 
-  // 8. Optional single-file NSIS launcher (secondary; AV false-positive risk)
+  // 9. Optional single-file NSIS launcher (secondary; AV false-positive risk)
   if (!wantSingleFileLauncher) {
     console.log('- Single-file Launcher:   skipped (makensis not found)');
     console.log('========================================\n');
