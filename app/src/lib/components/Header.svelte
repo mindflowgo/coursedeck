@@ -50,7 +50,7 @@
   }
 </script>
 
-<header class="h-14 border-b border-stone-200 dark:border-stone-800 bg-white/95 dark:bg-stone-900/95 px-4 backdrop-blur flex items-center justify-between z-20 shrink-0">
+<header class="h-14 border-b border-stone-200 dark:border-stone-800 bg-white/95 dark:bg-stone-900/95 px-4 backdrop-blur flex items-center justify-between z-40 shrink-0">
   <!-- Left: Back button, Home, & Breadcrumbs -->
   <div class="flex items-center space-x-2 overflow-hidden">
     <button
