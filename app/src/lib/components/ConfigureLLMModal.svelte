@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiFetch } from '$lib/api';
+  import { LLM_PROVIDER_PRESETS, getProviderPreset, isPublicIpUrl } from '$lib/llmProviders';
   import { X, Server, Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight } from 'lucide-svelte';
 
   interface Props {
@@ -11,80 +12,85 @@
   let { isOpen, onClose, onConfigured }: Props = $props();
 
   let provider = $state('openai_compatible');
-  let baseUrl = $state('http://localhost:11434/v1');
+  let baseUrl = $state(getProviderPreset('openai_compatible').defaultBaseUrl);
   let apiKey = $state('');
   let authHeaderType: 'bearer' | 'api_key' | 'both' = $state('bearer');
   let model = $state('');
   let temperature = $state(0.3);
+  /** Card being edited; lets the server reuse its stored API key when the field is left blank. */
+  let cardId = $state<string | undefined>(undefined);
 
   const REQUEST_TIMEOUT_STEPS: readonly number[] = [30, 60, 90, 120, 150, 300, 600];
   let timeoutSeconds = $state(150);
 
   let isTesting = $state(false);
+  let isSaving = $state(false);
   let statusMessage = $state<{ success: boolean; text: string } | null>(null);
   let hasStoredApiKey = $state(false);
 
   $effect(() => {
     if (isOpen) {
-      // Clean up any legacy API key from localStorage
-      if (typeof localStorage !== 'undefined') {
-        localStorage.removeItem('ilc_llm_apiKey');
-      }
-
-      // Load config from server
+      // Load the ACTIVE model card from the server (single source of truth)
       apiFetch('/api/llm')
         .then((res) => res.json())
         .then((data) => {
           if (data && data.config) {
+            cardId = data.config.id;
             provider = data.config.provider || 'openai_compatible';
-            baseUrl = data.config.baseUrl || 'http://localhost:11434/v1';
+            baseUrl = data.config.baseUrl || getProviderPreset(provider).defaultBaseUrl;
             model = data.config.model ?? '';
             authHeaderType = data.config.authHeaderType || 'bearer';
             temperature = data.config.temperature ?? 0.3;
             timeoutSeconds = data.config.timeoutSeconds ?? 150;
             hasStoredApiKey = Boolean(data.config.hasApiKey);
-          } else if (typeof localStorage !== 'undefined') {
-            provider = localStorage.getItem('ilc_llm_provider') || 'openai_compatible';
-            baseUrl = localStorage.getItem('ilc_llm_baseUrl') || 'http://localhost:11434/v1';
-            authHeaderType = (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer';
-            model = localStorage.getItem('ilc_llm_model') ?? '';
-            temperature = parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3');
-            timeoutSeconds = Number(localStorage.getItem('ilc_llm_timeout')) || 150;
           }
         })
         .catch(() => {});
     }
   });
 
-  function handleSaveAndContinue() {
+  /** Preset change swaps the example URL in unless the user typed their own. */
+  function handleProviderChange(nextProvider: string) {
+    const unchanged = !baseUrl.trim() || baseUrl.trim() === getProviderPreset(provider).defaultBaseUrl;
+    provider = nextProvider;
+    if (unchanged) baseUrl = getProviderPreset(nextProvider).defaultBaseUrl;
+  }
+
+  async function handleSaveAndContinue() {
+    if (isSaving) return;
     const cleanModel = model.trim();
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('ilc_llm_provider', provider);
-      localStorage.setItem('ilc_llm_baseUrl', baseUrl);
-      localStorage.removeItem('ilc_llm_apiKey');
-      localStorage.setItem('ilc_llm_authHeaderType', authHeaderType);
-      localStorage.setItem('ilc_llm_model', cleanModel);
-      localStorage.setItem('ilc_llm_temp', temperature.toString());
-      localStorage.setItem('ilc_llm_timeout', timeoutSeconds.toString());
+    if (!baseUrl.trim()) {
+      statusMessage = { success: false, text: 'A Base URL is required (e.g. http://localhost:1234/v1).' };
+      return;
     }
 
-    // Sync to server immediately so background worker uses CURRENT active settings
-    apiFetch('/api/llm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'save_config',
-        config: {
-          provider,
-          baseUrl,
-          apiKey: apiKey || undefined,
-          authHeaderType,
-          model: cleanModel,
-          temperature,
-          timeoutSeconds
-        }
-      })
-    }).catch((err) => console.warn('Failed to sync LLM config to server:', err));
+    isSaving = true;
+    // Save first so the background worker is guaranteed to see the new model.
+    try {
+      const res = await apiFetch('/api/llm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'save_config',
+          config: {
+            cardId,
+            provider,
+            baseUrl,
+            apiKey: apiKey || undefined,
+            authHeaderType,
+            model: cleanModel,
+            temperature,
+            timeoutSeconds
+          }
+        })
+      });
+      if (!res.ok) throw new Error(`Save failed (HTTP ${res.status})`);
+    } catch (err: any) {
+      statusMessage = { success: false, text: err?.message || 'Failed to save the AI model — check the Base URL.' };
+      return;
+    } finally {
+      isSaving = false;
+    }
 
     onConfigured();
     onClose();
@@ -101,6 +107,7 @@
         body: JSON.stringify({
           action: 'test',
           config: {
+            cardId,
             provider,
             baseUrl,
             apiKey,
@@ -127,21 +134,6 @@
     }
   }
 
-  function isPublicIp(urlStr: string): boolean {
-    try {
-      const clean = urlStr.trim();
-      if (!clean) return false;
-      const host = new URL(clean.startsWith('http') ? clean : `http://${clean}`).hostname;
-      const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-      if (!match) return false;
-      const a = Number(match[1]);
-      const b = Number(match[2]);
-      if (a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return false;
-      return true;
-    } catch {
-      return false;
-    }
-  }
 </script>
 
 {#if isOpen}
@@ -173,12 +165,13 @@
           <label for="modal-provider" class="text-xs font-medium text-stone-700 dark:text-stone-300">Provider</label>
           <select
             id="modal-provider"
-            bind:value={provider}
+            value={provider}
+            onchange={(event) => handleProviderChange(event.currentTarget.value)}
             class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
           >
-            <option value="openai_compatible">OpenAI-Compatible (Ollama, vLLM, LMStudio, OpenRouter, Local)</option>
-            <option value="gemini">Google Gemini (OpenAI compatibility endpoint)</option>
-            <option value="ollama">Ollama Local</option>
+            {#each LLM_PROVIDER_PRESETS as preset (preset.id)}
+              <option value={preset.id}>{preset.label}</option>
+            {/each}
           </select>
         </div>
 
@@ -188,11 +181,11 @@
             id="modal-base-url"
             type="text"
             bind:value={baseUrl}
-            placeholder="http://localhost:11434/v1"
+            placeholder={getProviderPreset(provider).defaultBaseUrl}
             class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-950 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
           />
-          <p class="text-[10px] text-stone-400 dark:text-stone-500">For free local AI with Ollama, run <code>ollama run llama3</code></p>
-          {#if isPublicIp(baseUrl)}
+          <p class="text-[10px] text-stone-400 dark:text-stone-500">{getProviderPreset(provider).hint}</p>
+          {#if isPublicIpUrl(baseUrl)}
             <p class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
               Note: Direct IP access to cloud APIs (like DeepSeek, OpenAI, Groq) is blocked by Cloudflare (error 1003). Use the domain name (e.g. <code>https://api.deepseek.com</code>) instead of an IP.
             </p>
@@ -201,12 +194,12 @@
 
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
-            <label for="modal-model-name" class="text-xs font-medium text-stone-700 dark:text-stone-300">Model Name (optional)</label>
+            <label for="modal-model-name" class="text-xs font-medium text-stone-700 dark:text-stone-300">Model ID (optional)</label>
             <input
               id="modal-model-name"
               type="text"
               bind:value={model}
-              placeholder="e.g. gpt-4o-mini, llama3 (or blank)"
+              placeholder="e.g. gpt-4o-mini, qwen2.5-7b"
               class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-950 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
             />
           </div>
@@ -295,10 +288,16 @@
           </button>
           <button
             onclick={handleSaveAndContinue}
-            class="flex items-center space-x-1.5 px-4 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition shadow-2xs cursor-pointer"
+            disabled={isSaving}
+            class="flex items-center space-x-1.5 px-4 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition shadow-2xs cursor-pointer disabled:opacity-50 disabled:cursor-default"
           >
-            <span>Save & Generate</span>
-            <ArrowRight class="w-3.5 h-3.5" />
+            {#if isSaving}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+              <span>Saving...</span>
+            {:else}
+              <span>Save & Generate</span>
+              <ArrowRight class="w-3.5 h-3.5" />
+            {/if}
           </button>
         </div>
       </div>

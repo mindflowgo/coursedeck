@@ -23,11 +23,22 @@
     Sun,
     Moon,
     Monitor,
-    ZoomIn
+    ZoomIn,
+    Plus,
+    Trash2
   } from 'lucide-svelte';
   import { theme } from '$lib/theme.svelte';
   import { zoom } from '$lib/zoom.svelte';
   import { ZOOM_STEPS } from '$lib/zoomLevels';
+  import { LLM_PROVIDER_PRESETS, getProviderPreset, isPublicIpUrl } from '$lib/llmProviders';
+  import {
+    createLlmCardDraft,
+    fetchLlmStore,
+    saveLlmStore,
+    setActiveLlmCard,
+    testLlmCard,
+    type LlmCardDraft
+  } from '$lib/llmClient';
 
   const isTauri = isTauriEnvironment();
 
@@ -57,151 +68,177 @@
   let backupFileInput: HTMLInputElement | null = $state(null);
   let backupMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  let provider = $state('openai_compatible');
-  let baseUrl = $state('http://localhost:11434/v1');
-  let apiKey = $state('');
-  let authHeaderType: 'bearer' | 'api_key' | 'both' = $state('bearer');
-  let model = $state('');
-  let temperature = $state(0.3);
-
-  /** Per-request LLM deadline in seconds (30–600). 150 = generous default for standard providers. */
+  // AI model cards state
   const REQUEST_TIMEOUT_STEPS: readonly number[] = [30, 60, 90, 120, 150, 300, 600];
-  let timeoutSeconds = $state(150);
+  let llmCards = $state<LlmCardDraft[]>([]);
+  let llmActiveId = $state<string | null>(null);
+  let savedActiveId = $state<string | null>(null);
+  /** Card ids that exist on the server; anything else needs Save Models first. */
+  let savedCardIds = $state<Set<string>>(new Set());
+  let llmMessage = $state('');
+  let isSavingModels = $state(false);
+  let testingCardId = $state<string | null>(null);
+  let cardTestResults = $state<Record<string, { success: boolean; message: string }>>({});
+  let isLoadingModels = $state(true);
+  /** True when the stored models could not be read — saving is blocked so an empty list can't wipe them. */
+  let modelsLoadFailed = $state(false);
 
-  let isTestingConnection = $state(false);
-  let connectionTestResult: { success: boolean; message: string } | null = $state(null);
+  let activeCard = $derived(llmCards.find((c) => c.id === llmActiveId) ?? (llmCards.length > 0 ? llmCards[0] : null));
 
   let isReparsing = $state(false);
   let reparseResult: string = $state('');
-  let saveMessage = $state('');
-  let hasStoredApiKey = $state(false);
 
   let isCompressingImages = $state(false);
   let compressImagesResult: string = $state('');
 
-  function loadSettings() {
-    // Clean up any legacy API key from localStorage
-    if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem('ilc_llm_apiKey');
-    }
-
-    // Load canonical config from server
-    apiFetch('/api/llm')
-      .then((res) => res.json())
-      .then((data) => {
-        if (data && data.config) {
-          provider = data.config.provider || 'openai_compatible';
-          baseUrl = data.config.baseUrl || 'http://localhost:11434/v1';
-          model = data.config.model ?? '';
-          authHeaderType = data.config.authHeaderType || 'bearer';
-          temperature = data.config.temperature ?? 0.3;
-          timeoutSeconds = data.config.timeoutSeconds ?? 150;
-          hasStoredApiKey = Boolean(data.config.hasApiKey);
-        } else if (typeof localStorage !== 'undefined') {
-          provider = localStorage.getItem('ilc_llm_provider') || 'openai_compatible';
-          baseUrl = localStorage.getItem('ilc_llm_baseUrl') || 'http://localhost:11434/v1';
-          authHeaderType = (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer';
-          model = localStorage.getItem('ilc_llm_model') ?? '';
-          temperature = parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3');
-          timeoutSeconds = Number(localStorage.getItem('ilc_llm_timeout')) || 150;
-        }
-      })
-      .catch(() => {});
+  function flashLlmMessage(text: string) {
+    llmMessage = text;
+    setTimeout(() => {
+      if (llmMessage === text) llmMessage = '';
+    }, 3000);
   }
 
-  function saveSettings() {
-    const cleanModel = model.trim();
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('ilc_llm_provider', provider);
-      localStorage.setItem('ilc_llm_baseUrl', baseUrl);
-      localStorage.removeItem('ilc_llm_apiKey');
-      localStorage.setItem('ilc_llm_authHeaderType', authHeaderType);
-      localStorage.setItem('ilc_llm_model', cleanModel);
-      localStorage.setItem('ilc_llm_temp', temperature.toString());
-      localStorage.setItem('ilc_llm_timeout', timeoutSeconds.toString());
-      saveMessage = 'Settings saved.';
-      setTimeout(() => {
-        saveMessage = '';
-      }, 2500);
-    }
-
-    // Sync to server immediately so background queue worker uses CURRENT active settings
-    apiFetch('/api/llm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'save_config',
-        config: {
-          provider,
-          baseUrl,
-          apiKey: apiKey || undefined,
-          authHeaderType,
-          model: cleanModel,
-          temperature,
-          timeoutSeconds
-        }
-      })
-    })
-      .then(() => {
-        if (apiKey) {
-          hasStoredApiKey = true;
-          apiKey = '';
-        }
-      })
-      .catch((err) => console.warn('Failed to sync LLM config to server:', err));
+  function applySnapshot(snapshot: Awaited<ReturnType<typeof fetchLlmStore>>) {
+    if (!snapshot) return;
+    llmCards = snapshot.cards.map((c) => ({ ...c, apiKey: '' }));
+    llmActiveId = snapshot.activeId ?? snapshot.cards[0]?.id ?? null;
+    savedActiveId = llmActiveId;
+    savedCardIds = new Set(snapshot.cards.map((c) => c.id));
   }
 
-  async function testConnection() {
-    isTestingConnection = true;
-    connectionTestResult = null;
-
-    try {
-      const res = await apiFetch('/api/llm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'test',
-          config: {
-            provider,
-            baseUrl,
-            apiKey,
-            authHeaderType,
-            model,
-            temperature,
-            timeoutSeconds
-          }
-        })
-      });
-
-      const data = await res.json();
-      connectionTestResult = {
-        success: data.success,
-        message: data.message || (data.success ? 'Connected successfully!' : 'Connection failed')
-      };
-    } catch (err: any) {
-      connectionTestResult = {
-        success: false,
-        message: err?.message || 'Error contacting LLM endpoint'
-      };
-    } finally {
-      isTestingConnection = false;
+  async function loadModelCards() {
+    isLoadingModels = true;
+    const snapshot = await fetchLlmStore();
+    isLoadingModels = false;
+    if (!snapshot) {
+      // Never present a failed read as "no models configured": saving that empty
+      // list would wipe the real store.
+      modelsLoadFailed = true;
+      llmMessage = 'Failed to read the saved models from the backend — reload the page before saving.';
+      return;
     }
+    modelsLoadFailed = false;
+    applySnapshot(snapshot);
   }
 
-  function isPublicIp(urlStr: string): boolean {
-    try {
-      const clean = urlStr.trim();
-      if (!clean) return false;
-      const host = new URL(clean.startsWith('http') ? clean : `http://${clean}`).hostname;
-      const match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-      if (!match) return false;
-      const a = Number(match[1]);
-      const b = Number(match[2]);
-      if (a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31)) return false;
-      return true;
-    } catch {
+  /** Provider select: swap the preset's default URL in unless the user typed a custom one. */
+  function applyProviderPreset(card: LlmCardDraft, providerId: string) {
+    const previousDefault = getProviderPreset(card.provider).defaultBaseUrl;
+    const untouched = !card.baseUrl.trim() || card.baseUrl.trim() === previousDefault;
+    card.provider = providerId;
+    const preset = getProviderPreset(providerId);
+    if (untouched) card.baseUrl = preset.defaultBaseUrl;
+    card.label = preset.label;
+  }
+
+  function addModelCard() {
+    const draft = createLlmCardDraft();
+    llmCards.push(draft);
+    llmActiveId = draft.id;
+  }
+
+  /** Save button: persists the list; an empty list is confirmed inside saveModelCards. */
+  async function handleSaveModelsClick() {
+    await saveModelCards();
+  }
+
+  /**
+   * Persists the current card list.
+   *
+   * `allowEmpty` is only ever set by `removeModelCard` after the user confirmed
+   * removing the last model; the server rejects an empty list without it, so an
+   * empty list produced by a bug cannot silently remove every model.
+   */
+  async function saveModelCards(opts?: { allowEmpty?: boolean }): Promise<boolean> {
+    if (modelsLoadFailed) {
+      llmMessage = 'Failed to save: the current models could not be read from the backend. Reload the page first.';
       return false;
     }
+
+    // A card without a Base URL cannot be stored, so saying so beats letting the
+    // save silently drop it (which is how a working config could disappear).
+    const blank = llmCards.find((c) => !c.baseUrl.trim());
+    if (blank) {
+      llmMessage = `Failed to save: "${blank.label || 'a model card'}" needs a Base URL.`;
+      return false;
+    }
+
+    isSavingModels = true;
+    llmMessage = '';
+    try {
+      const snapshot = await saveLlmStore(llmCards, llmActiveId, { allowEmpty: opts?.allowEmpty === true });
+      applySnapshot(snapshot);
+      flashLlmMessage('Models saved.');
+      return true;
+    } catch (err: any) {
+      llmMessage = err?.message || 'Failed to save models.';
+      return false;
+    } finally {
+      isSavingModels = false;
+    }
+  }
+
+  async function removeModelCard(id: string) {
+    const card = llmCards.find((c) => c.id === id);
+    const confirmed = await confirmDialog(
+      `Remove "${card?.label ?? 'this model'}" from the model list?`,
+      'Remove Model'
+    );
+    if (!confirmed) return;
+
+    const isLastSavedCard = savedCardIds.has(id) && savedCardIds.size === 1;
+    llmCards = llmCards.filter((c) => c.id !== id);
+    delete cardTestResults[id];
+    if (llmActiveId === id) {
+      llmActiveId = llmCards[0]?.id ?? null;
+    }
+    // Persist immediately so generation can never keep using a removed model.
+    // Removing the final model clears the list, which needs its own confirmation.
+    if (savedCardIds.has(id) && !(await saveModelCards({ allowEmpty: isLastSavedCard }))) {
+      // Resync instead of showing a local list that disagrees with the server.
+      await loadModelCards();
+    }
+  }
+
+  /** Active model switch persists immediately — every AI feature follows it. */
+  async function selectActiveModel(id: string) {
+    const previous = llmActiveId;
+    llmActiveId = id;
+    if (id === savedActiveId) return;
+
+    // A card that has not been saved yet cannot be activated server-side.
+    if (!savedCardIds.has(id)) {
+      if (!(await saveModelCards())) llmActiveId = previous;
+      return;
+    }
+
+    try {
+      await setActiveLlmCard(id);
+      savedActiveId = id;
+      flashLlmMessage('Active model switched — all AI features now use it.');
+    } catch (err: any) {
+      llmActiveId = previous;
+      llmMessage = err?.message || 'Failed to switch the active model.';
+    }
+  }
+
+  async function testModelCard(card: LlmCardDraft) {
+    testingCardId = card.id;
+    delete cardTestResults[card.id];
+    const result = await testLlmCard(
+      {
+        provider: card.provider,
+        baseUrl: card.baseUrl,
+        apiKey: card.apiKey || undefined,
+        authHeaderType: card.authHeaderType,
+        model: card.model,
+        temperature: card.temperature,
+        timeoutSeconds: card.timeoutSeconds
+      },
+      card.id
+    );
+    cardTestResults = { ...cardTestResults, [card.id]: result };
+    testingCardId = null;
   }
 
   async function reparseAllCourses() {
@@ -529,7 +566,7 @@
   }
 
   onMount(() => {
-    loadSettings();
+    loadModelCards();
     loadStorageInfo();
   });
 </script>
@@ -814,137 +851,240 @@
   <!-- Panel 2: LLM Configuration & Maintenance -->
   <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs divide-y divide-stone-100 dark:divide-stone-800 text-xs">
     <!-- LLM Provider Header & Inputs -->
-    <div class="p-3 space-y-2">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center space-x-2">
-          <Server class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
-          <span class="font-medium text-stone-900 dark:text-stone-100">LLM Provider Configuration</span>
-        </div>
-
-        <div class="flex items-center space-x-1.5">
-          <button
-            onclick={testConnection}
-            disabled={isTestingConnection}
-            class="flex items-center space-x-1 px-2 py-1 rounded border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-[11px] text-stone-700 dark:text-stone-300 font-medium transition cursor-pointer"
-          >
-            {#if isTestingConnection}
-              <Loader2 class="w-3 h-3 animate-spin" />
-              <span>Testing...</span>
-            {:else}
-              <span>Test Connection</span>
-            {/if}
-          </button>
-
-          <button
-            onclick={saveSettings}
-            class="flex items-center space-x-1 px-2.5 py-1 rounded bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-[11px] font-medium hover:bg-stone-800 dark:hover:bg-white transition cursor-pointer"
-          >
-            <Save class="w-3 h-3" />
-            <span>Save</span>
-          </button>
-        </div>
+    <div class="p-3 space-y-3 relative">
+      <div class="flex items-center space-x-2 pr-64">
+        <Server class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
+        <span class="font-medium text-stone-900 dark:text-stone-100">AI Models</span>
+        <span class="text-[11px] text-stone-400 dark:text-stone-500 hidden sm:inline">Configure providers & models for generation</span>
       </div>
 
-      {#if connectionTestResult}
-        <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {connectionTestResult.success ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
-          {#if connectionTestResult.success}
-            <CheckCircle2 class="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
-          {:else}
-            <AlertCircle class="w-3 h-3 shrink-0 text-rose-600 dark:text-rose-400" />
-          {/if}
-          <span>{connectionTestResult.message}</span>
-        </div>
-      {/if}
+      <!-- Action buttons absolutely positioned on top-right of LLM card -->
+      <div class="absolute -top-1 right-3 flex items-center space-x-1.5">
+        {#if llmMessage}
+          <span class="text-[11px] px-2 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium">
+            {llmMessage}
+          </span>
+        {/if}
 
-      {#if saveMessage}
-        <p class="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">{saveMessage}</p>
-      {/if}
+        <button
+          type="button"
+          onclick={addModelCard}
+          class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer"
+          title="Add a new model provider"
+        >
+          <Plus class="w-3.5 h-3.5" />
+          <span>New</span>
+        </button>
 
-      <!-- Dense Inputs Grid -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-0.5">
-        <div>
-          <label for="provider-select" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Provider</label>
-          <select
-            id="provider-select"
-            bind:value={provider}
-            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+        {#if activeCard}
+          <button
+            type="button"
+            onclick={() => removeModelCard(activeCard.id)}
+            class="flex items-center space-x-1 px-2.5 py-1 rounded border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/40 hover:bg-rose-100/60 dark:hover:bg-rose-900/40 text-xs font-medium text-rose-700 dark:text-rose-300 transition cursor-pointer"
+            title="Delete this model"
           >
-            <option value="openai_compatible">OpenAI-Compatible (Ollama, vLLM, LMStudio)</option>
-            <option value="gemini">Google Gemini (via OpenAI Endpoint)</option>
-            <option value="ollama">Ollama Local</option>
-          </select>
-        </div>
+            <Trash2 class="w-3.5 h-3.5" />
+          </button>
 
-        <div>
-          <label for="base-url-input" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Base URL</label>
-          <input
-            id="base-url-input"
-            type="text"
-            bind:value={baseUrl}
-            placeholder="http://localhost:11434/v1"
-            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-          />
-          {#if isPublicIp(baseUrl)}
-            <p class="text-[10px] text-amber-600 dark:text-amber-400 mt-1 font-medium">
+          <button
+            type="button"
+            onclick={handleSaveModelsClick}
+            disabled={isSavingModels}
+            class="flex items-center space-x-1 px-3 py-1 rounded bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+          >
+            {#if isSavingModels}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+              <span>Saving...</span>
+            {:else}
+              <Save class="w-3.5 h-3.5" />
+              <span>Save</span>
+            {/if}
+          </button>
+        {/if}
+      </div>
+
+      <!-- Active Model Selector Bar -->
+      <div class="flex items-center space-x-2 p-2 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950">
+        <label for="active-model-select" class="text-xs font-semibold text-stone-700 dark:text-stone-300 shrink-0">
+          Active Model:
+        </label>
+        {#if llmCards.length > 0}
+          <select
+            id="active-model-select"
+            value={llmActiveId}
+            onchange={(e) => selectActiveModel(e.currentTarget.value)}
+            class="flex-1 w-full px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          >
+            {#each llmCards as card (card.id)}
+              <option value={card.id}>
+                {card.label || 'Untitled Model'} ({getProviderPreset(card.provider).label})
+              </option>
+            {/each}
+          </select>
+        {:else}
+          <span class="text-xs text-stone-500 italic">No models configured</span>
+        {/if}
+      </div>
+
+      <!-- ONLY show fields for the active model -->
+      {#if activeCard}
+        {@const card = activeCard}
+        {@const preset = getProviderPreset(card.provider)}
+        <div class="p-3 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 space-y-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div>
+              <label for="model-label-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                Model Label / Description
+              </label>
+              <input
+                id="model-label-{card.id}"
+                type="text"
+                bind:value={card.label}
+                placeholder="e.g. DeepSeek (Cloud), Local Qwen 2.5"
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              />
+            </div>
+
+            <div>
+              <label for="provider-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                Provider Preset
+              </label>
+              <select
+                id="provider-select-{card.id}"
+                value={card.provider}
+                onchange={(e) => applyProviderPreset(card, e.currentTarget.value)}
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              >
+                {#each LLM_PROVIDER_PRESETS as p (p.id)}
+                  <option value={p.id}>{p.label}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div>
+              <label for="base-url-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                Base URL <span class="text-rose-500">*</span>
+              </label>
+              <input
+                id="base-url-input-{card.id}"
+                type="text"
+                bind:value={card.baseUrl}
+                placeholder={preset.defaultBaseUrl}
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              />
+              <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">{preset.hint}</p>
+            </div>
+
+            <div>
+              <label for="model-id-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                Model ID <span class="text-[10px] text-stone-400 dark:text-stone-500">(optional)</span>
+              </label>
+              <input
+                id="model-id-input-{card.id}"
+                type="text"
+                bind:value={card.model}
+                placeholder="e.g. gpt-4o-mini, deepseek-chat, qwen2.5-7b"
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div>
+              <label for="api-key-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                API Key <span class="text-[10px] text-stone-400 dark:text-stone-500">{card.hasApiKey ? '(saved — blank keeps it)' : '(optional)'}</span>
+              </label>
+              <input
+                id="api-key-input-{card.id}"
+                type="password"
+                bind:value={card.apiKey}
+                placeholder={card.hasApiKey ? '••••••••' : 'sk-...'}
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              />
+            </div>
+
+            <div>
+              <label for="auth-type-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Auth Header</label>
+              <select
+                id="auth-type-select-{card.id}"
+                bind:value={card.authHeaderType}
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              >
+                <option value="bearer">Bearer &#123;key&#125; (Standard)</option>
+                <option value="api_key">api-key: &#123;key&#125; (Azure)</option>
+                <option value="both">Both (Bearer + api-key)</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="timeout-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                Request Timeout <span class="text-[10px] text-stone-400 dark:text-stone-500">(per attempt)</span>
+              </label>
+              <select
+                id="timeout-select-{card.id}"
+                bind:value={card.timeoutSeconds}
+                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+              >
+                {#each REQUEST_TIMEOUT_STEPS as step (step)}
+                  <option value={step}>{step}s{step === 150 ? ' (default)' : ''}</option>
+                {/each}
+              </select>
+            </div>
+          </div>
+
+          {#if isPublicIpUrl(card.baseUrl)}
+            <p class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
               Note: Direct IP access to cloud APIs (like DeepSeek, OpenAI, Groq) is blocked by Cloudflare (error 1003). Use the domain name (e.g. <code>https://api.deepseek.com</code>) instead of an IP.
             </p>
           {/if}
-        </div>
 
-        <div>
-          <label for="model-name-input" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Model Name (optional)</label>
-          <input
-            id="model-name-input"
-            type="text"
-            bind:value={model}
-            placeholder="gpt-4o-mini, llama3"
-            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-          />
-        </div>
+          {#if card.apiKey && !card.hasApiKey}
+            <p class="text-[10px] text-stone-400 dark:text-stone-500">New API key will be stored when you press Save Models.</p>
+          {/if}
 
-        <div>
-          <label for="auth-type-select" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Auth Header</label>
-          <select
-            id="auth-type-select"
-            bind:value={authHeaderType}
-            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          <!-- Test Connection & Status -->
+          <div class="flex items-center justify-between pt-1">
+            <button
+              type="button"
+              onclick={() => testModelCard(card)}
+              disabled={testingCardId === card.id || !card.baseUrl.trim()}
+              class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-[11px] font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer disabled:opacity-50"
+            >
+              {#if testingCardId === card.id}
+                <Loader2 class="w-3 h-3 animate-spin" />
+                <span>Testing Connection...</span>
+              {:else}
+                <span>Test Connection</span>
+              {/if}
+            </button>
+
+            {#if cardTestResults[card.id]}
+              <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {cardTestResults[card.id].success ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
+                {#if cardTestResults[card.id].success}
+                  <CheckCircle2 class="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                {:else}
+                  <AlertCircle class="w-3 h-3 shrink-0 text-rose-600 dark:text-rose-400" />
+                {/if}
+                <span>{cardTestResults[card.id].message}</span>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {:else if !isLoadingModels}
+        <div class="p-6 text-center rounded-lg border border-dashed border-stone-300 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-950/50">
+          <p class="text-xs text-stone-500 dark:text-stone-400 mb-2">No AI model configured yet.</p>
+          <button
+            type="button"
+            onclick={addModelCard}
+            class="inline-flex items-center space-x-1 px-3 py-1.5 rounded-md bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer"
           >
-            <option value="bearer">Bearer &#123;key&#125; (Standard)</option>
-            <option value="api_key">api-key: &#123;key&#125; (Azure)</option>
-            <option value="both">Both (Bearer + api-key)</option>
-          </select>
+            <Plus class="w-3.5 h-3.5" />
+            <span>Add a Model Provider</span>
+          </button>
         </div>
-
-        <!-- Request Timeout Row -->
-        <div>
-          <label for="timeout-select" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-            Request Timeout <span class="text-[10px] text-stone-400 dark:text-stone-500">(per attempt)</span>
-          </label>
-          <select
-            id="timeout-select"
-            bind:value={timeoutSeconds}
-            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-          >
-            {#each REQUEST_TIMEOUT_STEPS as step (step)}
-              <option value={step}>{step}s{step === 150 ? ' (default)' : ''}</option>
-            {/each}
-          </select>
-          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-1">Raise this if generation fails with "timed out".</p>
-        </div>
-
-        <div class="sm:col-span-2">
-          <label for="api-key-input" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-            API Key <span class="text-[10px] text-stone-400 dark:text-stone-500">(optional for local models)</span>
-          </label>
-          <input
-            id="api-key-input"
-            type="password"
-            bind:value={apiKey}
-            placeholder={hasStoredApiKey ? 'Saved on server (leave blank to keep)' : 'sk-...'}
-            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-          />
-        </div>
-      </div>
+      {/if}
     </div>
 
     <!-- Maintenance Row -->

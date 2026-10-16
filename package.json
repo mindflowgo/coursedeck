@@ -19,7 +19,7 @@
     "tauri:build:win:portable": "bun run tauri:build:portable",
     "check:server": "tsc --noEmit -p tsconfig.json",
     "test:unit": "bun test app/src",
-    "test": "bun run test:unit && bun run scripts/api-contract.ts && bun run scripts/sidecar-e2e.ts && bun run app/scripts/pdf-smoke.ts"
+    "test": "bun run test:unit && bun run scripts/api-contract.ts && bun run scripts/sidecar-e2e.ts && bun run scripts/active-model-e2e.ts && bun run app/scripts/pdf-smoke.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1",

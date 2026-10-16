@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiFetch } from '$lib/api';
+  import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
@@ -317,8 +318,8 @@
   }
 
   async function enqueueScheduleGeneration(promptWithPreferences: string, preferences?: SchedulePreferences) {
-    const localConfig = getLocalLLMConfig();
-    if (!localConfig?.baseUrl) {
+    const activeModel = await getActiveLlmCard();
+    if (!activeModel?.baseUrl) {
       isLLMModalOpen = true;
       return;
     }
@@ -335,9 +336,9 @@
       'color: #2563eb; font-weight: bold;'
     );
     console.log('Target Model & Endpoint:', {
-      model: localConfig.model || '(server default)',
-      provider: localConfig.provider || 'openai_compatible',
-      baseUrl: localConfig.baseUrl
+      model: activeModel.model || activeModel.label || '(server default)',
+      provider: activeModel.provider,
+      baseUrl: activeModel.baseUrl
     });
     console.log('--- SYSTEM PROMPT TEMPLATE & PREFERENCES ---\n' + promptWithPreferences);
     console.log('--- PREFERENCES OBJECT ---', preferences);
@@ -358,7 +359,6 @@
           lessonId: 'schedule',
           lessonTitle: 'Course Study Schedule',
           customPrompt: promptWithPreferences,
-          customConfig: localConfig,
           preferences
         })
       });
@@ -401,8 +401,8 @@
       return;
     }
 
-    const localConfig = getLocalLLMConfig();
-    if (!localConfig?.baseUrl) {
+    const activeModel = await getActiveLlmCard();
+    if (!activeModel?.baseUrl) {
       isLLMModalOpen = true;
       return;
     }
@@ -423,7 +423,6 @@
           type,
           forceRegenerate: true,
           customPrompt: activePrompt,
-          customConfig: localConfig,
           async: true
         })
       });
@@ -888,26 +887,11 @@
     tabContents[activeTab] = serializeWithFrontmatter(currentParsed.frontmatter, newBody);
   }
 
-  function getLocalLLMConfig() {
-    if (typeof localStorage === 'undefined') return undefined;
-    localStorage.removeItem('ilc_llm_apiKey');
-    const baseUrl = localStorage.getItem('ilc_llm_baseUrl');
-    if (!baseUrl) return undefined;
-    return {
-      provider: localStorage.getItem('ilc_llm_provider') || 'openai_compatible',
-      baseUrl,
-      authHeaderType: (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer',
-      model: (localStorage.getItem('ilc_llm_model') ?? '').trim(),
-      temperature: parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3'),
-      timeoutSeconds: Number(localStorage.getItem('ilc_llm_timeout')) || undefined
-    };
-  }
-
   async function triggerAIGeneration() {
     if (activeTab === 'lesson') return;
 
-    const localConfig = getLocalLLMConfig();
-    if (!localConfig?.baseUrl) {
+    const activeModel = await getActiveLlmCard();
+    if (!activeModel?.baseUrl) {
       isLLMModalOpen = true;
       return;
     }
@@ -917,8 +901,8 @@
 
       console.log(`\n[ILC AI Enqueue: ${tabDisplayName}]`);
       console.log(`- Course: ${(courseId || '').toUpperCase()} | Lesson: ${selectedLessonId} (${currentLessonTitle})`);
-      console.log(`- Endpoint: ${localConfig.baseUrl}`);
-      console.log(`- Model: ${localConfig.model || '(server default)'}`);
+      console.log(`- Endpoint: ${activeModel.baseUrl}`);
+      console.log(`- Model: ${activeModel.model || '(server default)'}`);
       console.log(`- System Prompt: "${activeSystemPrompt.slice(0, 120)}..."`);
 
       const res = await apiFetch('/api/queue', {
@@ -930,8 +914,7 @@
           lessonId: selectedLessonId,
           lessonTitle: currentLessonTitle,
           tab: activeTab,
-          customPrompt: activeSystemPrompt,
-          customConfig: localConfig
+          customPrompt: activeSystemPrompt
         })
       });
 
@@ -1152,8 +1135,8 @@
 
   async function queueAllMissing() {
     if (!courseId) return;
-    const localConfig = getLocalLLMConfig();
-    if (!localConfig?.baseUrl) {
+    const activeModel = await getActiveLlmCard();
+    if (!activeModel?.baseUrl) {
       isLLMModalOpen = true;
       return;
     }
@@ -1166,8 +1149,7 @@
         body: JSON.stringify({
           action: 'enqueue',
           courseId,
-          tabs: ['summary', 'cheatsheet', 'test'],
-          customConfig: localConfig
+          tabs: ['summary', 'cheatsheet', 'test']
         })
       });
 
@@ -1196,21 +1178,8 @@
   let pendingAnnotationQuery: { selectedText: string; query: string } | null = $state(null);
 
   async function handleAnnotationSubmit(selectedText: string, query: string) {
-    let provider = '';
-    let baseUrl = '';
-    let model = '';
-    let authHeaderType: 'bearer' | 'api_key' | 'both' = 'bearer';
-    let temperature = 0.3;
-
-    if (typeof localStorage !== 'undefined') {
-      provider = localStorage.getItem('ilc_llm_provider') || '';
-      baseUrl = localStorage.getItem('ilc_llm_baseUrl') || '';
-      model = localStorage.getItem('ilc_llm_model') || '';
-      authHeaderType = (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer';
-      temperature = parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3');
-    }
-
-    if (!baseUrl) {
+    const activeModel = await getActiveLlmCard();
+    if (!activeModel?.baseUrl) {
       pendingAnnotationQuery = { selectedText, query };
       isLLMModalOpen = true;
       return;
@@ -1237,14 +1206,6 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'generate',
-          config: {
-            provider,
-            baseUrl,
-            authHeaderType,
-            model,
-            temperature,
-            sessionId
-          },
           sessionId,
           systemPrompt: noteSystemPrompt,
           userPrompt

@@ -55,21 +55,6 @@
     }
   }
 
-  function getLocalLLMConfig() {
-    if (typeof localStorage === 'undefined') return undefined;
-    localStorage.removeItem('ilc_llm_apiKey');
-    const baseUrl = localStorage.getItem('ilc_llm_baseUrl');
-    if (!baseUrl) return undefined;
-    return {
-      provider: localStorage.getItem('ilc_llm_provider') || 'openai_compatible',
-      baseUrl,
-      authHeaderType: (localStorage.getItem('ilc_llm_authHeaderType') as any) || 'bearer',
-      model: (localStorage.getItem('ilc_llm_model') ?? '').trim(),
-      temperature: parseFloat(localStorage.getItem('ilc_llm_temp') || '0.3'),
-      timeoutSeconds: Number(localStorage.getItem('ilc_llm_timeout')) || undefined
-    };
-  }
-
   async function uploadFiles() {
     if (!selectedFiles.length) {
       errorMessage = 'Please select at least one lesson file (.zip, .mhtml, .html).';
@@ -117,7 +102,6 @@
 
       if (autoGenerateAI) {
         try {
-          const localConfig = getLocalLLMConfig();
           await apiFetch('/api/queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -126,8 +110,7 @@
               courseId: finalCourseId,
               lessonId: mode === 'replace' ? targetLessonId : undefined,
               lessonTitle: mode === 'replace' ? targetLessonTitle : undefined,
-              tabs: ['summary', 'cheatsheet', 'test'],
-              customConfig: localConfig
+              tabs: ['summary', 'cheatsheet', 'test']
             })
           });
         } catch (queueErr) {
