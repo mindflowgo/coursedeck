@@ -2,8 +2,12 @@
   import { Marked } from 'marked';
   import { extractMathFromMarkdown, restoreMathTokens } from '$lib/markdown/mathRenderer';
   import { repairMarkdownTables } from '$lib/markdown/tableRepair';
+  import { convertInlineStylesForDark } from '$lib/markdown/darkModeStyles';
+  import { getCheckpointColor } from '$lib/checkpoints';
+  import type { Checkpoint } from '$lib/studyStateTypes';
   import DOMPurify from 'dompurify';
   import { getApiBaseUrl } from '$lib/api';
+  import { theme } from '$lib/theme.svelte';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
   import { confirmDialog } from '$lib/dialog';
   import { onMount } from 'svelte';
@@ -83,11 +87,13 @@
   interface Props {
     markdown: string;
     courseId: string;
+    /** Location checkpoints for this document; drawn as flag dividers in the reader. */
+    checkpoints?: Checkpoint[];
     onDeleteNote?: (targetText: string, query: string) => void;
     onOpenDocument?: (url: string, title?: string) => void;
   }
 
-  let { markdown, courseId, onDeleteNote, onOpenDocument }: Props = $props();
+  let { markdown, courseId, checkpoints = [], onDeleteNote, onOpenDocument }: Props = $props();
 
   let containerEl: HTMLElement | null = $state(null);
 
@@ -416,6 +422,13 @@
     return sanitized;
   });
 
+  // Inline styles that arrived from ingested course HTML (raw kept tables) are
+  // converted for dark mode here — separate from `renderedHtml` so toggling the
+  // theme re-runs only this cheap pass, never the marked/KaTeX pipeline.
+  let displayHtml = $derived.by(() =>
+    theme.isDark ? convertInlineStylesForDark(renderedHtml) : renderedHtml
+  );
+
   function sanitizeRenderedHtml(dirty: string): string {    if (typeof window === 'undefined') return dirty;
     const purify = typeof DOMPurify.sanitize === 'function' ? DOMPurify : (DOMPurify as any)(window);
     if (!purify || typeof purify.sanitize !== 'function') return dirty;
@@ -663,12 +676,115 @@
   }
 
   $effect(() => {
-    if (renderedHtml && containerEl) {
+    if (displayHtml && containerEl) {
       const timer = setTimeout(() => {
         setupNoteInteractions();
       }, 20);
       return () => clearTimeout(timer);
     }
+  });
+
+  /** Whitespace-collapsed, markdown-stripped text used to re-find an anchor. */
+  function normalizeText(value: string): string {
+    return value
+      .replace(/[*_`~#>|]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  const ANCHOR_SELECTOR = 'p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, th, dt, dd';
+
+  /**
+   * Reconciles the flag dividers with the current checkpoints: drops dividers
+   * whose checkpoint is gone, refreshes label/colour on the rest, and inserts
+   * any that are still missing. Re-running is cheap and idempotent, so a rename,
+   * recolour or delete shows immediately (Svelte does not re-run `{@html}` when
+   * only `checkpoints` changed).
+   */
+  function injectCheckpointDividers() {
+    if (!containerEl) return;
+
+    const wanted = new Map(checkpoints.map((c) => [c.id, c]));
+    const present = new Set<string>();
+    for (const divider of Array.from(containerEl.querySelectorAll<HTMLElement>('.checkpoint-divider'))) {
+      const id = divider.dataset.checkpointId ?? '';
+      const checkpoint = wanted.get(id);
+      if (!checkpoint) {
+        divider.remove();
+        continue;
+      }
+      present.add(id);
+      updateCheckpointDivider(divider, checkpoint);
+    }
+
+    const missing = checkpoints.filter((c) => !present.has(c.id));
+    if (missing.length === 0) return;
+
+    const candidates = Array.from(containerEl.querySelectorAll<HTMLElement>(ANCHOR_SELECTOR));
+    for (const checkpoint of missing) {
+      const anchor = normalizeText(checkpoint.anchor ?? '');
+      if (anchor.length < 3) continue;
+
+      const match = candidates.find((el) => {
+        if (el.closest('.postit-container')) return false;
+        const text = normalizeText(el.textContent ?? '');
+        return text.includes(anchor) || anchor.includes(text);
+      });
+      if (!match) continue;
+
+      // Never splice a block into a table's cell structure.
+      const target = match.closest('table') ?? match;
+      if (target === containerEl || target.parentNode == null) continue;
+
+      containerEl.insertBefore(buildCheckpointDivider(checkpoint), target);
+    }
+  }
+
+  function dividerColors(checkpoint: Checkpoint) {
+    return getCheckpointColor(checkpoint.color);
+  }
+
+  function dividerInnerHtml(checkpoint: Checkpoint): string {
+    return `
+      <span class="checkpoint-rule"></span>
+      <span class="checkpoint-marker ${dividerColors(checkpoint).flag}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></svg>
+        <span class="checkpoint-marker-label">${escapeHtml(checkpoint.label)}</span>
+      </span>
+      <span class="checkpoint-rule"></span>`;
+  }
+
+  function buildCheckpointDivider(checkpoint: Checkpoint): HTMLElement {
+    const divider = document.createElement('div');
+    divider.className = 'checkpoint-divider';
+    divider.dataset.checkpointId = checkpoint.id;
+    divider.dataset.checkpointColor = checkpoint.color;
+    divider.title = checkpoint.label;
+    divider.innerHTML = dividerInnerHtml(checkpoint);
+    return divider;
+  }
+
+  function updateCheckpointDivider(divider: HTMLElement, checkpoint: Checkpoint): void {
+    divider.title = checkpoint.label;
+    if (divider.dataset.checkpointColor !== checkpoint.color) {
+      divider.dataset.checkpointColor = checkpoint.color;
+      divider.innerHTML = dividerInnerHtml(checkpoint);
+      return;
+    }
+    const label = divider.querySelector('.checkpoint-marker-label');
+    if (label && label.textContent !== checkpoint.label) label.textContent = checkpoint.label;
+  }
+
+  $effect(() => {
+    // Re-inject after every render (the postit effect's counterpart).
+    const html = displayHtml;
+    const markers = checkpoints;
+    void html;
+    void markers;
+    if (!containerEl) return;
+    const timer = setTimeout(injectCheckpointDividers, 30);
+    return () => clearTimeout(timer);
   });
 </script>
 
@@ -679,7 +795,7 @@
   onclick={handleContainerClick}
   class="markdown-body prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2"
 >
-  {@html renderedHtml}
+  {@html displayHtml}
 </div>
 
 <style>
@@ -744,5 +860,55 @@
   :global(.markdown-section) {
     content-visibility: auto;
     contain-intrinsic-size: 1px 800px;
+  }
+
+  /* Location-checkpoint dividers injected into the rendered body. */
+  :global(.checkpoint-divider) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 1.25rem 0;
+    scroll-margin-top: 5rem;
+  }
+
+  :global(.checkpoint-divider .checkpoint-rule) {
+    flex: 1 1 0%;
+    height: 1px;
+    background-color: rgb(214 211 209);
+  }
+
+  :global(.dark .checkpoint-divider .checkpoint-rule) {
+    background-color: rgb(68 64 60);
+  }
+
+  :global(.checkpoint-divider .checkpoint-marker) {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.15rem 0.6rem;
+    border-radius: 9999px;
+    border: 1px solid rgb(214 211 209);
+    background-color: rgb(250 250 249);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  :global(.dark .checkpoint-divider .checkpoint-marker) {
+    border-color: rgb(68 64 60);
+    background-color: rgb(28 25 23);
+  }
+
+  :global(.checkpoint-divider .checkpoint-marker svg) {
+    width: 0.875rem;
+    height: 0.875rem;
+    flex-shrink: 0;
+  }
+
+  :global(.checkpoint-divider .checkpoint-marker-label) {
+    max-width: 16rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>

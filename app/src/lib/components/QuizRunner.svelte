@@ -8,9 +8,11 @@
   interface Props {
     testMarkdown: string;
     onSaveMarkdown?: (newMarkdown: string) => void;
+    /** Fired when the student submits the test — drives practice-test completion tracking. */
+    onSubmit?: (result: { score: number; total: number }) => void;
   }
 
-  let { testMarkdown }: Props = $props();
+  let { testMarkdown, onSubmit }: Props = $props();
 
   // Quiz text is plain text with embedded LaTeX (\(...\), $...$): render the math
   // via KaTeX and escape everything else, then sanitize for {@html} injection.
@@ -55,6 +57,14 @@
 
   function submitQuiz() {
     submitted = true;
+    // Compute the score inline rather than reading the derived, which is only
+    // guaranteed to be current after this update flushes.
+    const total = parsedQuiz.questions.length;
+    const score = parsedQuiz.questions.reduce(
+      (acc, q) => acc + (q.correctAnswer && userAnswers[q.number] === q.correctAnswer ? 1 : 0),
+      0
+    );
+    onSubmit?.({ score, total });
   }
 
   function resetQuiz() {

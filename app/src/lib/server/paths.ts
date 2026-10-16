@@ -276,6 +276,14 @@ export function getPromptsDir(): string {
   return path.join(getDataDir(), 'prompts');
 }
 
+/**
+ * Per-course user study state (reading progress, completions, checkpoints).
+ * Lives beside the course data so the recursive data backup picks it up.
+ */
+export function getLessonProgressDir(): string {
+  return path.join(getDataDir(), 'lessonProgress');
+}
+
 export function getLlmConfigPath(): string {
   return path.join(getDataDir(), 'llm_config.json');
 }

@@ -25,11 +25,14 @@
     Monitor,
     ZoomIn,
     Plus,
-    Trash2
+    Trash2,
+    Flag
   } from 'lucide-svelte';
   import { theme } from '$lib/theme.svelte';
   import { zoom } from '$lib/zoom.svelte';
   import { ZOOM_STEPS } from '$lib/zoomLevels';
+  import { DEFAULT_PROGRESSION_FLAGS, type ProgressionFlags } from '$lib/studyStateTypes';
+  import { fetchProgression, saveProgression } from '$lib/studyStateClient';
   import { LLM_PROVIDER_PRESETS, getProviderPreset, isPublicIpUrl } from '$lib/llmProviders';
   import {
     createLlmCardDraft,
@@ -84,6 +87,36 @@
   let modelsLoadFailed = $state(false);
 
   let activeCard = $derived(llmCards.find((c) => c.id === llmActiveId) ?? (llmCards.length > 0 ? llmCards[0] : null));
+
+  // Reading progression (which tabs keep their own scroll position)
+  const progressionOptions: { key: keyof ProgressionFlags; label: string; note: string }[] = [
+    { key: 'lesson', label: 'Lessons', note: '' },
+    { key: 'summary', label: 'Summary', note: '' },
+    { key: 'cheatsheet', label: 'Cheatsheet', note: '' },
+    { key: 'test', label: 'Practice Test', note: 'default' }
+  ];
+  let progression = $state<ProgressionFlags>({ ...DEFAULT_PROGRESSION_FLAGS });
+  let progressionMessage = $state('');
+
+  async function loadProgression() {
+    progression = await fetchProgression();
+  }
+
+  async function toggleProgression(key: keyof ProgressionFlags) {
+    const next: ProgressionFlags = { ...progression, [key]: !progression[key] };
+    progression = next;
+    const saved = await saveProgression(next);
+    if (!saved) {
+      progression = await fetchProgression();
+      progressionMessage = 'Could not save — please try again.';
+    } else {
+      progression = saved;
+      progressionMessage = 'Saved';
+    }
+    setTimeout(() => {
+      if (progressionMessage === 'Saved') progressionMessage = '';
+    }, 2000);
+  }
 
   let isReparsing = $state(false);
   let reparseResult: string = $state('');
@@ -569,6 +602,7 @@
   onMount(() => {
     loadModelCards();
     loadStorageInfo();
+    void loadProgression();
   });
 </script>
 
@@ -845,6 +879,43 @@
           {/if}
           <span>{backupMessage.text}</span>
         </div>
+      {/if}
+    </div>
+  </section>
+
+  <!-- Reading progression -->
+  <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs text-xs">
+    <div class="p-3 space-y-2">
+      <div class="flex items-center space-x-2">
+        <Flag class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
+        <div>
+          <span class="font-medium text-stone-900 dark:text-stone-100">Reading progression</span>
+          <span class="text-[11px] text-stone-400 dark:text-stone-500 ml-1.5">How tabs share your scroll position</span>
+        </div>
+      </div>
+      <p class="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+        Tabs that are <span class="font-medium">not</span> independent share one reading position: scrolling halfway
+        down Lessons opens Summary halfway down too. An independent tab remembers its own position instead.
+      </p>
+      <div class="flex flex-wrap gap-x-4 gap-y-1.5 pt-0.5">
+        {#each progressionOptions as option (option.key)}
+          <label class="flex items-center space-x-1.5 text-[11px] text-stone-600 dark:text-stone-400 select-none cursor-pointer">
+            <input
+              type="checkbox"
+              checked={progression[option.key]}
+              onchange={() => toggleProgression(option.key)}
+              class="rounded border-stone-300 dark:border-stone-600 text-stone-900 dark:text-stone-100 focus:ring-stone-900 dark:focus:ring-stone-100 h-3 w-3 cursor-pointer"
+            />
+            <span>
+              {option.label} independent{option.note ? ` (${option.note})` : ''}
+            </span>
+          </label>
+        {/each}
+      </div>
+      {#if progressionMessage}
+        <p class="text-[11px] {progressionMessage === 'Saved' ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}">
+          {progressionMessage}
+        </p>
       {/if}
     </div>
   </section>

@@ -17,6 +17,8 @@
   import ScheduleViewer from '$lib/components/ScheduleViewer.svelte';
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
+  import CheckpointModal from '$lib/components/CheckpointModal.svelte';
+  import CheckpointsDropdown from '$lib/components/CheckpointsDropdown.svelte';
   import { parseFrontmatter, serializeWithFrontmatter } from '$lib/parser/frontmatter';
   import { validateScheduleMarkdown } from '$lib/parser/scheduleValidation';
   import { ScheduleParser } from '$lib/parser/scheduleParser';
@@ -53,14 +55,34 @@
     Plus,
     X,
     RefreshCw,
-    FileDown
+    FileDown,
+    Flag
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
   import { afterPaint, installPerfObservers, perf } from '$lib/perf';
   import { scrollMemoryKey, recallScroll, rememberScroll } from '$lib/scrollMemory';
+  import {
+    DEFAULT_PROGRESSION_FLAGS,
+    emptyStudyState,
+    isIndependentTab,
+    sharedProgress,
+    tabProgress,
+    currentLessonId as computeCurrentLessonId,
+    type CheckpointKind,
+    type ProgressionFlags,
+    type StudyState
+  } from '$lib/studyStateTypes';
+  import {
+    deleteCheckpointRequest,
+    fetchProgression,
+    fetchStudyState,
+    postCompletion,
+    putProgress,
+    updateCheckpointRequest
+  } from '$lib/studyStateClient';
 
-  let courseId = $derived($page.params.course_id);
+  let courseId = $derived($page.params.course_id ?? '');
   let course: CourseManifest | null = $state(null);
   let selectedLessonId: string = $state('');
   // Tab slugs: built-ins (lesson/summary/cheatsheet/test), course-scope
@@ -126,34 +148,104 @@
   let saveSuccessMessage = $state('');
   let isExportingPdf = $state(false);
 
-  // ---- Workspace scroll memory -------------------------------------------
+  // ---- Study state: reading progress, completions & checkpoints ----------
+  let studyState = $state<StudyState | null>(null);
+  let progressionFlags = $state<ProgressionFlags>({ ...DEFAULT_PROGRESSION_FLAGS });
+  let isCheckpointModalOpen = $state(false);
+  /** Reading-location snippet captured when the Add Checkpoint modal opens. */
+  let checkpointLocationAnchor = $state<string | null>(null);
+  /** Flips true once the study state has been fetched, so the scroll restore runs after. */
+  let studyStateReady = $state(false);
+
+  let orderedLessonIds = $derived.by((): string[] => {
+    if (!course) return [];
+    const ids: string[] = [];
+    for (const unit of course.units) {
+      for (const lesson of unit.lessons) ids.push(lesson.id);
+    }
+    return ids;
+  });
+  let currentCheckpointLessonId = $derived(computeCurrentLessonId(studyState, orderedLessonIds));
+  let lessonCheckpointCountForActive = $derived(
+    selectedLessonId
+      ? (studyState?.checkpoints ?? []).filter((c) => c.lessonId === selectedLessonId && c.kind === 'lesson').length
+      : 0
+  );
+  let activeLocationCheckpoints = $derived(
+    studyState && selectedLessonId && !isCourseScope && activeTab === 'lesson'
+      ? studyState.checkpoints.filter((c) => c.lessonId === selectedLessonId && c.kind === 'location')
+      : []
+  );
+  let isActiveLessonCompleted = $derived(
+    Boolean(selectedLessonId && studyState?.completions?.[selectedLessonId])
+  );
+  let isActiveLessonCurrent = $derived(
+    Boolean(selectedLessonId && selectedLessonId === currentCheckpointLessonId)
+  );
+
+  let studyStateSeq = 0;
+
+  async function loadStudyState() {
+    const seq = ++studyStateSeq;
+    const loaded = await fetchStudyState(courseId);
+    if (seq !== studyStateSeq) return; // superseded by a newer course load
+    studyState = loaded ?? emptyStudyState();
+    studyStateReady = true;
+  }
+
+  // ---- Workspace scroll memory & reading progression ---------------------
   // Every course/lesson/tab page remembers its own offset (tab_scroll:*), so
-  // switching tabs lands at the top for a first visit and back where the
-  // reader stopped on later ones.
+  // switching tabs lands at the top for a first visit and back where the reader
+  // stopped on later ones — but only for *independent* tabs. Tabs that are not
+  // independent share a single reading fraction per scope (lesson id or
+  // `course`), so moving 50% down Summary opens Lessons at 50%, and the fraction
+  // is persisted in the data folder (see $lib/server/studyState).
   let contentScroller = $state<HTMLDivElement | undefined>();
   let showScrollTop = $state(false);
   const SCROLL_TOP_BUTTON_AFTER = 400;
   const SCROLL_SAVE_DEBOUNCE_MS = 200;
+  const PROGRESS_SAVE_DEBOUNCE_MS = 700;
   let scrollSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let progressSaveTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingScroll: { key: string; top: number } | null = null;
+  let pendingProgress: { courseId: string; scope: string; tab?: string; progress: number } | null = null;
+  /** Suppresses progress writes while we are programmatically restoring scroll. */
+  let isRestoringScroll = false;
+  let restoreGeneration = 0;
 
-  function currentScrollKey(): string {
-    return scrollMemoryKey(courseId || '', isCourseScope ? 'course' : selectedLessonId, activeTab);
+  let currentScrollKey = $derived(
+    scrollMemoryKey(courseId || '', isCourseScope ? 'course' : selectedLessonId, activeTab)
+  );
+
+  let activeScope: string = $derived(isCourseScope ? 'course' : selectedLessonId);
+  let activeTabIsIndependent = $derived(isIndependentTab(activeTab, progressionFlags));
+
+  function scrollFraction(): number {
+    if (!contentScroller) return 0;
+    const max = contentScroller.scrollHeight - contentScroller.clientHeight;
+    if (max <= 0) return 0;
+    return Math.max(0, Math.min(1, contentScroller.scrollTop / max));
   }
 
   function handleContentScroll() {
-    if (!contentScroller) return;
+    if (!contentScroller || isRestoringScroll) return;
     const top = contentScroller.scrollTop;
     showScrollTop = top > SCROLL_TOP_BUTTON_AFTER;
     // Content swaps replace the page with a short loading spinner, which
     // clamps scrollTop to 0 — that is not the reader scrolling to the top,
     // so don't let it overwrite their remembered offset.
     if (isCourseScope ? isLoadingCourseDoc : isLoadingLesson) return;
-    // Capture key+offset now: by the time the debounce fires the user may be
-    // on another tab, and the write must target the page that was scrolled.
-    pendingScroll = { key: currentScrollKey(), top };
-    clearTimeout(scrollSaveTimer);
-    scrollSaveTimer = setTimeout(flushPendingScroll, SCROLL_SAVE_DEBOUNCE_MS);
+
+    if (activeTabIsIndependent) {
+      // Capture key+offset now: by the time the debounce fires the user may be
+      // on another tab, and the write must target the page that was scrolled.
+      pendingScroll = { key: currentScrollKey, top };
+      clearTimeout(scrollSaveTimer);
+      scrollSaveTimer = setTimeout(flushPendingScroll, SCROLL_SAVE_DEBOUNCE_MS);
+      scheduleProgressSave(activeScope, scrollFraction(), activeTab);
+    } else {
+      scheduleProgressSave(activeScope, scrollFraction());
+    }
   }
 
   function flushPendingScroll() {
@@ -165,20 +257,100 @@
     }
   }
 
+  function scheduleProgressSave(scope: string, progress: number, tab?: string) {
+    if (!scope || !courseId) return;
+    // Capture the course now: the debounce may fire after navigating away.
+    pendingProgress = { courseId, scope, tab, progress };
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = setTimeout(flushProgress, PROGRESS_SAVE_DEBOUNCE_MS);
+  }
+
+  async function flushProgress() {
+    clearTimeout(progressSaveTimer);
+    progressSaveTimer = undefined;
+    const patch = pendingProgress;
+    pendingProgress = null;
+    if (!patch) return;
+    const next = await putProgress(patch.courseId, patch.scope, patch.progress, patch.tab);
+    if (next) studyState = next;
+  }
+
   function scrollWorkspaceToTop() {
     contentScroller?.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
-  // Land the page now on screen at its remembered offset once its content is
-  // in the DOM ($effect runs after updates; course docs arrive async, hence
-  // the loading gate). Pages never scrolled start at the top.
+  /**
+   * Land the page at the right offset once its content is in the DOM. Independent
+   * tabs restore their exact remembered pixel offset; synced tabs restore the
+   * shared reading fraction. Reads `studyState` untracked so a later progress
+   * save cannot yank the reader back mid-scroll.
+   */
   $effect(() => {
-    const key = currentScrollKey();
+    const scope = activeScope;
+    const tab = activeTab;
+    const independent = activeTabIsIndependent;
     const isLoading = isCourseScope ? isLoadingCourseDoc : isLoadingLesson;
-    if (isLoading || !contentScroller) return;
-    contentScroller.scrollTop = recallScroll(key);
-    showScrollTop = contentScroller.scrollTop > SCROLL_TOP_BUTTON_AFTER;
+    const html = parsedActiveTab.body;
+    // Wait for the async study state so a synced tab lands at the saved
+    // fraction instead of the top; progress saves do not re-run this.
+    const ready = studyStateReady;
+    void html;
+    void ready;
+    if (isLoading || !contentScroller || !ready) return;
+
+    untrack(() => applyScrollRestore(scope, tab, independent));
   });
+
+  function applyScrollRestore(scope: string, tab: string, independent: boolean) {
+    const el = contentScroller;
+    if (!el) return;
+    const key = scrollMemoryKey(courseId || '', scope, tab);
+    const fraction = independent ? 0 : sharedProgress(studyState, scope);
+    const generation = ++restoreGeneration;
+    // A restore owns the flag only while it is settling; clearing it up front
+    // means an interrupted settle can never wedge scroll saving off.
+    isRestoringScroll = false;
+
+    if (independent) {
+      // Pixel memory is exact; fall back to the saved fraction so progress made
+      // in another browser still resumes here.
+      const remembered = recallScroll(key);
+      if (remembered > 0) {
+        el.scrollTop = remembered;
+      } else {
+        const max = el.scrollHeight - el.clientHeight;
+        const saved = tabProgress(studyState, scope, tab);
+        el.scrollTop = saved > 0 && max > 0 ? saved * max : 0;
+      }
+      showScrollTop = el.scrollTop > SCROLL_TOP_BUTTON_AFTER;
+      return;
+    }
+
+    // Fraction restore: `scrollHeight` is only an estimate until deferred
+    // sections lay out, so settle the target over a few frames (bailing out the
+    // moment the reader scrolls themselves) instead of landing short.
+    isRestoringScroll = true;
+    let frames = 0;
+    let lastSet = -1;
+    const settle = () => {
+      if (generation !== restoreGeneration || !contentScroller) return;
+      const scroller = contentScroller;
+      if (lastSet >= 0 && Math.abs(scroller.scrollTop - lastSet) > 4) {
+        // The reader took over — stop nudging their position.
+        isRestoringScroll = false;
+        return;
+      }
+      const max = scroller.scrollHeight - scroller.clientHeight;
+      const next = fraction > 0 && max > 0 ? fraction * max : 0;
+      scroller.scrollTop = next;
+      lastSet = next;
+      showScrollTop = next > SCROLL_TOP_BUTTON_AFTER;
+      frames += 1;
+      if (frames < 20) requestAnimationFrame(settle);
+      else isRestoringScroll = false;
+    };
+    requestAnimationFrame(settle);
+  }
 
   // Default prompt for active tab
   let defaultPromptForActiveTab = $derived.by(() => {
@@ -564,6 +736,7 @@
     );
     isCourseScope = false;
     isEditing = false;
+    isCheckpointModalOpen = false;
     // Schedule is course-only; custom tabs are checked against file existence in loadLesson.
     if (activeTab === 'schedule') {
       activeTab = 'lesson';
@@ -584,6 +757,7 @@
     console.log(`[NAV] selectCourseMode | from lesson=${selectedLessonId} tab=${activeTab}`);
     isCourseScope = true;
     isEditing = false;
+    isCheckpointModalOpen = false;
     if (!hasCourseDoc(activeTab)) {
       activeTab = 'lesson';
     }
@@ -1363,6 +1537,73 @@
     }
   }
 
+  // ---- Checkpoints -------------------------------------------------------
+  /**
+   * The visible text of the block at the top of the reading pane — the anchor
+   * a location checkpoint is re-found by when the lesson renders.
+   */
+  function captureLocationAnchor(): string | null {
+    if (typeof document === 'undefined' || !contentScroller) return null;
+    const rect = contentScroller.getBoundingClientRect();
+    if (rect.width < 4 || rect.height < 4) return null;
+    // Probe just inside the reading column, below the container's padding — at
+    // scrollTop 0 the very top is padding, which would hand back the container.
+    const x = rect.left + Math.min(60, rect.width / 2);
+    const y = rect.top + Math.min(48, Math.max(16, rect.height * 0.15));
+    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+    if (!hit || hit === contentScroller) return null;
+    const block = hit.closest('p, li, h1, h2, h3, h4, h5, h6, table, blockquote, pre, td, th');
+    if (!block || block === contentScroller) return null;
+    const text = (block.textContent || '').replace(/\s+/g, ' ').trim();
+    return text ? text.slice(0, 160) : null;
+  }
+
+  function openCheckpointModal() {
+    if (isCourseScope || !selectedLessonId) return;
+    // A location checkpoint only makes sense on the lesson body it will be drawn in.
+    checkpointLocationAnchor = activeTab === 'lesson' ? captureLocationAnchor() : null;
+    isCheckpointModalOpen = true;
+  }
+
+  function handleCheckpointCreated(state: StudyState) {
+    studyState = state;
+  }
+
+  async function handleRenameCheckpoint(id: string, label: string): Promise<boolean> {
+    const outcome = await updateCheckpointRequest(courseId, { id, label });
+    if (outcome.ok && outcome.state) {
+      studyState = outcome.state;
+      return true;
+    }
+    return false;
+  }
+
+  async function handleRecolorCheckpoint(id: string, color: string) {
+    const outcome = await updateCheckpointRequest(courseId, { id, color });
+    if (outcome.ok && outcome.state) studyState = outcome.state;
+  }
+
+  async function handleDeleteCheckpoint(id: string) {
+    const outcome = await deleteCheckpointRequest(courseId, id);
+    if (outcome.ok && outcome.state) studyState = outcome.state;
+  }
+
+  async function handleRenameCurrent(label: string): Promise<boolean> {
+    const outcome = await updateCheckpointRequest(courseId, { currentLabel: label });
+    if (outcome.ok && outcome.state) {
+      studyState = outcome.state;
+      return true;
+    }
+    return false;
+  }
+
+  /** Submitting a practice test marks the lesson complete and advances Current. */
+  async function handlePracticeTestSubmitted() {
+    if (isCourseScope || !selectedLessonId) return;
+    const next = await postCompletion(courseId, selectedLessonId);
+    if (next) studyState = next;
+  }
+
   async function handleChaptersUploaded(uploadedCourseId: string) {
     await loadCourse();
     if (selectedLessonId) {
@@ -1609,25 +1850,42 @@
     untrack(() => syncRoute());
   });
 
+  // Reload per-course study state whenever the course changes.
+  $effect(() => {
+    const id = courseId;
+    if (!id) return;
+    untrack(() => {
+      studyState = null;
+      studyStateReady = false;
+      loadStudyState();
+    });
+  });
+
   onMount(async () => {
     installPerfObservers();
     await loadPrompts();
+    progressionFlags = await fetchProgression();
     startQueueFeedback();
     schedulePdfPrewarm();
     if (typeof window !== 'undefined') {
       window.addEventListener('popstate', handlePopState);
-      window.addEventListener('pagehide', flushPendingScroll);
+      window.addEventListener('pagehide', flushPendingWrites);
     }
   });
 
   onDestroy(() => {
     if (typeof window !== 'undefined') {
       window.removeEventListener('popstate', handlePopState);
-      window.removeEventListener('pagehide', flushPendingScroll);
+      window.removeEventListener('pagehide', flushPendingWrites);
     }
-    flushPendingScroll();
+    flushPendingWrites();
     stopQueueFeedback();
   });
+
+  function flushPendingWrites() {
+    flushPendingScroll();
+    void flushProgress();
+  }
 
   // Current lesson title
   let currentLessonTitle = $derived.by(() => {
@@ -1682,8 +1940,21 @@
           {selectedLessonId}
           {activeTab}
           isCourseMode={isCourseScope}
+          checkpoints={studyState?.checkpoints ?? []}
+          currentLessonId={currentCheckpointLessonId}
           onSelectLesson={(id) => selectLesson(id)}
           onSelectCourseMode={() => selectCourseMode()}
+        />
+
+        <CheckpointsDropdown
+          {course}
+          studyState={studyState}
+          currentLessonId={currentCheckpointLessonId}
+          onNavigate={(id) => selectLesson(id)}
+          onRenameCheckpoint={handleRenameCheckpoint}
+          onRecolorCheckpoint={handleRecolorCheckpoint}
+          onDeleteCheckpoint={handleDeleteCheckpoint}
+          onRenameCurrent={handleRenameCurrent}
         />
 
         {#if !isCourseScope}
@@ -1866,6 +2137,17 @@
                 {/if}
               </button>
             {:else}
+              {#if !isCourseScope && selectedLessonId}
+                <button
+                  onclick={openCheckpointModal}
+                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer"
+                  title="Add a checkpoint bookmark for this lesson or your current location"
+                >
+                  <Flag class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+                  <span>Add Checkpoint</span>
+                </button>
+              {/if}
+
               <button
                 onclick={handleExportPDF}
                 disabled={isExportingPdf}
@@ -1925,6 +2207,7 @@
               {#key `${quizRunnerKey}-${parsedActiveTab.body}`}
                 <QuizRunner
                   testMarkdown={parsedActiveTab.body}
+                  onSubmit={handlePracticeTestSubmitted}
                 />
               {/key}
             </div>
@@ -2013,9 +2296,26 @@
               <MarkdownViewer
                 markdown={parsedActiveTab.body}
                 courseId={course.id}
+                checkpoints={activeLocationCheckpoints}
                 onDeleteNote={handleDeleteNote}
                 onOpenDocument={handleOpenDocument}
               />
+
+              {#if activeTab === 'lesson' && !isCourseScope && isActiveLessonCompleted}
+                <!-- End-of-lesson completion flag (the "Current" checkpoint lands here) -->
+                <div class="mt-8 flex items-center space-x-3">
+                  <div class="h-px flex-1 {isActiveLessonCurrent ? 'bg-emerald-300 dark:bg-emerald-800' : 'bg-stone-200 dark:bg-stone-800'}"></div>
+                  <span class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full border text-[11px] font-medium {isActiveLessonCurrent ? 'border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300' : 'border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-800/60 text-stone-500 dark:text-stone-400'}">
+                    <Flag class="w-3.5 h-3.5" />
+                    <span>
+                      {isActiveLessonCurrent && studyState?.currentLabel
+                        ? `${studyState.currentLabel} — lesson completed`
+                        : 'Lesson completed'}
+                    </span>
+                  </span>
+                  <div class="h-px flex-1 {isActiveLessonCurrent ? 'bg-emerald-300 dark:bg-emerald-800' : 'bg-stone-200 dark:bg-stone-800'}"></div>
+                </div>
+              {/if}
             </article>
           {/if}
         </div>
@@ -2050,6 +2350,19 @@
       title={activeDocument.title}
       courseTitle={course.title}
       onClose={handleCloseDocument}
+    />
+  {/if}
+
+  {#if course && !isCourseScope && selectedLessonId}
+    <CheckpointModal
+      isOpen={isCheckpointModalOpen}
+      courseId={course.id}
+      lessonId={selectedLessonId}
+      lessonTitle={currentLessonTitle || selectedLessonId}
+      locationAnchor={checkpointLocationAnchor}
+      lessonCheckpointCount={lessonCheckpointCountForActive}
+      onClose={() => (isCheckpointModalOpen = false)}
+      onCreated={handleCheckpointCreated}
     />
   {/if}
 

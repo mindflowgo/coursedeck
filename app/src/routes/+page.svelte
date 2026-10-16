@@ -1,7 +1,7 @@
 <script lang="ts">
   import Header from '$lib/components/Header.svelte';
   import UploadModal from '$lib/components/UploadModal.svelte';
-  import type { CourseManifest } from '$lib/parser/courseIngest';
+  import type { CourseManifest, CourseManifestLesson } from '$lib/parser/courseIngest';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import {
@@ -19,7 +19,8 @@
     MoreVertical,
     Pencil,
     Archive,
-    ArchiveRestore
+    ArchiveRestore,
+    Flag
   } from 'lucide-svelte';
   import RenameCourseModal from '$lib/components/RenameCourseModal.svelte';
   import { apiFetch, isTauriEnvironment } from '$lib/api';
@@ -39,6 +40,27 @@
   function openCourseDoc(courseId: string, tab: 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule') {
     goto(`/courses/${courseId.toLowerCase()}/course/${tab}`);
   }
+
+  /** Resolves the lesson a course's "Current" checkpoint points at. */
+  function currentLesson(course: CourseManifest) {
+    const id = course.study?.currentLessonId;
+    if (!id) return null;
+    for (const unit of course.units) {
+      const found = unit.lessons.find((lesson) => lesson.id === id);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /** courseId → the lesson its "Current" checkpoint sits on (for the card chip). */
+  let currentLessonsByCourse = $derived.by(() => {
+    const map: Record<string, CourseManifestLesson> = {};
+    for (const course of courses) {
+      const lesson = currentLesson(course);
+      if (lesson) map[course.id] = lesson;
+    }
+    return map;
+  });
 
   async function openCourseFolder(courseId: string, path?: string) {
     if (isTauriEnvironment()) {
@@ -349,6 +371,17 @@
                 <FileText class="w-3 h-3 text-stone-400 dark:text-stone-500" />
                 <span>{totalLessons} Lessons</span>
               </div>
+              {#if currentLessonsByCourse[course.id]}
+                {@const current = currentLessonsByCourse[course.id]}
+                <div
+                  class="flex items-center space-x-1 px-2 py-1 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300 max-w-full"
+                  title="{course.study?.currentLabel || 'Current'}: {current.id} {current.title}"
+                >
+                  <Flag class="w-3 h-3 shrink-0" />
+                  <span class="font-mono text-[10px] shrink-0">{current.id}</span>
+                  <span class="truncate max-w-[150px]">{current.title}</span>
+                </div>
+              {/if}
             <ArrowRight class="w-4 h-4 transform group-hover:translate-x-1 transition" />
             </div>
           </div>

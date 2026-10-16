@@ -27,6 +27,17 @@ import type { SchedulePreferences } from '../schedule';
 import { ScheduleParser } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
 import { createDataBackupZip, createDataBackupZipStream, restoreDataBackupZip } from './backup';
+import {
+  createCheckpoint,
+  deleteCheckpoint,
+  readStudyState,
+  recordCompletion,
+  recordProgress,
+  setCurrentLabel,
+  summarizeStudyState,
+  updateCheckpoint
+} from './studyState';
+import { DEFAULT_PROGRESSION_FLAGS, type CourseStudySummary, type ProgressionFlags } from '../studyStateTypes';
 
 /**
  * Single source of truth for the entire HTTP API.
@@ -90,6 +101,38 @@ function json(data: unknown, status = 200): Response {
 /** Matches SvelteKit's error() body shape: { message }. */
 function error(status: number, message: string): Response {
   return json({ message }, status);
+}
+
+/** Every lesson id in course order (drives the monotonic "Current" checkpoint). */
+function orderedLessonIds(course: CourseManifest): string[] {
+  return (course.units ?? []).flatMap((unit) => unit.lessons.map((lesson) => lesson.id));
+}
+
+/** Attaches the computed study summary to a manifest; never written to meta.json. */
+function withStudy(course: CourseManifest): CourseManifest & { study: CourseStudySummary } {
+  try {
+    const state = readStudyState(course.id);
+    return { ...course, study: summarizeStudyState(state, orderedLessonIds(course)) };
+  } catch (e) {
+    // A single unreadable manifest/study file must not break the listing.
+    console.warn(`[api] Failed to summarise study state for ${course.id}:`, e);
+    return {
+      ...course,
+      study: { currentLessonId: null, currentLabel: 'Current', completedLessonIds: [], checkpointCount: 0 }
+    };
+  }
+}
+
+/** Progression flags from settings, defaults applied. */
+function resolvedProgressionFlags(): ProgressionFlags {
+  const stored = loadAppSettings().progress_independent;
+  const overrides = stored && typeof stored === 'object' ? (stored as Partial<ProgressionFlags>) : {};
+  return {
+    lesson: overrides.lesson === true,
+    summary: overrides.summary === true,
+    cheatsheet: overrides.cheatsheet === true,
+    test: overrides.test === undefined ? DEFAULT_PROGRESSION_FLAGS.test : overrides.test === true
+  };
 }
 
 /** Store view shared by every /api/llm response (keys are never included). */
@@ -622,6 +665,33 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       }
     }
 
+    // ---- /api/settings/progression ----
+    if (pathname === '/api/settings/progression') {
+      if (method === 'GET') {
+        return json({ success: true, progression: resolvedProgressionFlags() });
+      }
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const incoming = body.progression ?? body;
+        if (!incoming || typeof incoming !== 'object') {
+          return error(400, 'progression must be an object');
+        }
+        const flags = resolvedProgressionFlags();
+        for (const key of ['lesson', 'summary', 'cheatsheet', 'test'] as const) {
+          const value = (incoming as Record<string, unknown>)[key];
+          if (value === undefined) continue;
+          if (typeof value !== 'boolean') return error(400, `progression.${key} must be a boolean`);
+          flags[key] = value;
+        }
+        try {
+          saveAppSettings({ progress_independent: flags });
+          return json({ success: true, progression: flags });
+        } catch (err) {
+          return error(500, err instanceof Error ? err.message : 'Failed to save progression setting');
+        }
+      }
+    }
+
     // ---- /api/settings/storage ----
     if (pathname === '/api/settings/storage') {
       if (method === 'GET') {
@@ -701,7 +771,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     // ---- /api/courses ----
     if (pathname === '/api/courses' && method === 'GET') {
-      return json({ courses: CourseService.listCourses() });
+      return json({ courses: CourseService.listCourses().map((course) => withStudy(course)) });
     }
 
     // ---- /api/schedules ----
@@ -738,7 +808,76 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       if (!subpath && method === 'GET') {
         const course = CourseService.getCourse(courseId);
         if (!course) return error(404, `Course ${courseId} not found`);
-        return json({ course });
+        return json({ course: withStudy(course) });
+      }
+
+      // GET|POST|PUT|DELETE /api/courses/:course_id/study-state[/...]
+      // Reading progress, practice-test completions and checkpoints for one course.
+      if (subpath === 'study-state' || subpath.startsWith('study-state/')) {
+        const action = subpath.slice('study-state'.length).replace(/^\//, '');
+        const requireCourse = (): Response | null =>
+          CourseService.getCourse(courseId) ? null : error(404, `Course ${courseId} not found`);
+
+        if (!action && method === 'GET') {
+          const missing = requireCourse();
+          if (missing) return missing;
+          return json({ success: true, state: readStudyState(courseId) });
+        }
+
+        const body: Record<string, unknown> =
+          method === 'GET' ? {} : ((await req.json().catch(() => ({}))) as Record<string, unknown>);
+        const missing = requireCourse();
+        if (missing) return missing;
+
+        if (action === 'progress' && method === 'PUT') {
+          const scope = typeof body.scope === 'string' ? body.scope : '';
+          const tab = typeof body.tab === 'string' ? body.tab : undefined;
+          // A non-numeric fraction would clamp to 0 and silently delete the
+          // stored progress — reject it instead.
+          if (typeof body.progress !== 'number' || !Number.isFinite(body.progress)) {
+            return error(400, 'progress must be a finite number');
+          }
+          const result = recordProgress(courseId, scope, body.progress, tab);
+          return result.ok ? json({ success: true, state: result.state }) : error(400, result.error);
+        }
+
+        if (action === 'completions' && method === 'POST') {
+          const lessonId = typeof body.lessonId === 'string' ? body.lessonId : '';
+          const result = recordCompletion(courseId, lessonId);
+          return result.ok ? json({ success: true, state: result.state }) : error(400, result.error);
+        }
+
+        if (action === 'checkpoints') {
+          if (method === 'POST') {
+            const result = createCheckpoint(courseId, {
+              lessonId: typeof body.lessonId === 'string' ? body.lessonId : '',
+              kind: body.kind === 'location' ? 'location' : 'lesson',
+              anchor: typeof body.anchor === 'string' ? body.anchor : null,
+              label: typeof body.label === 'string' ? body.label : undefined,
+              color: typeof body.color === 'string' ? body.color : undefined
+            });
+            return result.ok ? json({ success: true, state: result.state }) : error(400, result.error);
+          }
+          if (method === 'PUT') {
+            if (body.currentLabel !== undefined) {
+              const result = setCurrentLabel(courseId, typeof body.currentLabel === 'string' ? body.currentLabel : '');
+              return result.ok ? json({ success: true, state: result.state }) : error(400, result.error);
+            }
+            const id = typeof body.id === 'string' ? body.id : '';
+            const result = updateCheckpoint(courseId, id, {
+              label: typeof body.label === 'string' ? body.label : undefined,
+              color: typeof body.color === 'string' ? body.color : undefined
+            });
+            return result.ok ? json({ success: true, state: result.state }) : error(400, result.error);
+          }
+          if (method === 'DELETE') {
+            const id = url.searchParams.get('id') || '';
+            const result = deleteCheckpoint(courseId, id);
+            return result.ok ? json({ success: true, state: result.state }) : error(400, result.error);
+          }
+        }
+
+        return error(405, `Method ${method} not allowed on /study-state/${action}`);
       }
 
       // POST /api/courses/:course_id/open
