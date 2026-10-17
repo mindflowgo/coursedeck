@@ -127,7 +127,7 @@
             <span>Generating Schedule...</span>
           {:else}
             <RotateCcw class="w-3.5 h-3.5" />
-            <span>Rebuild Schedule</span>
+            <span>Re-Schedule</span>
           {/if}
         </button>
       </div>
@@ -196,7 +196,7 @@
                     {/if}
                   </div>
                   {#if event.description}
-                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed [&_strong]:font-semibold [&_strong]:text-stone-700 dark:[&_strong]:text-stone-300 [&_code]:font-mono [&_code]:text-[11px] [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:bg-stone-100 dark:[&_code]:bg-stone-800 [&_em]:italic">
+                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed [&_strong]:font-normal [&_strong]:italic [&_code]:font-mono [&_code]:text-[11px] [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:bg-stone-100 dark:[&_code]:bg-stone-800 [&_em]:italic">
                       {@html renderInlineMarkdown(event.description)}
                     </p>
                   {/if}

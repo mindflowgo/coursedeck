@@ -321,9 +321,10 @@
           <div class="space-y-3">
             <div>
               <h2 class="text-base font-semibold text-stone-900 dark:text-stone-100 group-hover:text-stone-700 dark:group-hover:text-stone-300 transition pr-7">
-                <span class="text-sm font-mono font-black uppercase tracking-widest px-1.5 py-1 rounded-md bg-amber-400/10 dark:bg-amber-300/30 text-white border-2 border-amber-500 dark:border-amber-400 shadow-sm">
-                {course.id}
-              </span> {stripCourseCodePrefix(course.title, course.id)}
+                <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide shrink-0 bg-amber-400/10 dark:bg-amber-300/30 text-white ">
+                  {course.id}
+                </span> 
+                {stripCourseCodePrefix(course.title, course.id)}
               </h2>
             </div>
 

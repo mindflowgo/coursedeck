@@ -36,6 +36,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import {
     ArrowUp,
+    ArrowRight,
     BookOpen,
     FileText,
     ListCollapse,
@@ -436,43 +437,17 @@
   }
 
   async function loadCourseDocument(tab: PageTab) {
+    if (tab === 'lesson') {
+      // Course-level lesson view is the Course Navigation Page.
+      // Do NOT attempt to gather all lessons together here.
+      isLoadingCourseDoc = false;
+      tabContents.lesson = '';
+      originalContents.lesson = '';
+      return;
+    }
     isLoadingCourseDoc = true;
-    const startedAt = performance.now();
     try {
-      if (tab === 'lesson') {
-        const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=notes`);
-        const fetchMs = performance.now() - startedAt;
-        if (res.ok) {
-          const data = await res.json();
-          const parsedMs = performance.now() - startedAt;
-          tabContents.lesson = data.markdown || '';
-          originalContents.lesson = tabContents.lesson;
-          const stateMs = performance.now() - startedAt;
-          perf(
-            'course-notes-load',
-            {
-              tab,
-              fetchMs: +fetchMs.toFixed(1),
-              jsonParseMs: +(parsedMs - fetchMs).toFixed(1),
-              stateSetMs: +stateMs.toFixed(1),
-              chars: (data.markdown || '').length,
-              contentLength: Number(res.headers.get('content-length') || 0)
-            },
-            `[PERF][course-notes-load] fetch=${fetchMs.toFixed(0)}ms jsonParse=${(parsedMs - fetchMs).toFixed(0)}ms ` +
-              `stateSet=${stateMs.toFixed(0)}ms chars=${(data.markdown || '').length.toLocaleString()}`
-          );
-          afterPaint(() => {
-            const visibleMs = performance.now() - startedAt;
-            perf(
-              'course-notes-visible',
-              { tab, visibleMs: +visibleMs.toFixed(1), chars: (data.markdown || '').length },
-              `[PERF][course-notes-visible] aggregate painted ${visibleMs.toFixed(0)}ms after the request started ` +
-                `(of which ${(visibleMs - stateMs).toFixed(0)}ms was markdown render + layout + paint)`
-            );
-          });
-        }
-      } else {
-        const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=${tab}`);
+      const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=${tab}`);
         if (res.ok) {
           const data = await res.json();
           if (data.exists && data.markdown && data.markdown.trim().length > 0) {
@@ -499,8 +474,7 @@
             return;
           }
         }
-      }
-    } catch (e) {
+      } catch (e) {
       console.error(`Failed to load course document ${tab}:`, e);
     } finally {
       isLoadingCourseDoc = false;
@@ -977,7 +951,10 @@
     isScheduleModalOpen = true;
   }
 
-  function handleScheduleGenerate(promptWithPreferences: string, preferences?: SchedulePreferences) {
+  function handleScheduleGenerate(promptWithPreferences: string, preferences?: SchedulePreferences, customTemplate?: string) {
+    if (customTemplate && isCourseScope && activeTab === 'schedule') {
+      handlePromptChange(customTemplate);
+    }
     enqueueScheduleGeneration(promptWithPreferences, preferences);
   }
 
@@ -1495,6 +1472,18 @@
     try {
       if (isCourseScope) {
         if (activeTab === 'lesson') {
+          // In course navigation mode, aggregate lesson notes are not preloaded.
+          // Fetch or generate aggregated notes on demand for PDF export.
+          const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=notes`);
+          if (!res.ok) {
+            throw new Error('Failed to generate complete course notes for PDF');
+          }
+          const data = await res.json();
+          const aggregatedMarkdown = data.markdown || '';
+          if (!aggregatedMarkdown.trim()) {
+            throw new Error('No lesson notes available to generate PDF');
+          }
+
           await exportDocumentToPdf({
             courseCode: course.id,
             courseTitle: course.title,
@@ -1502,7 +1491,7 @@
             lessonTitle: 'Complete Course Lessons',
             tab: 'lesson',
             tabDisplayName: 'Complete Lessons',
-            rawMarkdown: tabContents.lesson
+            rawMarkdown: aggregatedMarkdown
           });
         } else {
           const displayTitles: Record<string, { lessonTitle: string; tabDisplayName: string }> = {
@@ -1860,6 +1849,17 @@
     }
     return '';
   });
+
+  // First available lesson in course (for quick navigation from course overview)
+  let firstLesson = $derived.by(() => {
+    if (!course) return null;
+    for (const u of course.units) {
+      for (const l of u.lessons) {
+        if (l.type === 'lesson') return l;
+      }
+    }
+    return (course.units || []).flatMap((u) => u.lessons)[0] || null;
+  });
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -2073,7 +2073,7 @@
       <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
         <FloatingCheckpointTrigger
           containerEl={contentScroller}
-          disabled={activeTab === 'schedule' || isEditing}
+          disabled={activeTab === 'schedule' || isEditing || (isCourseScope && activeTab === 'lesson')}
           onTrigger={handleTriggerAddCheckpoint}
         />
       </div>
@@ -2084,7 +2084,7 @@
         onscroll={handleContentScroll}
       >
         <!-- In-page Checkpoint Markers for this file -->
-        {#if !isEditing && activeTab !== 'schedule'}
+        {#if !isEditing && activeTab !== 'schedule' && !(isCourseScope && activeTab === 'lesson')}
           {#each currentFileNotes as note (note.id)}
             <CheckpointMarker
               checkpoint={note}
@@ -2143,19 +2143,19 @@
                   onclick={handleScheduleRebuild}
                   disabled={isScheduleGenerating}
                   class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer disabled:opacity-50"
-                  title="Rebuild schedule with preferences questionnaire"
+                  title="Re-schedule with preferences"
                 >
                   {#if isScheduleGenerating}
                     <Loader2 class="w-3.5 h-3.5 animate-spin text-amber-500" />
-                    <span>Rebuilding...</span>
+                    <span>Re-Scheduling...</span>
                   {:else}
                     <RotateCcw class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
-                    <span>Rebuild with Preferences</span>
+                    <span>Re-Schedule</span>
                   {/if}
                 </button>
               {/if}
 
-              {#if activeTab !== 'lesson'}
+              {#if activeTab !== 'lesson' && activeTab !== 'schedule'}
                 <button
                   type="button"
                   onclick={togglePromptCard}
@@ -2173,7 +2173,7 @@
                 onclick={handleExportPDF}
                 disabled={isExportingPdf}
                 class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer disabled:opacity-50"
-                title="Generate and download PDF for this document"
+                title={isCourseScope && activeTab === 'lesson' ? 'Generate a printable PDF of all lesson pages' : 'Generate and download PDF for this document'}
               >
                 {#if isExportingPdf}
                   <Loader2 class="w-3.5 h-3.5 animate-spin text-stone-500 dark:text-stone-400" />
@@ -2199,7 +2199,7 @@
         </div>
 
         <!-- Prompt Card for generated tabs (when revealed and not editing raw markdown) -->
-        {#if showPromptCard && activeTab !== 'lesson' && !isEditing}
+        {#if showPromptCard && activeTab !== 'lesson' && activeTab !== 'schedule' && !isEditing}
           <div class="pt-9 sm:pt-10">
             <PromptCard
               prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
@@ -2331,6 +2331,112 @@
                 </div>
               {/if}
             </div>
+          {:else if isCourseScope && activeTab === 'lesson'}
+            <!-- Course Navigation Page -->
+            <div class="relative overflow-hidden p-6 sm:p-10 md:p-14 min-h-[460px] sm:min-h-[500px] flex flex-col justify-center">
+              <!-- Left-side Blended Scholarly Book Illustration (Enlarged & Prominently Visible) -->
+              <div
+                class="pointer-events-none select-none absolute -left-12 sm:-left-6 md:left-0 top-1/2 -translate-y-1/2 w-80 sm:w-[420px] md:w-[480px] lg:w-[540px] h-[400px] sm:h-[460px] md:h-[500px] flex items-center justify-center opacity-70 sm:opacity-85 dark:opacity-65 transition-opacity"
+                style="-webkit-mask-image: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.95) 55%, rgba(0,0,0,0.3) 85%, transparent 100%); mask-image: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.95) 55%, rgba(0,0,0,0.3) 85%, transparent 100%);"
+                aria-hidden="true"
+              >
+                <svg viewBox="0 0 360 340" class="w-full h-full text-stone-700 dark:text-stone-300" fill="none">
+                  <!-- Soft ambient warm glow behind book -->
+                  <ellipse cx="180" cy="180" rx="140" ry="110" fill="currentColor" fill-opacity="0.04" class="text-amber-500" />
+
+                  <!-- Bottom base shadow -->
+                  <ellipse cx="180" cy="275" rx="135" ry="16" fill="currentColor" fill-opacity="0.12" />
+
+                  <!-- Hardcover back casing (left & right) -->
+                  <path d="M 28 245 C 75 262 155 257 180 245 C 205 257 285 262 332 245 L 332 75 C 285 92 205 87 180 75 C 155 87 75 92 28 75 Z" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+                  <!-- Page block edge layers (thickness of closed pages) -->
+                  <path d="M 32 234 C 78 249 155 244 180 235 C 205 244 282 249 328 234" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+                  <path d="M 34 226 C 80 241 155 237 180 228 C 205 237 280 241 326 226" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" opacity="0.65" />
+                  <path d="M 36 218 C 82 233 155 229 180 221 C 205 229 278 233 324 218" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.5" />
+
+                  <!-- Main open leaves (pages) with subtle fill for high visibility -->
+                  <path d="M 38 65 C 85 82 158 77 180 66 C 202 77 275 82 322 65 L 322 218 C 275 235 202 230 180 219 C 158 230 85 235 38 218 Z" fill="currentColor" fill-opacity="0.18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+
+                  <!-- Inner open page layer for 3D fanned depth -->
+                  <path d="M 44 68 C 88 83 156 79 180 70 C 204 79 272 83 316 68 L 316 215 C 272 230 204 226 180 217 C 156 226 88 230 44 215 Z" fill="currentColor" fill-opacity="0.08" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+
+                  <!-- Center spine binding & stitch line -->
+                  <line x1="180" y1="66" x2="180" y2="219" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity="0.9" />
+                  <ellipse cx="180" cy="66" rx="4" ry="2.5" fill="currentColor" opacity="0.8" />
+
+                  <!-- Silk bookmark ribbon (amber accent for warmth & visibility) -->
+                  <path d="M 180 67 Q 192 110 208 165 Q 218 198 216 256 L 204 246 L 192 254 Q 197 202 189 168 Q 183 120 180 67 Z" class="fill-amber-500/90 dark:fill-amber-400/80 stroke-amber-600 dark:stroke-amber-400" stroke-width="1.5" stroke-linejoin="round" />
+
+                  <!-- Left page rules (text lines) -->
+                  <line x1="60" y1="98" x2="158" y2="93" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="60" y1="118" x2="156" y2="114" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="60" y1="138" x2="158" y2="135" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="60" y1="158" x2="154" y2="155" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="60" y1="178" x2="158" y2="175" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="60" y1="198" x2="132" y2="195" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.45" />
+
+                  <!-- Right page rules (text lines) -->
+                  <line x1="202" y1="93" x2="300" y2="98" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="204" y1="114" x2="300" y2="118" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="202" y1="135" x2="300" y2="138" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="204" y1="155" x2="300" y2="158" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="202" y1="175" x2="300" y2="178" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
+                  <line x1="202" y1="195" x2="265" y2="198" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.45" />
+
+                  <!-- Header decoration ornament on pages -->
+                  <path d="M 85 82 L 132 80 M 228 80 L 275 82" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4" />
+                </svg>
+              </div>
+
+              <!-- Content positioned beside the blended artwork on sm+ screens -->
+              <div class="relative z-10 max-w-xl sm:max-w-2xl sm:ml-48 md:ml-60 lg:ml-72 space-y-6">
+                <div class="space-y-1.5">
+                  <span class="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                    Course Overview
+                  </span>
+                  <h2 class="text-xl sm:text-2xl font-semibold text-stone-900 dark:text-stone-100 tracking-tight leading-snug">
+                    Welcome to the course navigation page
+                  </h2>
+                </div>
+
+                <div class="space-y-3.5 text-sm sm:text-[15px] text-stone-600 dark:text-stone-300 leading-relaxed">
+                  <p>
+                    The tabs above gather aggregate course-wide summaries, cheatsheets, and practice tests to support your studies. Whenever you would like a printable document of all the lesson pages, click the <button
+                      type="button"
+                      onclick={handleExportPDF}
+                      disabled={isExportingPdf}
+                      class="inline font-medium text-stone-900 dark:text-stone-100 underline decoration-stone-300 dark:decoration-stone-600 underline-offset-2 hover:decoration-stone-900 dark:hover:decoration-stone-100 cursor-pointer disabled:opacity-50"
+                      title="Generate a printable PDF of all lesson pages"
+                    >'PDF'</button> button above to generate a complete PDF booklet.
+                  </p>
+
+                  <p>
+                    Normally you will want to click on the down-arrow to select a lesson to work on. Shall we start with lesson 1?
+                  </p>
+                </div>
+
+                <div class="pt-1">
+                  <button
+                    type="button"
+                    onclick={() => {
+                      if (firstLesson) {
+                        selectLesson(firstLesson.id);
+                      }
+                    }}
+                    disabled={!firstLesson}
+                    class="inline-flex items-center space-x-2.5 px-4.5 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs sm:text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-50"
+                  >
+                    &nbsp; Start lesson &nbsp;
+                  </button>
+                </div>
+
+                <div class="pt-4 border-t border-stone-100 dark:border-stone-800 flex items-center space-x-2.5 text-xs sm:text-sm text-stone-500 dark:text-stone-400 italic">
+                  <Sparkles class="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0 not-italic" />
+                  <span>Enjoy the course and remember to use the powerful tools to make it easier to learn.</span>
+                </div>
+              </div>
+            </div>
           {:else}
             <!-- Markdown Reader View -->
             <article class="p-6 sm:p-10">
@@ -2403,6 +2509,7 @@
       genericPrompts['course_schedule'] ||
       ''
     }
+    defaultPromptTemplate={genericPrompts['course_schedule'] || defaultPromptForActiveTab || ''}
     courseTitle={course?.title}
     lessonCount={course ? (course.units || []).flatMap((u) => u.lessons).length : 0}
     course={course}

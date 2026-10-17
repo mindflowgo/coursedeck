@@ -16,9 +16,10 @@
   interface Props {
     isOpen: boolean;
     onClose: () => void;
-    /** Called with the composed system prompt (template + preferences) and preferences object. */
-    onGenerate: (promptWithPreferences: string, preferences?: SchedulePreferences) => void;
+    /** Called with the composed system prompt (template + preferences), preferences object, and custom template if edited. */
+    onGenerate: (promptWithPreferences: string, preferences?: SchedulePreferences, customTemplate?: string) => void;
     promptTemplate: string;
+    defaultPromptTemplate?: string;
     courseTitle?: string;
     lessonCount?: number;
     course?: CourseManifest | null;
@@ -29,6 +30,7 @@
     onClose,
     onGenerate,
     promptTemplate,
+    defaultPromptTemplate = '',
     courseTitle,
     lessonCount = 0,
     course = null
@@ -37,6 +39,16 @@
   let prefs = $state<SchedulePreferences>(defaultSchedulePreferences());
   let validationError = $state<string | null>(null);
   let hasNotes = $state(false);
+  let isEditingPrompt = $state(false);
+  let editablePrompt = $state('');
+
+  $effect(() => {
+    if (isOpen) {
+      untrack(() => {
+        editablePrompt = promptTemplate || defaultPromptTemplate || '';
+      });
+    }
+  });
 
   // Blackout date accordion & addition inputs
   let isBlackoutExpanded = $state(false);
@@ -165,7 +177,12 @@
   function handleGenerate() {
     validationError = validateSchedulePreferences(prefs);
     if (validationError) return;
-    if (!promptTemplate || promptTemplate.trim().length === 0) {
+
+    const templateToUse = isEditingPrompt && editablePrompt.trim().length > 0
+      ? editablePrompt.trim()
+      : (editablePrompt.trim() || promptTemplate);
+
+    if (!templateToUse || templateToUse.trim().length === 0) {
       validationError = 'Core prompt template for course schedule is missing. Please add or verify course_schedule.md in Prompts before generating.';
       return;
     }
@@ -198,7 +215,11 @@
       notes: hasNotes && prefs.notes?.trim() ? prefs.notes.trim() : undefined
     };
     storeSchedulePreferences(effectivePrefs);
-    onGenerate(buildSchedulePrompt(promptTemplate, effectivePrefs), effectivePrefs);
+    onGenerate(
+      buildSchedulePrompt(templateToUse, effectivePrefs),
+      effectivePrefs,
+      isEditingPrompt ? templateToUse : undefined
+    );
     onClose();
   }
 </script>
@@ -466,6 +487,42 @@
               placeholder="e.g. away Oct 20–24; prefer lighter Fridays"
               class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none resize-none"
             ></textarea>
+          {/if}
+        </div>
+
+        <!-- Edit AI Prompt checkbox & textarea -->
+        <div class="space-y-1.5">
+          <label class="flex items-center space-x-2.5 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              bind:checked={isEditingPrompt}
+              class="w-4 h-4 rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:bg-stone-800 focus:ring-stone-400"
+            />
+            <span class="text-xs font-medium text-stone-700 dark:text-stone-300">
+              Edit AI Prompt <span class="text-stone-400 dark:text-stone-500 font-normal">(customize system prompt template)</span>
+            </span>
+          </label>
+          {#if isEditingPrompt}
+            <div class="space-y-1.5 pt-1">
+              <textarea
+                id="sched-prompt"
+                rows="5"
+                bind:value={editablePrompt}
+                placeholder="Custom schedule prompt template..."
+                class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none resize-y font-mono text-[11px] leading-relaxed"
+              ></textarea>
+              {#if defaultPromptTemplate && editablePrompt !== defaultPromptTemplate}
+                <div class="flex justify-end">
+                  <button
+                    type="button"
+                    onclick={() => (editablePrompt = defaultPromptTemplate)}
+                    class="text-[11px] text-stone-400 hover:text-stone-700 dark:hover:text-stone-300 underline cursor-pointer"
+                  >
+                    Reset to default prompt
+                  </button>
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
 

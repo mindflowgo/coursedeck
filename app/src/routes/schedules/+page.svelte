@@ -227,6 +227,9 @@
                       {/if}
                     </button>
                     <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide shrink-0 {scheduleTypeClasses(event.type)}">{event.type}</span>
+                    <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide shrink-0 bg-amber-400/10 dark:bg-amber-300/30 text-white ">
+                      {course.courseId}
+                    </span>
                     <button
                       type="button"
                       onclick={() => goto(eventHref(course.courseId, event))}
@@ -242,9 +245,6 @@
                     {#if event.durationMin}
                       <span class="text-[10px] text-stone-400 whitespace-nowrap shrink-0">{event.durationMin}m</span>
                     {/if}
-                    <span class="ml-auto text-[10px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-wide shrink-0">
-                      {course.courseId}
-                    </span>
                   </div>
                 {/each}
               </div>
