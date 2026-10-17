@@ -335,9 +335,11 @@
               </div>
 
               <!-- Course Notes Count -->
-              <span class="text-xs font-semibold text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 px-2 py-0.5 rounded-md shrink-0">
-                {card.checkpoints.length} {card.checkpoints.length === 1 ? 'note' : 'notes'}
-              </span>
+              {#if card.checkpoints.length > 0}
+                <span class="text-xs text-stone-500 dark:text-stone-400 shrink-0">
+                  {card.checkpoints.length} {card.checkpoints.length === 1 ? 'note' : 'notes'}
+                </span>
+              {/if}
             </div>
 
             <!-- Checkpoints list inside course card (scrollable if too many items, sorted newest to oldest) -->
@@ -403,18 +405,6 @@
                 {/each}
               </div>
             {/if}
-          </div>
-
-          <!-- Footer link to open course -->
-          <div class="pt-2 border-t border-stone-100 dark:border-stone-800/80">
-            <button
-              type="button"
-              onclick={() => goto(`/courses/${card.courseId.toLowerCase()}`)}
-              class="flex items-center space-x-1 text-xs font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
-            >
-              <span>Open course</span>
-              <ArrowRight class="w-3.5 h-3.5" />
-            </button>
           </div>
         </div>
       {/each}
