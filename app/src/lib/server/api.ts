@@ -27,6 +27,10 @@ import type { SchedulePreferences } from '../schedule';
 import { ScheduleParser } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
 import { createDataBackupZip, createDataBackupZipStream, restoreDataBackupZip } from './backup';
+import { SyncService } from './services/sync/sync.service';
+import { GoogleCalendarProvider } from './services/sync/google.provider';
+import { ArcSyncProvider } from './services/sync/arc.provider';
+import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
 
 /**
  * Single source of truth for the entire HTTP API.
@@ -130,6 +134,119 @@ function openWithFileManager(targetDir: string): Promise<Response> {
       }
     });
   });
+}
+
+function renderOAuthResultHtml(success: boolean, errorMsg?: string, accountEmail?: string): string {
+  const title = success ? 'Connected to Google Calendar!' : 'Authorization Failed';
+  const subtitle = success
+    ? 'Your Google account has been authorized. CourseDeck can now synchronize your study schedules.'
+    : (errorMsg || 'Failed to complete Google Calendar authorization.');
+  const icon = success
+    ? `<svg style="width:52px;height:52px;color:#10b981;margin:0 auto 1.25rem;display:block;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+       </svg>`
+    : `<svg style="width:52px;height:52px;color:#ef4444;margin:0 auto 1.25rem;display:block;" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+       </svg>`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title} - CourseDeck</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: #0c0a09;
+      color: #f5f5f4;
+      text-align: center;
+      padding: 1.5rem;
+      box-sizing: border-box;
+    }
+    .card {
+      background: #1c1917;
+      border: 1px solid #292524;
+      padding: 2.5rem 2rem;
+      border-radius: 1rem;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+    }
+    h1 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+      color: #fafaf9;
+    }
+    p {
+      font-size: 0.875rem;
+      color: #a8a29e;
+      line-height: 1.5;
+      margin: 0 0 1.5rem;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.35rem 0.85rem;
+      background: #292524;
+      border: 1px solid #44403c;
+      border-radius: 9999px;
+      font-size: 0.8125rem;
+      color: #e7e5e4;
+      margin-bottom: 1.5rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .btn {
+      display: inline-block;
+      background: #f5f5f4;
+      color: #0c0a09;
+      font-weight: 500;
+      font-size: 0.875rem;
+      padding: 0.5rem 1.5rem;
+      border-radius: 0.5rem;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: background 0.15s;
+    }
+    .btn:hover {
+      background: #e7e5e4;
+    }
+    .hint {
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      color: #78716c;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    ${icon}
+    <h1>${title}</h1>
+    <p>${subtitle}</p>
+    ${accountEmail ? `<div class="badge">${accountEmail}</div><br>` : ''}
+    <button class="btn" onclick="window.close()">Close Tab</button>
+    <div class="hint">${success ? 'This window will close automatically in 3 seconds.' : 'Please return to CourseDeck to retry.'}</div>
+  </div>
+  <script>
+    try {
+      if (window.opener) {
+        window.opener.postMessage({
+          type: ${JSON.stringify(success ? 'GOOGLE_AUTH_SUCCESS' : 'GOOGLE_AUTH_ERROR')},
+          email: ${JSON.stringify(accountEmail || '')},
+          error: ${JSON.stringify(errorMsg || '')}
+        }, '*');
+      }
+    } catch (e) {}
+    ${success ? 'setTimeout(() => { try { window.close(); } catch(e) {} }, 3000);' : ''}
+  </script>
+</body>
+</html>`;
 }
 
 export async function handleApiRequest(req: Request, url: URL): Promise<Response> {
@@ -258,6 +375,131 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         }
 
         return error(400, `Unknown action: ${action}`);
+      }
+    }
+
+    // ---- /api/sync ----
+    if (pathname === '/api/sync/status') {
+      if (method === 'GET') {
+        const courseId = url.searchParams.get('courseId') || undefined;
+        const status = await SyncService.getStatus(courseId);
+        return json(status);
+      }
+    }
+
+    if (pathname === '/api/sync/calendars') {
+      if (method === 'GET') {
+        const providerId = url.searchParams.get('provider') || 'google';
+        const provider = SyncService.getProvider(providerId);
+        if (!provider) return error(400, `Unknown provider: ${providerId}`);
+        try {
+          const calendars = await provider.listCalendars();
+          return json({ calendars });
+        } catch (e: any) {
+          return error(500, e.message || 'Failed to list calendars');
+        }
+      }
+    }
+
+    if (pathname === '/api/sync/reconcile') {
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const { provider = 'google', courseId, calendarId = 'primary', defaultTime } = body;
+        if (!courseId) return error(400, 'courseId is required for schedule reconciliation');
+        try {
+          const result = await SyncService.reconcile(provider, courseId, calendarId, { defaultTime });
+          return json(result);
+        } catch (e: any) {
+          return error(500, e.message || 'Schedule reconciliation failed');
+        }
+      }
+    }
+
+    if (pathname === '/api/sync/credentials') {
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        if (body.provider === 'arc') {
+          ArcSyncProvider.saveCredentials(body);
+        } else {
+          GoogleCalendarProvider.saveCredentials(body);
+        }
+        return json({ success: true, message: 'Sync credentials saved' });
+      }
+    }
+
+    if (pathname === '/api/sync/disconnect') {
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        if (body.provider === 'arc') {
+          ArcSyncProvider.clearCredentials();
+        } else {
+          GoogleCalendarProvider.clearCredentials();
+        }
+        return json({ success: true, message: 'Sync credentials cleared' });
+      }
+    }
+
+    // ---- /api/sync/oauth/google/start ----
+    if (pathname === '/api/sync/oauth/google/start' && method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+      const clientId = typeof body.clientId === 'string' ? body.clientId.trim() : '';
+      const existing = GoogleCalendarProvider.loadCredentials();
+      const clientSecret =
+        typeof body.clientSecret === 'string' && body.clientSecret.trim()
+          ? body.clientSecret.trim()
+          : existing.clientSecret;
+      const redirectUri = typeof body.redirectUri === 'string' ? body.redirectUri.trim() : undefined;
+
+      if (!clientId) {
+        return error(400, 'Google Client ID is required to start authorization.');
+      }
+
+      // Save client credentials as draft
+      GoogleCalendarProvider.saveCredentials({ clientId, clientSecret });
+
+      try {
+        const result = GoogleCalendarProvider.createOAuthSession({
+          clientId,
+          clientSecret,
+          redirectUri
+        });
+        return json({ success: true, ...result });
+      } catch (err: any) {
+        return error(400, err.message || 'Failed to start Google OAuth flow');
+      }
+    }
+
+    // ---- /api/sync/oauth/google/callback ----
+    if (pathname === '/api/sync/oauth/google/callback') {
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const errorParam = url.searchParams.get('error');
+
+      if (errorParam) {
+        return new Response(renderOAuthResultHtml(false, `Google authorization error: ${errorParam}`), {
+          status: 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
+      }
+
+      if (!code || !state) {
+        return new Response(renderOAuthResultHtml(false, 'Missing authorization code or state parameter.'), {
+          status: 400,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
+      }
+
+      try {
+        const result = await GoogleCalendarProvider.handleOAuthCallback(code, state);
+        return new Response(renderOAuthResultHtml(true, undefined, result.accountEmail), {
+          status: 200,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
+      } catch (err: any) {
+        return new Response(renderOAuthResultHtml(false, err.message || 'Failed to complete Google OAuth exchange'), {
+          status: 500,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' }
+        });
       }
     }
 
@@ -650,6 +892,29 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         if (err) console.error(`Failed to open data directory '${dataDir}':`, err);
       });
       return json({ success: true, message: `Opened ${dataDir}`, path: dataDir });
+    }
+
+    // ---- /api/settings/mcp ----
+    if (pathname === '/api/settings/mcp') {
+      if (method === 'GET') {
+        const settings = loadAppSettings();
+        return json({
+          enabled: settings.mcp_enabled ?? true,
+          port: 3182,
+          url: 'http://127.0.0.1:3182/mcp',
+          token: getOrCreateMcpToken()
+        });
+      }
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        if (body.action === 'rotate_token') {
+          const token = rotateMcpToken();
+          return json({ success: true, token });
+        }
+        const enabled = Boolean(body.enabled);
+        saveAppSettings({ mcp_enabled: enabled });
+        return json({ success: true, enabled, token: getOrCreateMcpToken() });
+      }
     }
 
     // ---- /api/backup/export | /api/backup/import ----

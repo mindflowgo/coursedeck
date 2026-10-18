@@ -15,6 +15,7 @@
   import SchedulePreferencesModal from '$lib/components/SchedulePreferencesModal.svelte';
   import type { SchedulePreferences } from '$lib/schedule';
   import ScheduleViewer from '$lib/components/ScheduleViewer.svelte';
+  import SyncScheduleModal from '$lib/components/SyncScheduleModal.svelte';
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
   import { parseFrontmatter, serializeWithFrontmatter } from '$lib/parser/frontmatter';
@@ -56,6 +57,7 @@
     X,
     RefreshCw,
     RotateCcw,
+    CalendarSync,
     FileDown,
     MoreHorizontal
   } from 'lucide-svelte';
@@ -81,6 +83,7 @@
   let isLessonActionsOpen: boolean = $state(false);
   let isLLMModalOpen: boolean = $state(false);
   let isScheduleModalOpen: boolean = $state(false);
+  let isSyncModalOpen: boolean = $state(false);
   let isGeneratingAI: boolean = $state(false);
 
   // Complete course scope states
@@ -2140,6 +2143,16 @@
               {#if isCourseScope && activeTab === 'schedule' && tabContents.schedule.trim().length > 0}
                 <button
                   type="button"
+                  onclick={() => { isSyncModalOpen = true; }}
+                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer"
+                  title="Synchronize study schedule with Google Calendar or external apps"
+                >
+                  <CalendarSync class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span>Sync</span>
+                </button>
+
+                <button
+                  type="button"
                   onclick={handleScheduleRebuild}
                   disabled={isScheduleGenerating}
                   class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer disabled:opacity-50"
@@ -2593,5 +2606,14 @@
     onClose={() => {
       isCheckpointModalOpen = false;
     }}
+  />
+
+  <SyncScheduleModal
+    isOpen={isSyncModalOpen}
+    onClose={() => {
+      isSyncModalOpen = false;
+    }}
+    courseId={courseId || ''}
+    courseTitle={course?.title}
   />
 {/if}

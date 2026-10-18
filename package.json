@@ -19,7 +19,8 @@
     "tauri:build:win:portable": "bun run tauri:build:portable",
     "check:server": "tsc --noEmit -p tsconfig.json",
     "test:unit": "bun test app/src",
-    "test": "bun run test:unit && bun run scripts/api-contract.ts && bun run scripts/sidecar-e2e.ts && bun run scripts/active-model-e2e.ts && bun run app/scripts/pdf-smoke.ts"
+    "test:mcp": "bun test server/mcp/mcp.test.ts",
+    "test": "bun run test:unit && bun run test:mcp && bun run scripts/api-contract.ts && bun run scripts/sidecar-e2e.ts && bun run scripts/active-model-e2e.ts && bun run app/scripts/pdf-smoke.ts"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1",
@@ -28,6 +29,9 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "rrule": "^2.8.1"
+    "hono": "^4.13.13",
+    "mcp-lite": "^0.10.0",
+    "rrule": "^2.8.1",
+    "zod": "^4.6.7"
   }
 }

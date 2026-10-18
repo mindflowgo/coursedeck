@@ -1,6 +1,7 @@
 import { LLMService, type LLMConfig } from './llm';
 import { PromptService } from './prompts';
 import { CourseService, type SchedulePayloadStats } from './courses';
+import { JobService } from './services/job.service';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import {
@@ -175,12 +176,17 @@ function extractJsonPatches(completion: string, skeleton?: ScheduleSkeleton): Se
   }
 }
 
-class GenerationQueue {
+export class GenerationQueue {
   private tasks: Map<string, GenerationTask> = new Map();
   private recentLogs: QueueLogEntry[] = [];
-  private isProcessing = false;
   private isPaused = false;
   private activeTaskId: string | null = null;
+  private workerPromise: Promise<void> | null = null;
+  private workerRunId = 0;
+
+  get isProcessing(): boolean {
+    return this.workerPromise !== null;
+  }
 
   /**
    * A task stuck 'processing' longer than this is treated as stalled and
@@ -194,7 +200,10 @@ class GenerationQueue {
   constructor() {
     // Self-healing sweep: recovers the queue if a worker ever wedges
     // (e.g. an LLM stream that dies in a way even the client timeout missed).
-    setInterval(() => this.sweepStalledTasks(), 60_000);
+    const watchdog = setInterval(() => this.sweepStalledTasks(), 60_000);
+    if (typeof watchdog?.unref === 'function') {
+      watchdog.unref();
+    }
   }
 
   addLog(level: 'info' | 'warn' | 'error', message: string) {
@@ -266,6 +275,18 @@ class GenerationQueue {
 
       this.tasks.set(id, task);
       enqueued.push(task);
+
+      try {
+        JobService.createJob(
+          task.tab === 'schedule' ? 'generate_course_doc' : 'generate_lesson_doc',
+          task.courseId,
+          {
+            id: task.id,
+            dedupKey: task.id,
+            initialState: 'queued'
+          }
+        );
+      } catch {}
     }
 
     this.triggerProcessing();
@@ -336,14 +357,10 @@ class GenerationQueue {
 
   pause(): void {
     this.isPaused = true;
-    if (!this.activeTaskId) {
-      this.isProcessing = false;
-    }
   }
 
   resume(): void {
     this.isPaused = false;
-    this.isProcessing = false;
     this.triggerProcessing();
   }
 
@@ -361,9 +378,6 @@ class GenerationQueue {
         }
       }
     }
-    if (!this.activeTaskId) {
-      this.isProcessing = false;
-    }
   }
 
   retryFailed(courseId?: string): void {
@@ -377,16 +391,101 @@ class GenerationQueue {
   }
 
   private triggerProcessing(): void {
-    if (this.isProcessing || this.isPaused) return;
-    this.processNext().catch((err) => {
-      console.error('[GenerationQueue Worker Error]', err);
-      this.isProcessing = false;
+    if (this.workerPromise || this.isPaused) return;
+    const currentRunId = ++this.workerRunId;
+    this.workerPromise = this.runWorker(currentRunId).finally(() => {
+      if (this.workerRunId === currentRunId) {
+        this.workerPromise = null;
+        this.activeTaskId = null;
+      }
     });
   }
 
   /**
+   * Sequential promise-based worker loop.
+   * Guarantees at most one active task at any time, processes all pending tasks sequentially,
+   * and cleanly exits when the queue is empty (0ms idle CPU usage, zero busy-waiting).
+   */
+  private async runWorker(currentRunId: number): Promise<void> {
+    while (!this.isPaused && this.workerRunId === currentRunId) {
+      // Find next pending task
+      let nextTask: GenerationTask | null = null;
+      for (const task of this.tasks.values()) {
+        if (task.status === 'pending') {
+          nextTask = task;
+          break;
+        }
+      }
+
+      if (!nextTask) {
+        break; // Queue is empty, exit worker loop cleanly
+      }
+
+      this.activeTaskId = nextTask.id;
+      nextTask.status = 'processing';
+      nextTask.startedAt = new Date().toISOString();
+
+      try {
+        JobService.updateJob(nextTask.id, {
+          state: 'running',
+          startedAt: nextTask.startedAt
+        });
+      } catch {}
+
+      try {
+        await this.executeTask(nextTask);
+        try {
+          JobService.updateJob(nextTask.id, {
+            state: 'succeeded',
+            result:
+              nextTask.tab === 'schedule'
+                ? { type: 'schedule', courseId: nextTask.courseId }
+                : {
+                    type: 'document',
+                    courseId: nextTask.courseId,
+                    lessonId: nextTask.lessonId,
+                    tab: nextTask.tab
+                  }
+          });
+        } catch {}
+      } catch (err: any) {
+        nextTask.status = 'failed';
+        nextTask.error = err?.message || 'Generation failed';
+        try {
+          JobService.updateJob(nextTask.id, {
+            state: 'failed',
+            error: {
+              code: 'GENERATION_FAILED',
+              message: nextTask.error || 'Generation failed',
+              retryable: true
+            }
+          });
+        } catch {}
+        this.addLog(
+          'error',
+          `[ILC AI Error: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: ${err?.message || 'Generation failed'}`
+        );
+      } finally {
+        if (this.workerRunId === currentRunId) {
+          this.activeTaskId = null;
+        }
+      }
+
+      if (this.isPaused || this.workerRunId !== currentRunId) {
+        break;
+      }
+
+      const hasMorePending = Array.from(this.tasks.values()).some((t) => t.status === 'pending');
+      if (hasMorePending) {
+        // Small breather between LLM calls to avoid aggressive rate-limits
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    }
+  }
+
+  /**
    * Watchdog: fail tasks that have been 'processing' implausibly long and
-   * clear a wedged isProcessing flag, then kick the worker again.
+   * clear a wedged activeTaskId flag, then kick the worker again.
    */
   private sweepStalledTasks(): void {
     const now = Date.now();
@@ -401,21 +500,24 @@ class GenerationQueue {
         task.status = 'failed';
         task.error = 'Task stalled (processing for over 15 minutes) — recovered by queue watchdog';
         this.addLog('warn', `[Queue Watchdog] Marked stalled task as failed: ${task.id}`);
+        try {
+          JobService.updateJob(task.id, {
+            state: 'failed',
+            error: {
+              code: 'TASK_STALLED',
+              message: task.error,
+              retryable: true
+            }
+          });
+        } catch {}
+
         if (this.activeTaskId === task.id) {
           this.activeTaskId = null;
+          // Invalidate workerPromise and bump runId so triggerProcessing can resume processing
+          this.workerPromise = null;
         }
         changed = true;
       }
-    }
-
-    // Defensive unstick: worker flag set but nobody is actually processing
-    if (
-      this.isProcessing &&
-      !this.activeTaskId &&
-      !Array.from(this.tasks.values()).some((t) => t.status === 'processing')
-    ) {
-      this.isProcessing = false;
-      changed = true;
     }
 
     if (changed && !this.isPaused) {
@@ -423,35 +525,8 @@ class GenerationQueue {
     }
   }
 
-  private async processNext(): Promise<void> {
-    if (this.isPaused) {
-      this.isProcessing = false;
-      this.activeTaskId = null;
-      return;
-    }
-
-    // Find next pending task
-    let nextTask: GenerationTask | null = null;
-    for (const task of this.tasks.values()) {
-      if (task.status === 'pending') {
-        nextTask = task;
-        break;
-      }
-    }
-
-    if (!nextTask) {
-      this.isProcessing = false;
-      this.activeTaskId = null;
-      return;
-    }
-
-    this.isProcessing = true;
-    this.activeTaskId = nextTask.id;
-    nextTask.status = 'processing';
-    nextTask.startedAt = new Date().toISOString();
+  protected async executeTask(nextTask: GenerationTask): Promise<void> {
     const taskStartedAt = nextTask.startedAt;
-
-    try {
       const config = LLMService.loadStoredConfig();
       if (!config || !config.baseUrl) {
         throw new Error('LLM not configured. Please open Settings or AI configuration modal to set up API endpoint.');
@@ -737,32 +812,12 @@ class GenerationQueue {
         nextTask.tokensUsed = result.usage?.total_tokens;
 
         const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
+        const tookS = taskStartedAt ? Math.round((Date.now() - Date.parse(taskStartedAt)) / 1000) : null;
         this.addLog(
           'info',
-          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters in ${Math.round((Date.now() - Date.parse(taskStartedAt)) / 1000)}s${tokensInfo}\n`
+          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}\n`
         );
       }
-    } catch (err: any) {
-      nextTask.status = 'failed';
-      nextTask.error = err?.message || 'Generation failed';
-      this.addLog(
-        'error',
-        `[ILC AI Error: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: ${err?.message || 'Generation failed'}`
-      );
-    } finally {
-      this.activeTaskId = null;
-      if (this.isPaused) {
-        this.isProcessing = false;
-      } else {
-        // Small breather between LLM calls to avoid aggressive rate-limits
-        setTimeout(() => {
-          this.processNext().catch((err) => {
-            console.error('[GenerationQueue Worker Error]', err);
-            this.isProcessing = false;
-          });
-        }, 300);
-      }
-    }
   }
 }
 

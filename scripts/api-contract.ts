@@ -22,9 +22,12 @@ delete process.env.HTTP_PROXY;
 delete process.env.HTTPS_PROXY;
 delete process.env.all_proxy;
 delete process.env.ALL_PROXY;
+process.env.NO_PROXY = '*';
+process.env.no_proxy = '*';
 
 const SCRATCH = fs.mkdtempSync('/tmp/ilc-contract-');
 fs.mkdirSync(path.join(SCRATCH, 'courses'), { recursive: true });
+fs.writeFileSync(path.join(SCRATCH, 'settings.json'), JSON.stringify({ data_dir: SCRATCH }), 'utf8');
 // Prompt templates exist in a real install; seed the ones course-doc generation
 // looks up first so those checks exercise the LLM-config gate, not a missing prompt.
 fs.mkdirSync(path.join(SCRATCH, 'prompts'), { recursive: true });
@@ -111,6 +114,9 @@ for (const [k, v] of Object.entries(process.env)) {
 }
 cleanEnv.PORT = String(PORT);
 cleanEnv.DATA_DIR = SCRATCH;
+cleanEnv.ILC_SETTINGS_PATH = path.join(SCRATCH, 'settings.json');
+cleanEnv.NO_PROXY = '*';
+cleanEnv.no_proxy = '*';
 
 const proc = Bun.spawn([process.execPath, 'server/index.ts'], {
   env: cleanEnv,
@@ -123,14 +129,19 @@ try {
   let ready = false;
   for (let i = 0; i < 50; i++) {
     try {
-      await fetch(`${BASE}/api/queue`);
-      ready = true;
-      break;
+      const res = await fetch(`${BASE}/api/queue`);
+      if (res.ok) {
+        ready = true;
+        break;
+      }
     } catch {
       await new Promise((r) => setTimeout(r, 100));
     }
   }
-  if (!ready) throw new Error('sidecar did not start');
+  if (!ready) {
+    const errText = await new Response(proc.stderr).text();
+    throw new Error(`sidecar did not start: ${errText}`);
+  }
   console.log(`Sidecar ready on ${BASE} (scratch: ${SCRATCH})\n`);
 
   console.log('Queue contract:');

@@ -1,7 +1,11 @@
-export type SettingsTab = 'settings' | 'prompts';
+export type SettingsTab = 'settings' | 'prompts' | 'sync_mcp';
 
 export function resolveSettingsTab(tabParam?: string | null): SettingsTab {
-  return tabParam === 'prompts' ? 'prompts' : 'settings';
+  if (tabParam === 'prompts') return 'prompts';
+  if (tabParam === 'sync_mcp' || tabParam === 'sync-mcp' || tabParam === 'mcp' || tabParam === 'sync') {
+    return 'sync_mcp';
+  }
+  return 'settings';
 }
 
 export type PromptGroupKey = 'course' | 'lessons' | 'custom';

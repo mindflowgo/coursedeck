@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import Header from '$lib/components/Header.svelte';
   import PromptsManager from '$lib/components/PromptsManager.svelte';
+  import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
   import { onMount } from 'svelte';
   import { apiFetch, isTauriEnvironment } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
@@ -60,11 +61,13 @@
     }
   });
 
-  function switchTab(tab: 'settings' | 'prompts') {
+  function switchTab(tab: SettingsTab) {
     activeTab = tab;
     const url = new URL($page.url);
     if (tab === 'prompts') {
       url.searchParams.set('tab', 'prompts');
+    } else if (tab === 'sync_mcp') {
+      url.searchParams.set('tab', 'sync_mcp');
     } else {
       url.searchParams.delete('tab');
     }
@@ -643,6 +646,15 @@
         class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'prompts' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
       >
         Prompts
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'sync_mcp'}
+        onclick={() => switchTab('sync_mcp')}
+        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'sync_mcp' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
+      >
+        Sync &amp; MCP
       </button>
     </div>
 
@@ -1262,6 +1274,11 @@
   <!-- Prompts Tab Content -->
   <div class="flex-1 min-h-0 mt-4 flex overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs {activeTab === 'prompts' ? '' : 'hidden'}">
     <PromptsManager />
+  </div>
+
+  <!-- Sync & MCP Tab Content -->
+  <div class="flex-1 min-h-0 flex flex-col overflow-hidden {activeTab === 'sync_mcp' ? '' : 'hidden'}">
+    <SyncMcpSettings />
   </div>
   </div>
 </div>

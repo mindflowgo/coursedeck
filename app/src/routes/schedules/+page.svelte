@@ -8,8 +8,10 @@
     LayoutGrid,
     CalendarRange,
     ArrowRight,
-    AlertCircle
+    AlertCircle,
+    CalendarSync
   } from 'lucide-svelte';
+  import SyncScheduleModal from '$lib/components/SyncScheduleModal.svelte';
   import { apiFetch } from '$lib/api';
   import {
     ScheduleParser,
@@ -33,6 +35,9 @@
   let loadFailed = $state(false);
   let viewMode: 'week' | 'courses' = $state('courses');
   let togglingKey: string | null = $state(null);
+  let showSyncModal = $state(false);
+  let syncCourseId = $state('');
+  let syncCourseTitle = $state('');
 
   const todayIso = new Date().toISOString().split('T')[0];
   const weekEndIso = new Date(Date.now() + 7 * 86_400_000).toISOString().split('T')[0];
@@ -316,16 +321,38 @@
                   {/each}
                 </div>
               {/if}
-              <button
-                onclick={() => openCourseSchedule(course.courseId)}
-                class="flex items-center space-x-1 text-xs font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
-              >
-                <span>Open schedule</span>
-                <ArrowRight class="w-3.5 h-3.5" />
-              </button>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    {/if}
-  </main>
+                <div class="flex items-center justify-between pt-1 border-t border-stone-100 dark:border-stone-800">
+                  <button
+                    type="button"
+                    onclick={() => {
+                      syncCourseId = course.courseId;
+                      syncCourseTitle = course.courseTitle;
+                      showSyncModal = true;
+                    }}
+                    class="flex items-center space-x-1 text-xs font-medium text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 transition cursor-pointer"
+                    title="Sync with Google Calendar or external apps"
+                  >
+                    <CalendarSync class="w-3.5 h-3.5" />
+                    <span>Sync</span>
+                  </button>
+                  <button
+                    onclick={() => openCourseSchedule(course.courseId)}
+                    class="flex items-center space-x-1 text-xs font-medium text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
+                  >
+                    <span>Open schedule</span>
+                    <ArrowRight class="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </main>
+
+    <SyncScheduleModal
+      isOpen={showSyncModal}
+      onClose={() => { showSyncModal = false; }}
+      courseId={syncCourseId}
+      courseTitle={syncCourseTitle}
+    />

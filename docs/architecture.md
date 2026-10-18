@@ -1,8 +1,8 @@
-# Architecture Specification: Course Study Tool (Desktop & Web)
+# Architecture Specification: CourseDeck (Desktop & Web)
 
 ## 1. Executive Summary & Vision
 
-The **Course Study Tool** is a high-performance, distraction-free study desktop and web platform that parses Independent Learning Centre (ILC) course packages into clean, structured Markdown, organizes them by unit and lesson, generates high-yield AI summaries and study notes, and provides interactive Ontario Curriculum (KICA)-aligned test materials.
+The **CourseDeck** is a high-performance, distraction-free study desktop and web platform that parses Independent Learning Centre (ILC) course packages into clean, structured Markdown, organizes them by unit and lesson, generates high-yield AI summaries and study notes, and provides interactive Ontario Curriculum (KICA)-aligned test materials.
 
 All content is stored in a transparent, flat Markdown filesystem with zero external database dependencies. Inline editing is powered by the **CodeMirror 6** Markdown editor, allowing students to refine their notes and tests directly.
 
@@ -20,10 +20,13 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
    - **Inline CodeMirror Editor**: Toggle between rich reading view and live Markdown editing with instant auto-save to disk.
    - **Incremental Chapter Additions**: An `[+] Add Chapters` button in the workspace subheader allows uploading new lesson `.zip` archives directly to the active course. Existing customized notes and edits are strictly preserved while new chapters are parsed and indexed.
 3. **Settings (`/settings`) & Prompts Engine**:
-   - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, AI models, maintenance) and `[Prompts]` (prompt template management).
+   - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, AI models, maintenance), `[Prompts]` (prompt template management), and `[SYNC & MCP]` (Google Calendar integration, OAuth configuration, and MCP server tokens).
    - **Prompts Management**: Template editor for course-wide and lesson prompts (summaries, cheatsheets, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
    - **AI Models**: A list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
    - **Maintenance & Ingestion**: Manual re-index and image compression triggers.
+4. **Study Schedules & Calendar Sync (`/schedules`)**:
+   - Adaptive study schedule planning with custom study days, pacing targets, off-days, and exam deadlines.
+   - Idempotent one-click synchronization to **Google Calendar** and ARC with OAuth 2.0 PKCE, deterministic event IDs, hash-based deduplication, and rate-limited batching. See §19.
 
 ---
 
@@ -36,6 +39,7 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
 - **Markdown & Code Editor**: **CodeMirror 6** (`@codemirror/lang-markdown`, `@codemirror/view`)
 - **Extraction Engine**: Bun + **Cheerio** (DOM parsing & asset extraction) + **Turndown** with **GFM Plugin** (semantic Markdown conversion)
 - **Data Persistence**: Flat filesystem in `/data` (Single Source of Truth, no database required)
+- **Model Context Protocol (MCP)**: Native Streamable HTTP (`/mcp` on loopback `3182`) & Stdio (`--mcp-stdio`) integration via **`mcp-lite`**. See [`docs/mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/mcp.md) for full protocol specs and client configs.
 
 ```
 ilc-study-tool/
@@ -783,5 +787,201 @@ Standardized on two distinct 5-color sets (`CHECKPOINT_COLORS` in `app/src/lib/c
    - **Deep-Linking & Quick Deletion**:
      - Clicking any checkpoint item navigates directly to that document, scrolling with a 60px breathing offset above the note (`Math.max(0, target.verticalPosition - 60)`), unfolds the post-it note, and cleans the URL query parameter via `replaceState`.
      - Hovering over an item reveals a subtle delete icon to remove notes directly from the hub without leaving the page.
+
+
+
+---
+
+## 18. Model Context Protocol (MCP) & Headless Domain Services
+
+CourseDeck integrates native Model Context Protocol (MCP) support using Fiberplane's **`mcp-lite`**, allowing external AI assistants (Claude Desktop, Cursor, Windsurf) to inspect courses, search curriculum, build adaptive schedules deterministically, and prompt study materials.
+
+### 18.1 Key Architecture Points
+- **Authoritative Backend Owner**: Served directly by the Bun sidecar on `127.0.0.1:3182/mcp` and via `--mcp-stdio`.
+- **Shared Headless Services**: REST routes and MCP tools share identical headless domain services (`CourseService`, `SearchService`, `ScheduleService`, `JobService`, `SyncService`).
+- **Unified Job Tracking**: Asynchronous evaluation and generation use `JobService` backed by atomic journal `data/.jobs.json` with restart recovery.
+- **Reference Specification**: For the complete tool catalog (11 tools), JSON schemas, client configuration files, and transport security rules, refer to:
+  👉 **[`docs/mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/mcp.md)**
+
+---
+
+## 19. External Schedule Synchronization Engine (Google Calendar & ARC)
+
+CourseDeck provides an extensible, idempotent calendar synchronization engine that pushes generated study schedules to external calendar and pacing services.
+
+### 19.1 Architecture & Provider Interface
+
+Synchronization is abstracted through the `ScheduleSyncProvider` domain interface (`app/src/lib/server/services/sync/sync.types.ts`), enabling pluggable calendar integrations:
+
+```ts
+export interface ScheduleSyncProvider {
+  readonly id: 'google' | 'arc';
+  readonly name: string;
+  getAuthStatus(): Promise<ProviderAuthStatus>;
+  listCalendars(): Promise<TargetCalendar[]>;
+  projectScheduleEvents(courseId: string, options?: SyncOptions): SyncEvent[];
+  reconcileSchedule(courseId: string, calendarId?: string, options?: SyncOptions): Promise<SyncResult>;
+  cleanupCourseEvents(courseId: string, calendarId?: string): Promise<{ deleted: number }>;
+}
+```
+
+- **`GoogleCalendarProvider`** (`app/src/lib/server/services/sync/google.provider.ts`): Fully active provider connecting directly to Google Calendar API v3 using OAuth 2.0 PKCE.
+- **`ArcSyncProvider`** (`app/src/lib/server/services/sync/arc.provider.ts`): Extensible contract adapter ready for ARC (internal pacing application) once its remote API specification is finalized.
+
+---
+
+### 19.2 Storage Consolidation (`.google_credentials.json`)
+
+To prevent state fragmentation, all Google Calendar synchronization state is consolidated into a single atomic file located in the user's active data directory (`$DATA_DIR/.google_credentials.json`):
+
+```json
+{
+  "clientId": "713840...apps.googleusercontent.com",
+  "clientSecret": "GOCSPX-...",
+  "accessToken": "ya29.a0A...",
+  "refreshToken": "1//04...",
+  "expiresAt": 1729188000000,
+  "accountEmail": "student@gmail.com",
+  "datasetId": "a8f3b92c",
+  "oauthSessions": [
+    {
+      "state": "8a09f...",
+      "codeVerifier": "m2N8x...",
+      "clientId": "713840...",
+      "redirectUri": "http://127.0.0.1:3182/api/sync/oauth/google/callback",
+      "createdAt": 1729184400000
+    }
+  ]
+}
+```
+
+#### Key Persistence Invariants:
+1. **`DATA_DIR` Compliance**: File path resolved via `safeJoin(getDataDir(), '.google_credentials.json')`. Custom data directories set via environment variable or settings automatically isolate calendar credentials.
+2. **Persistent `datasetId`**: Generated deterministically or lazily once (`sha256(dataDir + ':' + Date.now()).slice(0, 8)`). When the user clicks "Disconnect", tokens are wiped but `datasetId` is preserved so previously pushed calendar events are never orphaned across reconnects.
+3. **Session Expiration**: In-flight PKCE OAuth sessions are recorded with timestamps and automatically cleaned up if older than 15 minutes.
+4. **Zero-Config Legacy Migration**: On load, if legacy standalone `.dataset_id` or `.oauth_sessions.json` files exist, their values are migrated into `.google_credentials.json` and the loose legacy files are securely unlinked.
+
+---
+
+### 19.3 OAuth 2.0 PKCE Loopback Flow
+
+To eliminate the need for users to manually copy/paste short-lived access tokens or manage refresh tokens:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Student
+    participant UI as Sync Modal / Settings
+    participant Sidecar as Bun Sidecar (:3182)
+    participant Google as Google OAuth 2.0
+    participant Browser as System Web Browser
+
+    User->>UI: Enter Client ID (+ Secret) & Click "Authorize"
+    UI->>Sidecar: POST /api/sync/oauth/google/start
+    Note over Sidecar: Generate code_verifier & code_challenge (S256)<br/>Save session in .google_credentials.json
+    Sidecar-->>UI: { authUrl, state, redirectUri }
+    UI->>Browser: openExternalUrl(authUrl)
+    Browser->>Google: Authenticate & Consent
+    Google->>Sidecar: GET /api/sync/oauth/google/callback?code=...&state=...
+    Note over Sidecar: Validate state & exchange code + code_verifier<br/>Fetch userinfo (email)<br/>Save tokens to .google_credentials.json
+    Sidecar-->>Browser: 200 HTML with postMessage(GOOGLE_AUTH_SUCCESS)
+    UI->>Sidecar: Poll /api/sync/status or receive postMessage
+    UI-->>User: Connected! Display subtle email & calendar picker
+```
+
+- **Loopback Redirect**: Registered redirect URI is `http://127.0.0.1:3182/api/sync/oauth/google/callback`.
+- **Offline Access**: Requests `access_type=offline` and `prompt=consent` to guarantee a long-lived `refresh_token` is captured during authorization.
+- **Token Refresh**: Access tokens are refreshed proactively 60 seconds before expiration via `POST https://oauth2.googleapis.com/token`.
+
+---
+
+### 19.4 Deterministic Event Projection & Deduplication
+
+Study sessions in `ScheduleParser.parseMarkdown()` are converted into deterministic `SyncEvent` objects:
+
+1. **Deterministic Event IDs**: Conforming to Google Calendar ID constraints (`^[a-v0-9]{5,1024}$`):
+   ```ts
+   const idHash = crypto
+     .createHash('sha256')
+     .update(`${datasetId}:${courseId.toLowerCase()}:${sessionKey}`)
+     .digest('hex')
+     .slice(0, 32);
+   ```
+2. **Private Extended Properties**: Every Google Calendar event includes private metadata:
+   ```json
+   "extendedProperties": {
+     "private": {
+       "appId": "coursedeck",
+       "datasetId": "a8f3b92c",
+       "courseId": "baf3m",
+       "sessionKey": "2026-10-20:01.01:study:0",
+       "contentHash": "5e8a912bc4f0391a"
+     }
+   }
+   ```
+3. **Content Hash Deduplication**: The event summary, description, start time, and end time are hashed into `contentHash`. If the existing event in Google Calendar already has matching `contentHash`, the event is classified as `unchanged` with **zero network requests**, bypassing the API entirely.
+
+---
+
+### 19.5 Reconciliation, Rate-Limiting & Paced Execution
+
+Writing large batches of events (e.g. 40+ sessions) can trigger Google Calendar's anti-spam token-bucket burst limit (which returns `HTTP 403 userRateLimitExceeded` / `rateLimitExceeded`).
+
+CourseDeck addresses this through a multi-tier resilience pipeline:
+
+1. **Event Listing Pagination (`nextPageToken`)**:
+   - Queries `https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events?privateExtendedProperty=appId=coursedeck`.
+   - Iterates until `nextPageToken` is exhausted to ensure existing events across multi-page calendars are fully discovered.
+2. **Paced Concurrency Pool**:
+   - Limits concurrent writes to **2 parallel workers** (`CONCURRENCY = 2`).
+   - Inserts a **60ms pacing delay** (`PACING_DELAY_MS = 60`) after each mutating request (`POST`/`PUT`/`DELETE`).
+   - Caps write throughput at ~8–10 requests/second, staying safely within continuous allowances and avoiding token bucket depletion.
+3. **HTTP 403 & 429 Adaptive Exponential Backoff**:
+   - `fetchWithBackoff` inspects response bodies on `HTTP 403` for `userRateLimitExceeded`, `rateLimitExceeded`, and `quotaExceeded`.
+   - Backs off with randomized jitter: `1500 * 2^attempt + jitter` (up to 4 retry attempts).
+   - Obeys server `Retry-After` headers when provided.
+4. **Idempotent 409 Conflict Handling**:
+   - If a `POST` returns `409 Conflict` (event ID already exists due to an interrupted connection), the worker automatically falls back to `PUT`.
+5. **Safe Obsolete Event Pruning**:
+   - Calendar events matching `appId=coursedeck` and the current `datasetId` that are no longer present in the updated schedule are pruned via `DELETE`.
+   - **Safety Invariant**: Pruning is executed **only if all writes succeeded** (`stats.failed === 0`). If any creation or update fails, obsolete deletion is aborted to protect against network instability.
+
+---
+
+### 19.6 User Interface Workflows
+
+1. **Schedule Modal (`SyncScheduleModal.svelte`)**:
+   - Accessible via the `[Sync]` button on `/schedules` (placed directly to the left of `[Re-Schedule]`).
+   - Shows a subtle connected Google account indicator with a Settings Cog icon that links directly to `/settings?tab=sync_mcp`.
+   - **Collapsible Schedule Sync List**: Clickable toggle row with down/up chevron and total session count badge. Expands into a scrollable, date-grouped list with colored event badges (`study`, `review`, `assign`, `catchup`), lesson IDs, and duration.
+   - **Real-Time Reconciliation Stats**: Displays created, updated, unchanged, deleted, and failed counts, including an expandable list of error details if failures occur.
+2. **Settings Tab (`SyncMcpSettings.svelte`)**:
+   - Dedicated `SYNC & MCP` tab under `/settings?tab=sync_mcp`.
+   - Google Cloud Console direct link (`https://console.cloud.google.com`) for configuring OAuth consent screen and Desktop credentials.
+   - Client ID & Secret configuration with inline connection status and single-click disconnect.
+   - MCP Server token and client connection snippets (Claude Desktop, Cursor, Windsurf).
+
+---
+
+### 19.7 ARC Group Markdown Format & RESTful Transport
+
+CourseDeck natively transforms course schedules into the expanded ARC Markdown Group format ([`docs/arc.md`](file:///Users/fil/Code/ilc-study-tool/docs/arc.md)) for ingestion into ARC workspaces:
+
+#### 1. Structure & Syntax Rules
+- **Frontmatter**: Defines `extId: "<courseId>"` and optional `groupId`.
+- **Group Header (`##`)**: Declares the course container:
+  `## <COURSE_CODE>: <Course Title> #<tags>`
+- **Group Description (`>`)**: All course description, grading, and pacing lines start with `> ` to denote group-level context.
+- **Bullet Items (`- [ ]` / `- [x]`)**: Each study session is rendered as a standard task item.
+- **Strict Content Pipe (`|`)**: Every single description line under an item must be prefixed with `  | `.
+- **Markdown Sub-Checklists**: Subtasks and lesson checklist objectives are written as `  | - [ ] Subtask title`.
+- **Extensible Variable Codes (`%(variable)%`)**: Emitted before regular description lines to pass structured parameters:
+  - `| %Date% YYYY-MM-DD HH:mm - HH:mm`: Joined calendar entry with scheduled start and end time.
+  - `| %Location% Hall B / Online`: Custom location parameter.
+  - Extensible hook for future variables (`%Duration%`, `%Type%`, `%Tags%`).
+
+#### 2. RESTful POST Transport
+- **Endpoint Dispatch**: If an ARC Endpoint URL is configured (e.g. `https://arc.internal/api/groups` in `Settings > SYNC & MCP`), CourseDeck executes an HTTP `POST` with `Authorization: Bearer <apiKey>` and JSON payload (`{ extId, groupId, markdown, itemCount }`).
+- **Simulation Mode**: If no remote endpoint is configured, clicking **"Simulate Sync to ARC"** in the schedule modal generates the complete Markdown payload and outputs it directly to the server `console.log`.
 
 

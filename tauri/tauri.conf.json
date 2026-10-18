@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Course Study Tool",
+  "productName": "CourseDeck",
   "version": "0.1.0",
   "identifier": "com.ilc.studytool",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Course Study Tool",
+        "title": "CourseDeck",
         "width": 1280,
         "height": 840,
         "minWidth": 900,

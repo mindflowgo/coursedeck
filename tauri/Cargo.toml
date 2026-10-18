@@ -1,7 +1,7 @@
 [package]
 name = "ilc-study-tool"
 version = "0.1.0"
-description = "Course Study Tool"
+description = "CourseDeck"
 authors = ["Study Team"]
 edition = "2021"
 

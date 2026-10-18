@@ -1,6 +1,7 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
-  import { CalendarDays, RotateCcw, Loader2 } from 'lucide-svelte';
+  import { CalendarDays, RotateCcw, Loader2, CalendarSync } from 'lucide-svelte';
+  import SyncScheduleModal from './SyncScheduleModal.svelte';
   import {
     ScheduleParser,
     toggleEventDone,
@@ -23,6 +24,7 @@
   }
 
   let { courseId, markdown, onToggle, onRebuild, onEditMarkdown, isGenerating = false }: Props = $props();
+  let showSyncModal = $state(false);
 
   const parsed = $derived(ScheduleParser.parseMarkdown(markdown));
   const doneCount = $derived(parsed.events.filter((e) => e.done).length);
@@ -118,6 +120,15 @@
           </button>
         {/if}
         <button
+          type="button"
+          onclick={() => { showSyncModal = true; }}
+          class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 text-xs font-medium hover:bg-stone-50 dark:hover:bg-stone-700 transition shadow-2xs cursor-pointer"
+          title="Synchronize study schedule with Google Calendar or external apps"
+        >
+          <CalendarSync class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+          <span>Sync</span>
+        </button>
+        <button
           onclick={onRebuild}
           disabled={isGenerating}
           class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-2xs cursor-pointer disabled:opacity-50"
@@ -209,3 +220,9 @@
     </div>
   {/if}
 </div>
+
+<SyncScheduleModal
+  isOpen={showSyncModal}
+  onClose={() => { showSyncModal = false; }}
+  courseId={courseId}
+/>

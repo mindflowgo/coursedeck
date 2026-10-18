@@ -102,7 +102,7 @@ function main(): void {
     fail(`Could not find tauri.conf.json at: ${TAURI_CONF_PATH}`);
   }
   const tauriConf = JSON.parse(fs.readFileSync(TAURI_CONF_PATH, 'utf-8'));
-  const productName: string = tauriConf.productName || 'Course Study Tool';
+  const productName: string = tauriConf.productName || 'CourseDeck';
   const version: string = tauriConf.version || '0.1.0';
   const fileBase = sanitizeFileBase(productName);
 

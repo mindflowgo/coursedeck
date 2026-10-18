@@ -6,6 +6,7 @@ import { tabFileName, courseDocFileName, parseDocFileName } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
 import type { LessonEffort, PlannedSession } from '../scheduleGenerator';
+export type { LessonEffort };
 import {
   assertCourseId,
   assertLessonId,
