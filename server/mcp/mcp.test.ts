@@ -60,6 +60,7 @@ fs.writeFileSync(
 
 import { describe, it, expect, afterAll } from 'bun:test';
 import { handleMcpHttpRequest } from './server';
+import { PromptService } from '../../app/src/lib/server/prompts';
 
 describe('MCP Server Integration Tests (mcp-lite)', () => {
   afterAll(() => {
@@ -100,6 +101,29 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     expect(res.result).toBeDefined();
     expect(res.result.serverInfo.name).toBe('coursedeck');
     expect(res.result.capabilities.tools).toBeDefined();
+    expect(res.result.instructions).toBeDefined();
+    expect(res.result.instructions).toContain('get_lesson_doc');
+  });
+
+  it('dynamically serves customized instructions from PromptService', async () => {
+    const originalPrompt = PromptService.getPrompt('mcp_prompt_instructions');
+    const customText = '# MCP Prompt Instructions\n\nCustom dynamic rule: always check syllabus first.';
+
+    try {
+      PromptService.savePrompt('mcp_prompt_instructions', customText);
+
+      const res = await callMcp('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test-client', version: '1.0' }
+      });
+
+      expect(res.result.instructions).toContain('Custom dynamic rule: always check syllabus first.');
+    } finally {
+      if (originalPrompt) {
+        PromptService.savePrompt('mcp_prompt_instructions', originalPrompt.content);
+      }
+    }
   });
 
   it('lists all registered tools via tools/list', async () => {
@@ -121,46 +145,80 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     expect(toolNames).toContain('get_task_status');
   });
 
-  it('executes list_courses tool', async () => {
-    const res = await callMcp('tools/call', {
+  it('executes list_courses tool with default markdown and optional json', async () => {
+    // Default format is Markdown
+    const defaultRes = await callMcp('tools/call', {
       name: 'list_courses',
       arguments: {}
     });
+    expect(defaultRes.result).toBeDefined();
+    expect(defaultRes.result.content[0].text).toContain('| ID | Title |');
 
-    expect(res.result).toBeDefined();
-    expect(res.result.content).toBeDefined();
-    const data = JSON.parse(res.result.content[0].text);
+    // Optional format="json"
+    const jsonRes = await callMcp('tools/call', {
+      name: 'list_courses',
+      arguments: { format: 'json' }
+    });
+    expect(jsonRes.result).toBeDefined();
+    const data = JSON.parse(jsonRes.result.content[0].text);
     expect(Array.isArray(data)).toBe(true);
   });
 
-  it('executes search_course tool', async () => {
-    const res = await callMcp('tools/call', {
+  it('executes search_course tool with default markdown and optional json', async () => {
+    // Default format is Markdown
+    const defaultRes = await callMcp('tools/call', {
+      name: 'search_course',
+      arguments: { query: 'lesson', limit: 5 }
+    });
+    expect(defaultRes.result).toBeDefined();
+    expect(defaultRes.result.content[0].text).toContain('Found');
+
+    // Optional format="json"
+    const jsonRes = await callMcp('tools/call', {
       name: 'search_course',
       arguments: {
         query: 'lesson',
-        limit: 5
+        limit: 5,
+        format: 'json'
       }
     });
-
-    expect(res.result).toBeDefined();
-    const data = JSON.parse(res.result.content[0].text);
+    expect(jsonRes.result).toBeDefined();
+    const data = JSON.parse(jsonRes.result.content[0].text);
     expect(data.query).toBe('lesson');
     expect(Array.isArray(data.results)).toBe(true);
   });
 
-  it('executes get_course and list_lessons tools', async () => {
-    const courseRes = await callMcp('tools/call', {
+  it('executes get_course and list_lessons tools with default markdown and optional json', async () => {
+    // Default get_course is Markdown outline
+    const mdCourseRes = await callMcp('tools/call', {
       name: 'get_course',
       arguments: { id: 'tst01' }
+    });
+    expect(mdCourseRes.result).toBeDefined();
+    expect(mdCourseRes.result.content[0].text).toContain('# Test Course');
+
+    // Optional format="json"
+    const courseRes = await callMcp('tools/call', {
+      name: 'get_course',
+      arguments: { id: 'tst01', format: 'json' }
     });
     expect(courseRes.result).toBeDefined();
     const course = JSON.parse(courseRes.result.content[0].text);
     expect(course.id).toBe('tst01');
     expect(course.title).toBe('Test Course');
 
-    const lessonsRes = await callMcp('tools/call', {
+    // Default list_lessons is Markdown table
+    const mdLessonsRes = await callMcp('tools/call', {
       name: 'list_lessons',
       arguments: { courseId: 'tst01' }
+    });
+    expect(mdLessonsRes.result).toBeDefined();
+    expect(mdLessonsRes.result.content[0].text).toContain('| Unit | ID | Title |');
+
+    // Optional format="json"
+    const lessonsRes = await callMcp('tools/call', {
+      name: 'list_lessons',
+      arguments: { courseId: 'tst01', format: 'json' }
     });
     expect(lessonsRes.result).toBeDefined();
     const lessons = JSON.parse(lessonsRes.result.content[0].text);
@@ -183,13 +241,28 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
   });
 
   it('executes build_course_schedule synchronously and get_course_schedule', async () => {
-    const buildRes = await callMcp('tools/call', {
+    // Default build_course_schedule returns Markdown directly
+    const defaultBuildRes = await callMcp('tools/call', {
       name: 'build_course_schedule',
       arguments: {
         courseId: 'tst01',
         startDate: '2026-09-01',
         targetEndDate: '2026-12-31',
         sessionsPerDay: 1
+      }
+    });
+    expect(defaultBuildRes.result).toBeDefined();
+    expect(defaultBuildRes.result.content[0].text).toContain('Study Schedule');
+
+    // Optional format="json"
+    const buildRes = await callMcp('tools/call', {
+      name: 'build_course_schedule',
+      arguments: {
+        courseId: 'tst01',
+        startDate: '2026-09-01',
+        targetEndDate: '2026-12-31',
+        sessionsPerDay: 1,
+        format: 'json'
       }
     });
     expect(buildRes.result).toBeDefined();
@@ -367,7 +440,8 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
       name: 'search_course',
       arguments: {
         query: 'sample test lesson',
-        courseId: 'tst01'
+        courseId: 'tst01',
+        format: 'json'
       }
     });
 
@@ -438,6 +512,71 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
 
     // Restore original test dataDir
     process.env.DATA_DIR = dataDir;
+  });
+
+  it('supports token-efficient markdown format for list_courses and list_lessons', async () => {
+    const listRes = await callMcp('tools/call', {
+      name: 'list_courses',
+      arguments: { format: 'markdown' }
+    });
+    expect(listRes.result).toBeDefined();
+    expect(listRes.result.content[0].text).toContain('| ID | Title |');
+    expect(listRes.result.content[0].text).toContain('tst01');
+
+    const lessonsRes = await callMcp('tools/call', {
+      name: 'list_lessons',
+      arguments: { courseId: 'tst01', format: 'markdown' }
+    });
+    expect(lessonsRes.result).toBeDefined();
+    expect(lessonsRes.result.content[0].text).toContain('| Unit | ID | Title |');
+    expect(lessonsRes.result.content[0].text).toContain('01.01');
+  });
+
+  it('supports lightweight get_course with includeLessons=false and json format', async () => {
+    const shallowRes = await callMcp('tools/call', {
+      name: 'get_course',
+      arguments: { id: 'tst01', includeLessons: false, format: 'json' }
+    });
+    const shallowCourse = JSON.parse(shallowRes.result.content[0].text);
+    expect(shallowCourse.units[0].lessons.length).toBe(0);
+    expect(shallowCourse.units[0].lessonCount).toBeGreaterThan(0);
+
+    const mdRes = await callMcp('tools/call', {
+      name: 'get_course',
+      arguments: { id: 'tst01' }
+    });
+    expect(mdRes.result.content[0].text).toContain('# Test Course');
+    expect(mdRes.result.content[0].text).toContain('## Unit 1:');
+  });
+
+  it('supports markdown format and limit for search_course', async () => {
+    const mdSearchRes = await callMcp('tools/call', {
+      name: 'search_course',
+      arguments: {
+        query: 'sample',
+        courseId: 'tst01',
+        limit: 3,
+        format: 'markdown'
+      }
+    });
+    expect(mdSearchRes.result).toBeDefined();
+    expect(mdSearchRes.result.content[0].text).toContain('Found');
+    expect(mdSearchRes.result.content[0].text).toContain('tst01');
+  });
+
+  it('exposes and serves MCP resources for catalog and manifests', async () => {
+    const listResourcesRes = await callMcp('resources/list', {});
+    expect(listResourcesRes.result).toBeDefined();
+    expect(Array.isArray(listResourcesRes.result.resources)).toBe(true);
+
+    const uris = listResourcesRes.result.resources.map((r: any) => r.uri);
+    expect(uris).toContain('coursedeck://courses');
+
+    const readRes = await callMcp('resources/read', {
+      uri: 'coursedeck://courses'
+    });
+    expect(readRes.result).toBeDefined();
+    expect(readRes.result.contents[0].text).toContain('tst01');
   });
 });
 

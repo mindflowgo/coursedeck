@@ -43,14 +43,14 @@
   const weekEndIso = new Date(Date.now() + 7 * 86_400_000).toISOString().split('T')[0];
 
   $effect(() => {
-    const stored = localStorage.getItem('ilc_schedule_view');
+    const stored = localStorage.getItem('app_schedule_view');
     if (stored === 'week' || stored === 'courses') viewMode = stored;
   });
 
   function setViewMode(mode: 'week' | 'courses') {
     viewMode = mode;
     try {
-      localStorage.setItem('ilc_schedule_view', mode);
+      localStorage.setItem('app_schedule_view', mode);
     } catch {}
   }
 

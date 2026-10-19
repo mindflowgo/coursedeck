@@ -85,6 +85,9 @@
   let mcpPort = $state(3182);
   let mcpUrl = $state('http://127.0.0.1:3182/mcp');
   let mcpToken = $state('');
+  let mcpServerPath = $state('/path/to/app-study-tool/server/index.ts');
+  let mcpCommand = $state('bun');
+  let mcpArgs = $state<string[]>(['run', '/path/to/app-study-tool/server/index.ts', '--mcp-stdio']);
   let showMcpToken = $state(false);
   let copiedToken = $state(false);
   let isRotatingToken = $state(false);
@@ -152,6 +155,17 @@
         mcpPort = data.port || 3182;
         mcpUrl = data.url || `http://127.0.0.1:${mcpPort}/mcp`;
         mcpToken = data.token || '';
+        if (data.serverPath) {
+          mcpServerPath = data.serverPath;
+        }
+        if (data.command) {
+          mcpCommand = data.command;
+        }
+        if (Array.isArray(data.args)) {
+          mcpArgs = data.args;
+        } else if (data.serverPath) {
+          mcpArgs = ['run', data.serverPath, '--mcp-stdio'];
+        }
       }
     } catch (e: any) {
       console.warn('Failed to load MCP settings:', e);
@@ -429,53 +443,75 @@
   }
 
   // Client Snippets
-  const claudeConfigSnippet = `{
-  "mcpServers": {
-    "coursedeck": {
-      "command": "bun",
-      "args": [
-        "run",
-        "/path/to/ilc-study-tool/server/index.ts",
-        "--mcp-stdio"
-      ]
-    }
-  }
-}`;
+  let claudeConfigSnippet = $derived(
+    JSON.stringify(
+      {
+        mcpServers: {
+          coursedeck: {
+            command: mcpCommand,
+            args: mcpArgs
+          }
+        }
+      },
+      null,
+      2
+    )
+  );
 
-  const antigravityConfigSnippet = `{
-  "mcpServers": {
-    "coursedeck": {
-      "command": "bun",
-      "args": [
-        "run",
-        "/path/to/ilc-study-tool/server/index.ts",
-        "--mcp-stdio"
-      ]
-    }
-  }
-}`;
+  let antigravityConfigSnippet = $derived(
+    JSON.stringify(
+      {
+        mcpServers: {
+          coursedeck: {
+            command: mcpCommand,
+            args: mcpArgs
+          }
+        }
+      },
+      null,
+      2
+    )
+  );
 
-  let cursorConfigSnippet = $derived(`{
-  "mcpServers": {
-    "coursedeck": {
-      "url": "${mcpUrl}",
-      "headers": {
-        "Authorization": "Bearer ${mcpToken || '<MCP_TOKEN>'}"
-      }
-    }
-  }
-}`);
+  let cursorConfigSnippet = $derived(
+    JSON.stringify(
+      {
+        mcpServers: {
+          coursedeck: {
+            url: mcpUrl,
+            headers: {
+              Authorization: `Bearer ${mcpToken || '<MCP_TOKEN>'}`
+            }
+          }
+        }
+      },
+      null,
+      2
+    )
+  );
 
-  let windsurfConfigSnippet = $derived(`{
-  "mcpServers": {
-    "coursedeck": {
-      "serverUrl": "${mcpUrl}",
-      "headers": {
-        "Authorization": "Bearer ${mcpToken || '<MCP_TOKEN>'}"
-      }
-    }
-  }
-}`);
+  let windsurfConfigSnippet = $derived(
+    JSON.stringify(
+      {
+        mcpServers: {
+          coursedeck: {
+            serverUrl: mcpUrl,
+            headers: {
+              Authorization: `Bearer ${mcpToken || '<MCP_TOKEN>'}`
+            }
+          }
+        }
+      },
+      null,
+      2
+    )
+  );
+
+  let stdioCliCommand = $derived(
+    mcpCommand === 'bun'
+      ? `bun run ${mcpServerPath.includes(' ') ? `"${mcpServerPath}"` : mcpServerPath} --mcp-stdio`
+      : `${mcpCommand.includes(' ') ? `"${mcpCommand}"` : mcpCommand} --mcp-stdio`
+  );
 </script>
 
 <main class="flex-1 overflow-y-auto pt-4 pb-8 space-y-4 text-stone-900 dark:text-stone-100">
@@ -949,7 +985,7 @@
             </span>
             <button
               type="button"
-              onclick={() => copyToClipboard('bun run server/index.ts --mcp-stdio', 'stdio')}
+              onclick={() => copyToClipboard(stdioCliCommand, 'stdio')}
               class="flex items-center space-x-1 text-[11px] text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
             >
               {#if copiedStdio}
@@ -962,7 +998,7 @@
             </button>
           </div>
           <code class="block font-mono text-[11px] text-stone-800 dark:text-stone-200 break-all select-all">
-            bun run server/index.ts --mcp-stdio
+            {stdioCliCommand}
           </code>
           <p class="text-[10px] text-stone-400 dark:text-stone-500">
             Used by Claude Desktop and Antigravity process runners.

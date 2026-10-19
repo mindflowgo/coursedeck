@@ -18,7 +18,8 @@ import {
   getDataStorageInfo,
   setCustomDataDir,
   loadAppSettings,
-  saveAppSettings
+  saveAppSettings,
+  getMcpServerInfo
 } from './paths';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
 import { CourseIngest, type CourseDocType, type CourseManifest } from '../parser/courseIngest';
@@ -896,24 +897,41 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     // ---- /api/settings/mcp ----
     if (pathname === '/api/settings/mcp') {
+      const mcpInfo = getMcpServerInfo();
       if (method === 'GET') {
         const settings = loadAppSettings();
         return json({
           enabled: settings.mcp_enabled ?? true,
           port: 3182,
           url: 'http://127.0.0.1:3182/mcp',
-          token: getOrCreateMcpToken()
+          token: getOrCreateMcpToken(),
+          serverPath: mcpInfo.serverPath,
+          command: mcpInfo.command,
+          args: mcpInfo.args
         });
       }
       if (method === 'POST') {
         const body = (await req.json().catch(() => ({}))) as Record<string, any>;
         if (body.action === 'rotate_token') {
           const token = rotateMcpToken();
-          return json({ success: true, token });
+          return json({
+            success: true,
+            token,
+            serverPath: mcpInfo.serverPath,
+            command: mcpInfo.command,
+            args: mcpInfo.args
+          });
         }
         const enabled = Boolean(body.enabled);
         saveAppSettings({ mcp_enabled: enabled });
-        return json({ success: true, enabled, token: getOrCreateMcpToken() });
+        return json({
+          success: true,
+          enabled,
+          token: getOrCreateMcpToken(),
+          serverPath: mcpInfo.serverPath,
+          command: mcpInfo.command,
+          args: mcpInfo.args
+        });
       }
     }
 

@@ -50,7 +50,7 @@ export class DomCleaner {
 
     // Replace #ilcLearningGoals with a formatted callout element in DOM
     if (learningGoals.length > 0 || successCriteria.length > 0) {
-      let goalsHtml = `<div class="ilc-callout-goals"><h3>Learning Goals & Success Criteria</h3>`;
+      let goalsHtml = `<div class="app-callout-goals"><h3>Learning Goals & Success Criteria</h3>`;
       if (learningGoals.length > 0) {
         goalsHtml += `<p><strong>You are learning to:</strong></p><ul>`;
         learningGoals.forEach((g) => (goalsHtml += `<li>${g}</li>`));
@@ -116,7 +116,7 @@ export class DomCleaner {
 
     // 6. Remove scripts, styles, noscript, and D2L navigation chrome
     $('script, style, noscript, link[rel="stylesheet"]').remove();
-    $('nav, .navbar, progress, button.btn-ilc-drawer, button.btn-ilc-close, .sr-only, .hidden').remove();
+    $('nav, .navbar, progress, button.btn-app-drawer, button.btn-app-close, .sr-only, .hidden').remove();
 
     // 7. Get main content
     const mainEl = $('main#mainContent, #mainContent, .mainContent, main, body').first();

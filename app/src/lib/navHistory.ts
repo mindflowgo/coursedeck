@@ -15,7 +15,7 @@ import { goto } from '$app/navigation';
  * router), we degrade to plain history.back().
  */
 
-const BASE_KEY = 'ilc_nav_base';
+const BASE_KEY = 'app_nav_base';
 let initialized = false;
 
 /** The current entry's SvelteKit history sequence, if present. */

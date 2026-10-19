@@ -164,7 +164,7 @@ export function buildSchedulePrompt(template: string, prefs: SchedulePreferences
   return `${cleanTemplate}\n\n${lines.join('\n')}\n`;
 }
 
-const STORAGE_KEY = 'ilc_schedule_prefs';
+const STORAGE_KEY = 'app_schedule_prefs';
 
 /** Tailwind classes for a schedule activity-type badge. */
 const TYPE_CLASSES: Record<string, string> = {

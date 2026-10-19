@@ -12,9 +12,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Marked } from 'marked';
-import { parseFrontmatter } from '/Users/fil/Code/ilc-study-tool/app/src/lib/parser/frontmatter.ts';
-import { repairMarkdownTables } from '/Users/fil/Code/ilc-study-tool/app/src/lib/markdown/tableRepair.ts';
-import { extractMathFromMarkdown } from '/Users/fil/Code/ilc-study-tool/app/src/lib/markdown/mathRenderer.ts';
+import { parseFrontmatter } from '/Users/fil/Code/app-study-tool/app/src/lib/parser/frontmatter.ts';
+import { repairMarkdownTables } from '/Users/fil/Code/app-study-tool/app/src/lib/markdown/tableRepair.ts';
+import { extractMathFromMarkdown } from '/Users/fil/Code/app-study-tool/app/src/lib/markdown/mathRenderer.ts';
 
 const courseDir = process.argv[2];
 const meta = JSON.parse(fs.readFileSync(path.join(courseDir, 'meta.json'), 'utf8'));

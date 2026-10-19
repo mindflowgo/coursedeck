@@ -463,7 +463,7 @@
         throw new Error(`Export failed with status ${res.status}`);
       }
 
-      const filename = `ilc-study-tool-backup-${new Date().toISOString().split('T')[0]}.zip`;
+      const filename = `app-study-tool-backup-${new Date().toISOString().split('T')[0]}.zip`;
 
       if (!res.body) {
         throw new Error('Response body stream is unavailable.');

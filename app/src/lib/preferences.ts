@@ -1,7 +1,7 @@
 import type { Checkpoint } from './checkpoint';
 import { parseDocFileName, courseTabHref } from './tabs';
 
-export const RESUME_LAST_POSITION_STORAGE_KEY = 'ilc_resume_last_position';
+export const RESUME_LAST_POSITION_STORAGE_KEY = 'app_resume_last_position';
 
 /**
  * Returns whether the course should resume to the most recently accessed

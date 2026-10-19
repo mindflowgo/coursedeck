@@ -11,19 +11,114 @@ import type { SchedulePreferences } from '../../app/src/lib/schedule';
 
 const MAX_PROMPT_COURSE_CHARS = 120_000;
 
+function formatCoursesMarkdown(courses: Array<{
+  id: string;
+  title: string;
+  grade: string;
+  level: string;
+  unitCount: number;
+  lessonCount: number;
+  courseDocs?: Record<string, boolean>;
+}>): string {
+  if (courses.length === 0) return 'No courses found.';
+  let md = '| ID | Title | Grade | Level | Units | Lessons | Docs |\n';
+  md += '| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n';
+  for (const c of courses) {
+    const docs = c.courseDocs
+      ? Object.entries(c.courseDocs)
+          .filter(([, v]) => v)
+          .map(([k]) => k)
+          .join(', ') || 'none'
+      : 'none';
+    md += `| **${c.id}** | ${c.title} | ${c.grade} | ${c.level} | ${c.unitCount} | ${c.lessonCount} | ${docs} |\n`;
+  }
+  return md;
+}
+
+function formatLessonsMarkdown(lessons: Array<{
+  id: string;
+  unitNumber: number;
+  unitTitle: string;
+  lessonNumber: number;
+  title: string;
+  type: string;
+  tabs: string[];
+}>): string {
+  if (lessons.length === 0) return 'No lessons found.';
+  let md = '| Unit | ID | Title | Type | Available Tabs |\n';
+  md += '| :--- | :--- | :--- | :--- | :--- |\n';
+  for (const l of lessons) {
+    md += `| ${l.unitNumber} | \`${l.id}\` | ${l.title} | ${l.type} | ${l.tabs.join(', ') || 'none'} |\n`;
+  }
+  return md;
+}
+
+function formatSearchMarkdown(result: {
+  query: string;
+  totalMatches: number;
+  results: Array<{
+    courseId: string;
+    courseTitle: string;
+    lessonId?: string;
+    lessonTitle?: string;
+    tab: string;
+    score: number;
+    snippet: string;
+  }>;
+}): string {
+  if (result.results.length === 0) {
+    return `No matches found for query "${result.query}".`;
+  }
+  let md = `Found ${result.totalMatches} matches for "${result.query}" (showing ${result.results.length}):\n\n`;
+  for (const m of result.results) {
+    const loc = m.lessonId
+      ? `${m.courseId} / Lesson ${m.lessonId} (${m.tab})`
+      : `${m.courseId} / Course (${m.tab})`;
+    md += `### [Score: ${m.score}] ${loc}\n> ${m.snippet.replace(/\n+/g, ' ')}\n\n`;
+  }
+  return md.trim();
+}
+
 export function registerMcpTools(mcp: McpServer): void {
   // ─── 1. list_courses ──────────────────────────────────────────────────────────
   mcp.tool('list_courses', {
-    description: 'List all available courses with metadata, lesson counts, and course-level document availability flags.',
+    description: 'List available courses with metadata and lesson counts. By default returns a lightweight summary; use detail="full" for complete manifests or format="markdown" for a compact table.',
     inputSchema: z.object({
       includeArchived: z.boolean().default(false).describe('Whether to include archived courses'),
-      search: z.string().optional().describe('Optional substring filter')
+      search: z.string().optional().describe('Optional substring filter'),
+      detail: z.enum(['summary', 'full']).default('summary').describe('Level of detail: "summary" (default, lightweight overview with unit and lesson counts) or "full" (complete manifest with all units and lessons)'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, compact human-readable table, lowest token usage) or "json" (structured data)')
     }),
     handler: async (args) => {
       try {
         const courses = CourseService.listCourses(args);
+
+        if (args.detail === 'full') {
+          return {
+            content: [{ type: 'text', text: JSON.stringify(courses, null, 2) }]
+          };
+        }
+
+        const summary = courses.map((c) => ({
+          id: c.id,
+          title: c.title,
+          grade: c.grade,
+          level: c.level,
+          unitCount: c.units?.length || 0,
+          lessonCount: c.units?.reduce((acc, u) => acc + (u.lessons?.length || 0), 0) || 0,
+          archived: c.archived ?? false,
+          updatedAt: c.updatedAt,
+          courseDocs: c.courseDocs
+        }));
+
+        if (args.format === 'markdown') {
+          return {
+            content: [{ type: 'text', text: formatCoursesMarkdown(summary) }]
+          };
+        }
+
         return {
-          content: [{ type: 'text', text: JSON.stringify(courses, null, 2) }]
+          content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }]
         };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -37,15 +132,48 @@ export function registerMcpTools(mcp: McpServer): void {
 
   // ─── 2. get_course ────────────────────────────────────────────────────────────
   mcp.tool('get_course', {
-    description: 'Retrieve the complete manifest, unit structure, and metadata for a specific course.',
+    description:
+      'Retrieve course manifest and unit structure. PREFERRED: Use this to explore course curricula instead of browsing filesystem directories. Use includeLessons=false for a unit overview without lesson bloat, or format="json" for the full raw object.',
     inputSchema: z.object({
-      id: z.string().describe("Course identifier, e.g. 'mcr3u'")
+      id: z.string().describe("Course identifier, e.g. 'mcr3u'"),
+      includeLessons: z.boolean().default(true).describe('Whether to include full lesson listings or just unit headers with lesson counts'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, structured syllabus outline) or "json" (raw manifest object)')
     }),
     handler: async (args) => {
       try {
         const course = CourseService.getCourse(args.id);
+
+        let targetCourse: any = course;
+        if (!args.includeLessons) {
+          targetCourse = {
+            ...course,
+            units: course.units.map((u) => ({
+              number: u.number,
+              title: u.title,
+              lessonCount: u.lessons?.length || 0,
+              lessons: []
+            }))
+          };
+        }
+
+        if (args.format === 'markdown') {
+          let md = `# ${course.title} (${course.id.toUpperCase()})\n`;
+          md += `**Grade:** ${course.grade} | **Level:** ${course.level}\n\n`;
+          if (course.description) md += `${course.description}\n\n`;
+          for (const u of course.units) {
+            md += `## Unit ${u.number}: ${u.title} (${u.lessons?.length || 0} lessons)\n`;
+            if (args.includeLessons && u.lessons) {
+              for (const l of u.lessons) {
+                md += `- [${l.id}] ${l.title} (${l.type})\n`;
+              }
+            }
+            md += '\n';
+          }
+          return { content: [{ type: 'text', text: md.trim() }] };
+        }
+
         return {
-          content: [{ type: 'text', text: JSON.stringify(course, null, 2) }]
+          content: [{ type: 'text', text: JSON.stringify(targetCourse, null, 2) }]
         };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
@@ -59,14 +187,21 @@ export function registerMcpTools(mcp: McpServer): void {
 
   // ─── 3. list_lessons ──────────────────────────────────────────────────────────
   mcp.tool('list_lessons', {
-    description: 'List lessons for a course with unit numbers, titles, types, and existing tab files on disk.',
+    description:
+      'List lessons for a course with unit numbers, titles, types, and existing tab files on disk. PREFERRED: Use this instead of scanning course directories on disk.',
     inputSchema: z.object({
       courseId: z.string().describe("Course ID, e.g. 'mcr3u'"),
-      unitNumber: z.number().int().optional().describe('Filter by unit index')
+      unitNumber: z.number().int().optional().describe('Filter by unit index'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, compact table, lowest token usage) or "json" (structured array)')
     }),
     handler: async (args) => {
       try {
         const lessons = CourseService.listLessons(args.courseId, args.unitNumber);
+        if (args.format === 'markdown') {
+          return {
+            content: [{ type: 'text', text: formatLessonsMarkdown(lessons) }]
+          };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(lessons, null, 2) }]
         };
@@ -167,11 +302,18 @@ export function registerMcpTools(mcp: McpServer): void {
     description: 'Search across course notes, summaries, cheatsheets, and lesson content with relevance scoring.',
     inputSchema: z.object({
       query: z.string().min(1).describe('Search term or phrase'),
-      courseId: z.string().optional().describe('Optional course ID filter. If omitted, searches all courses.')
+      courseId: z.string().optional().describe('Optional course ID filter. If omitted, searches all courses.'),
+      limit: z.number().int().min(1).max(50).default(10).describe('Max number of matches to return (default: 10)'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, compact ranked list, lowest tokens) or "json" (structured match objects)')
     }),
     handler: async (args) => {
       try {
-        const result = SearchService.searchCourses(args.query, args.courseId);
+        const result = SearchService.searchCourses(args.query, args.courseId, args.limit);
+        if (args.format === 'markdown') {
+          return {
+            content: [{ type: 'text', text: formatSearchMarkdown(result) }]
+          };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         };
@@ -187,7 +329,8 @@ export function registerMcpTools(mcp: McpServer): void {
 
   // ─── 8. get_lesson_doc ────────────────────────────────────────────────────────
   mcp.tool('get_lesson_doc', {
-    description: 'Retrieve lesson or course documents (summary, cheatsheet, test, lesson, notes, schedule). Generates on-demand if missing.',
+    description:
+      'Retrieve lesson or course documents (summary, cheatsheet, test, lesson, notes, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing.',
     inputSchema: z.object({
       courseId: z.string().describe("Course ID, e.g. 'mcr3u'"),
       lessonId: z.string().optional().describe('Omit to fetch course-scope documents'),
@@ -364,7 +507,8 @@ export function registerMcpTools(mcp: McpServer): void {
         label: z.string().optional().describe('Description, e.g. Vacation')
       })).default([]).describe('Vacation or break periods where no sessions should be scheduled'),
       dayTimes: z.record(z.string(), z.array(z.string())).optional().describe("Map of lowercase weekday name (mon, tue, ...) to preferred start times, e.g. { mon: ['16:00'] }"),
-      notes: z.string().optional().describe('Optional user notes stored in schedule frontmatter')
+      notes: z.string().optional().describe('Optional user notes stored in schedule frontmatter'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, returns schedule markdown directly, lowest tokens) or "json" (structured object with scheduleFile & status)')
     }),
     handler: async (args) => {
       try {
@@ -384,6 +528,11 @@ export function registerMcpTools(mcp: McpServer): void {
         };
 
         const result = await ScheduleService.buildAndSaveSchedule(args.courseId, prefs);
+        if (args.format === 'markdown') {
+          return {
+            content: [{ type: 'text', text: result.markdown }]
+          };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         };

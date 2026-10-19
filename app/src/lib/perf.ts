@@ -7,7 +7,7 @@
  * `window.__ilcPerf`, so a run can be inspected afterwards without replaying
  * it (`copy(window.__ilcPerf)` in DevTools).
  *
- * Set `localStorage.ilc_perf = 'verbose'` to also print per-stage breakdowns
+ * Set `localStorage.app_perf = 'verbose'` to also print per-stage breakdowns
  * for trivial renders; the default prints one line per render regardless,
  * because repeated re-renders of the expensive markdown pipeline are exactly
  * what we are looking for.

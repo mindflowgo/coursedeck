@@ -182,7 +182,7 @@ export class ArchiveExtractor {
         if (text.includes('ilcLearningGoals') || text.includes('mindsOn')) {
           score += 150;
         }
-        if (text.includes('<section id="ilc_')) {
+        if (text.includes('<section id="app_')) {
           score += 100;
         }
 

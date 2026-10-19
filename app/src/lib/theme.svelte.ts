@@ -10,7 +10,7 @@ class ThemeManager {
     if (typeof window === 'undefined') return;
 
     // 1. Immediately apply cached theme from localStorage to prevent flash
-    const stored = (localStorage.getItem('ilc_theme') as ThemeMode) || 'system';
+    const stored = (localStorage.getItem('app_theme') as ThemeMode) || 'system';
     this.current = ['light', 'dark', 'system'].includes(stored) ? stored : 'system';
     this.apply();
 
@@ -29,7 +29,7 @@ class ThemeManager {
   async setTheme(mode: ThemeMode) {
     this.current = mode;
     if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('ilc_theme', mode);
+      localStorage.setItem('app_theme', mode);
     }
     this.apply();
 
@@ -80,7 +80,7 @@ class ThemeManager {
           if (tauriTheme && typeof tauriTheme === 'string' && ['light', 'dark', 'system'].includes(tauriTheme)) {
             if (this.current !== tauriTheme) {
               this.current = tauriTheme as ThemeMode;
-              localStorage.setItem('ilc_theme', tauriTheme);
+              localStorage.setItem('app_theme', tauriTheme);
               this.apply();
               return;
             }
@@ -94,7 +94,7 @@ class ThemeManager {
         if (data?.theme && ['light', 'dark', 'system'].includes(data.theme)) {
           if (this.current !== data.theme) {
             this.current = data.theme;
-            localStorage.setItem('ilc_theme', data.theme);
+            localStorage.setItem('app_theme', data.theme);
             this.apply();
           }
         }

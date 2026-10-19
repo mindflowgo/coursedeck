@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ilc-checkpoints-'));
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'app-checkpoints-'));
 process.env.DATA_DIR = scratch;
 
 import { CourseService } from './courses';

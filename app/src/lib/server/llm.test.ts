@@ -30,7 +30,7 @@ describe('resolveLlamaCppUrl', () => {
 });
 
 describe('multi-card store', () => {
-  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ilc-llm-store-'));
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'app-llm-store-'));
   const previousDataDir = process.env.DATA_DIR;
 
   beforeAll(() => {

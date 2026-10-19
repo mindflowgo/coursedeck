@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Single source of truth for every server-side filesystem path.
@@ -62,8 +63,8 @@ let runtimeCustomDataDir: string | null = null;
  * Returns the path to the application settings JSON file in OS-standard config directories.
  */
 export function getAppSettingsPath(): string {
-  if (process.env.ILC_SETTINGS_PATH?.trim()) {
-    return path.resolve(process.env.ILC_SETTINGS_PATH.trim());
+  if (process.env.APP_SETTINGS_PATH?.trim()) {
+    return path.resolve(process.env.APP_SETTINGS_PATH.trim());
   }
   const home = process.env.HOME || process.env.USERPROFILE || '';
   if (process.platform === 'darwin') {
@@ -74,7 +75,7 @@ export function getAppSettingsPath(): string {
     return path.join(appData, 'com.ilc.studytool', 'settings.json');
   }
   const configHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
-  return path.join(configHome, 'ilc-study-tool', 'settings.json');
+  return path.join(configHome, 'app-study-tool', 'settings.json');
 }
 
 export function loadAppSettings(): AppSettings {
@@ -122,7 +123,7 @@ export function getDefaultDataDir(): string {
     return path.join(appData, 'com.ilc.studytool', 'data');
   }
   const configHome = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
-  return path.join(configHome, 'ilc-study-tool', 'data');
+  return path.join(configHome, 'app-study-tool', 'data');
 }
 
 /**
@@ -315,4 +316,110 @@ export function trySafeJoin(baseDir: string, ...segments: string[]): string | nu
 /** Normalises a course id the way the service layer stores it. */
 export function normalizeCourseId(value: unknown): string {
   return assertCourseId(value).toLowerCase();
+}
+
+export interface McpServerInfo {
+  serverPath: string;
+  command: string;
+  args: string[];
+}
+
+/**
+ * Resolves the absolute path and stdio command args for the MCP server.
+ * Prefers the real `server/index.ts` file in the repository or installation,
+ * falls back to standalone compiled executable if packaged, or placeholder.
+ */
+export function getMcpServerInfo(): McpServerInfo {
+  // 1. Explicit env override
+  if (process.env.APP_SERVER_PATH && fs.existsSync(process.env.APP_SERVER_PATH)) {
+    const sPath = path.resolve(process.env.APP_SERVER_PATH);
+    return {
+      serverPath: sPath,
+      command: 'bun',
+      args: ['run', sPath, '--mcp-stdio']
+    };
+  }
+
+  // 2. Search upwards from process.cwd() for server/index.ts
+  try {
+    let curr = path.resolve(process.cwd());
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(curr, 'server', 'index.ts');
+      if (fs.existsSync(candidate)) {
+        return {
+          serverPath: candidate,
+          command: 'bun',
+          args: ['run', candidate, '--mcp-stdio']
+        };
+      }
+      const parent = path.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+  } catch {}
+
+  // 3. Search upwards from module location if available (import.meta.url or import.meta.dir)
+  try {
+    let metaDir = '';
+    if (typeof import.meta !== 'undefined') {
+      if ((import.meta as any).dir) {
+        metaDir = (import.meta as any).dir;
+      } else if (import.meta.url) {
+        metaDir = path.dirname(fileURLToPath(import.meta.url));
+      }
+    }
+    if (metaDir) {
+      for (let i = 0; i < 6; i++) {
+        const candidate = path.join(metaDir, 'server', 'index.ts');
+        if (fs.existsSync(candidate)) {
+          return {
+            serverPath: candidate,
+            command: 'bun',
+            args: ['run', candidate, '--mcp-stdio']
+          };
+        }
+        const direct = path.join(metaDir, 'index.ts');
+        if (path.basename(metaDir) === 'server' && fs.existsSync(direct)) {
+          return {
+            serverPath: direct,
+            command: 'bun',
+            args: ['run', direct, '--mcp-stdio']
+          };
+        }
+        const parent = path.dirname(metaDir);
+        if (parent === metaDir) break;
+        metaDir = parent;
+      }
+    }
+  } catch {}
+
+  // 4. Check if current process is a standalone compiled binary
+  try {
+    const execPath = process.execPath;
+    const basename = path.basename(execPath).toLowerCase();
+    if (
+      fs.existsSync(execPath) &&
+      !basename.startsWith('bun') &&
+      !basename.startsWith('node') &&
+      !basename.startsWith('deno')
+    ) {
+      return {
+        serverPath: execPath,
+        command: execPath,
+        args: ['--mcp-stdio']
+      };
+    }
+  } catch {}
+
+  // 5. Default fallback placeholder
+  const fallback = '/path/to/app-study-tool/server/index.ts';
+  return {
+    serverPath: fallback,
+    command: 'bun',
+    args: ['run', fallback, '--mcp-stdio']
+  };
+}
+
+export function getMcpServerPath(): string {
+  return getMcpServerInfo().serverPath;
 }

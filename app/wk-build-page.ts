@@ -6,8 +6,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { parseFrontmatter } from '/Users/fil/Code/ilc-study-tool/app/src/lib/parser/frontmatter.ts';
-import { repairMarkdownTables } from '/Users/fil/Code/ilc-study-tool/app/src/lib/markdown/tableRepair.ts';
+import { parseFrontmatter } from '/Users/fil/Code/app-study-tool/app/src/lib/parser/frontmatter.ts';
+import { repairMarkdownTables } from '/Users/fil/Code/app-study-tool/app/src/lib/markdown/tableRepair.ts';
 
 const courseDir = process.argv[2] || '/Users/fil/Documents/Evan_Education/ilc/courses/baf3m';
 const meta = JSON.parse(fs.readFileSync(path.join(courseDir, 'meta.json'), 'utf8'));
@@ -28,7 +28,7 @@ for (const unit of meta.units) {
   }
 }
 const content = repairMarkdownTables(lines.join(''));
-const markedEsm = fs.readFileSync('/Users/fil/Code/ilc-study-tool/app/node_modules/marked/lib/marked.esm.js', 'utf8');
+const markedEsm = fs.readFileSync('/Users/fil/Code/app-study-tool/app/node_modules/marked/lib/marked.esm.js', 'utf8');
 
 const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
 

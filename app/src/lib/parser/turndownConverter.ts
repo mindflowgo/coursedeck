@@ -60,7 +60,7 @@ export class TurndownConverter {
       filter: (node) => {
         if (node.nodeName !== 'DIV') return false;
         const className = node.getAttribute('class') || '';
-        return className.includes('ilc-callout-goals');
+        return className.includes('app-callout-goals');
       },
       replacement: (content) => {
         const lines = content
@@ -77,7 +77,7 @@ export class TurndownConverter {
       filter: (node) => {
         if (node.nodeName !== 'DIV') return false;
         const className = node.getAttribute('class') || '';
-        return className.includes('ilc-row-callout');
+        return className.includes('app-row-callout');
       },
       replacement: (content) => {
         let alertType = 'NOTE';

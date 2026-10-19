@@ -120,7 +120,7 @@ export function createDataBackupZipStream(options: BackupOptions = {}): BackupZi
   });
 
   const today = new Date().toISOString().split('T')[0];
-  const filename = `ilc-study-tool-backup-${today}.zip`;
+  const filename = `app-study-tool-backup-${today}.zip`;
 
   return { stream, filename, courseCount, fileCount: totalFiles };
 }
@@ -165,7 +165,7 @@ export function createDataBackupZip(options: BackupOptions = {}): {
   addTree(dataDir, '');
 
   const today = new Date().toISOString().split('T')[0];
-  const filename = `ilc-study-tool-backup-${today}.zip`;
+  const filename = `app-study-tool-backup-${today}.zip`;
   const buffer = Buffer.from(zipSync(files as any));
 
   return { buffer, filename, courseCount, fileCount };

@@ -800,8 +800,84 @@ CourseDeck integrates native Model Context Protocol (MCP) support using Fiberpla
 - **Authoritative Backend Owner**: Served directly by the Bun sidecar on `127.0.0.1:3182/mcp` and via `--mcp-stdio`.
 - **Shared Headless Services**: REST routes and MCP tools share identical headless domain services (`CourseService`, `SearchService`, `ScheduleService`, `JobService`, `SyncService`).
 - **Unified Job Tracking**: Asynchronous evaluation and generation use `JobService` backed by atomic journal `data/.jobs.json` with restart recovery.
-- **Reference Specification**: For the complete tool catalog (11 tools), JSON schemas, client configuration files, and transport security rules, refer to:
-  👉 **[`docs/mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/mcp.md)**
+- **Reference Specification**: For the complete tool catalog, JSON schemas, client configuration files, and transport security rules, refer to [`docs/api-mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/api-mcp.md).
+
+### 18.2 Communication & Token Optimization Lessons Learned
+
+During the integration and real-world evaluation of the CourseDeck MCP server with external AI pair programmers and LLM clients, several critical architectural lessons for efficient MCP tool communication were established:
+
+#### 1. The Monolithic Manifest Anti-Pattern & Progressive Disclosure
+- **The Problem**: Initial tool design for `list_courses` returned complete manifests for all courses simultaneously (including all units, lessons, lesson IDs, types, and document presence flags). For a 5-course catalog with ~125 lessons, this dumped a **25,000+ character (~6,000 token)** nested JSON blob into the LLM context window just to answer a simple discovery question ("what courses are available?").
+- **The Solution (Progressive Disclosure)**:
+  - `list_courses` defaults to a lightweight summary (`detail: "summary"`) providing only top-level identifiers, grade, level, and aggregate counts (`unitCount`, `lessonCount`, `courseDocs`).
+  - Deep inspection of unit and lesson trees is deferred to dedicated tools (`get_course({ id })`, `list_lessons({ courseId, unitNumber })`) or an explicit opt-in flag (`detail: "full"`).
+  - Similarly, `get_course` provides an `includeLessons: false` option to fetch course-level metadata and unit headers without dumping all child lesson arrays.
+- **Impact**: Drops discovery payload from **>25,000 characters to ~1,820 characters (~93% reduction)**.
+
+#### 2. Format Ergonomics: Markdown as Default vs. Repetitive JSON
+- **The Problem**: Standard JSON arrays of objects duplicate field keys (`"id"`, `"title"`, `"unitNumber"`, `"type"`, `"hasSummary"`, `"hasTest"`) dozens or hundreds of times. In LLM tokenizers, repeated structural syntax consumes tokens and induces deserialization overhead.
+- **The Solution**: 
+  - Standardized on **`format: "markdown"` as the DEFAULT** across all discovery and listing tools (`list_courses`, `get_course`, `list_lessons`, `search_course`, `build_course_schedule`).
+  - Standard structured JSON remains available as an explicit opt-in (`format: "json"`) for programmatic integrations.
+  - By defaulting to Markdown, zero-configuration tool invocations return dense, human- and LLM-readable tables and outlines with minimal token footprints.
+  - LLMs natively ingest and reason over tabular Markdown with zero schema translation overhead.
+- **Impact**: Compresses the default course catalog response from **25,500 characters down to 702 characters (~97.2% reduction)**.
+
+#### 3. Quantitative Token Optimization Scoreboard
+| Tool Operation | Unoptimized JSON | Optimized JSON (`detail="summary"`) | Markdown Format (`format="markdown"`) | Overall Token Reduction |
+| :--- | :--- | :--- | :--- | :--- |
+| **`list_courses` (5 courses)** | ~25,500 chars (~6,400 tok) | 1,820 chars (~450 tok) | **702 chars (~175 tok)** | **~97.2% reduction** |
+| **`list_lessons` (29 lessons)** | ~8,700 chars (~2,200 tok) | 3,100 chars (~780 tok) | **1,250 chars (~310 tok)** | **~85.9% reduction** |
+| **`get_course` (outline only)** | ~6,500 chars (~1,600 tok) | 850 chars (`includeLessons=false`) | **420 chars (Syllabus)** | **~93.5% reduction** |
+| **`search_course` (10 matches)** | ~7,200 chars (~1,800 tok) | 2,400 chars (`limit=10`) | **1,100 chars (Ranked list)** | **~84.7% reduction** |
+
+#### 4. Query Bounding & Snippet Budgeting
+- Unbounded curriculum searches can flood the conversation context with verbose text matches.
+- `search_course` exposes an explicit `limit` parameter (default: 10, max: 50) and returns clean, relevance-scored match excerpts, preventing context window bloat during exploratory queries.
+
+#### 5. Native MCP Resources for Cacheable Catalogs
+- Static or slowly-mutating catalog data (e.g. `coursedeck://courses`, `coursedeck://courses/{courseId}`, `coursedeck://courses/{courseId}/schedule`) is exposed as **MCP Resources** alongside tools.
+- AI clients can inspect and cache resource data directly without executing tool call turn cycles or triggering reasoning overhead.
+
+#### 6. macOS AMFI & Binary Packaging Invariant
+- When compiling sidecars with `bun build --compile` and replacing binary resources inside an existing macOS application bundle (`/Applications/CourseDeck.app/Contents/Resources/server`), macOS Apple Mobile File Integrity (AMFI) invalidates the code signature and terminates the process immediately with `SIGKILL` (exit code `-9`) upon stdio execution.
+- Any automated or manual deployment step that replaces binaries inside an app bundle **must execute an ad-hoc code sign** (`codesign -s - --force <binary_path>`) to ensure continuous, uninterrupted stdio bridge operations.
+
+### 18.3 Handshake Probe Steering & Dynamic MCP Prompt Instructions
+
+During live pair-programming and autonomous agent workflows, LLMs often default to running bash or Python one-liners (e.g. `python3 -c "open(...)"` or `cat`) to inspect markdown files directly from disk. This creates major operational problems:
+1. **Bypasses Application Architecture**: Ignores `CourseService` and document caching, missing dynamically generated tabs (`summary`, `cheatsheet`, `test`, `schedule`).
+2. **Heavy Process & Runtime Latency**: Spawns subshells, boots Python 3 runtimes, and pipes raw output through process harnesses.
+3. **Sandbox & Boundary Violations**: Direct filesystem reads can violate sandbox permissions or require manual user bypass approval.
+4. **Context Flooding**: Dumps unpaginated file content with no slice or line-budget controls.
+
+To eliminate this anti-pattern, CourseDeck implements a three-tier steering architecture that guides LLMs towards native MCP tools from their very first interaction.
+
+#### 1. Dynamic Handshake Instructions (`InitializeResult.instructions`)
+Under the standard Model Context Protocol (MCP) specification, client connections initiate with an `initialize` JSON-RPC handshake. The server responds with `InitializeResult`, which supports an optional `instructions` field that MCP-compliant hosts (Claude Desktop, Antigravity, Cursor) automatically inject into the LLM's system prompt.
+
+- **Zero Fallback Code Bloat**: In accordance with user configuration principles, there are **no hardcoded instruction strings** inside TypeScript code.
+- **Dynamic Resolution via `PromptService`**: `server/mcp/server.ts` resolves instructions dynamically using `getMcpInstructions()`, reading the template directly from `PromptService.getPrompt('mcp_prompt_instructions')`:
+  ```typescript
+  export function getMcpInstructions(): string | undefined {
+    return PromptService.getPrompt('mcp_prompt_instructions')?.content?.trim();
+  }
+  ```
+- **Editable in Prompts Manager**:
+  - The instructions file resides at `data/prompts/mcp_prompt_instructions.md` (seeded from `data.old/prompts/mcp_prompt_instructions.md`).
+  - It carries the `# MCP Prompt Instructions` header and is classified automatically under the **Custom** category in **Settings > Prompts** (`/settings?tab=prompts`).
+  - Prompt managers can tweak, expand, or adjust these instructions live in the CodeMirror editor without restarting the server or modifying code. Any new connection handshake immediately serves the updated markdown.
+
+#### 2. In-Band Tool Schema Steering (`tools/list`)
+When clients probe the available toolset during discovery, the LLM evaluates the `description` attributes of available tools. Core tools explicitly advertise precedence over filesystem hacks:
+- **`get_lesson_doc`**: `"Retrieve lesson or course documents (summary, cheatsheet, test, lesson, notes, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing."`
+- **`get_course`**: `"Retrieve course manifest and unit structure. PREFERRED: Use this to explore course curricula instead of browsing filesystem directories."`
+- **`list_lessons`**: `"List lessons for a course with unit numbers, titles, types, and existing tab files on disk. PREFERRED: Use this instead of scanning course directories on disk."`
+
+#### 3. Workspace Agent Governance (`AGENTS.md`)
+At the workspace root, `AGENTS.md` codifies rules enforced by Antigravity and Gemini CLI agents on session boot:
+- **Course & Curriculum Data Access**: Must route exclusively through `coursedeck` MCP tools (`get_lesson_doc`, `get_course`, `list_lessons`, `list_courses`, `search_course`).
+- **File Reading Hygiene**: Strictly prohibits spawning `python3` or shell scripts solely to inspect files. Enforces `view_file` for repository code and `coursedeck` tools for course assets.
 
 ---
 

@@ -6,6 +6,13 @@ import { getDataDir, loadAppSettings } from '../app/src/lib/server/paths';
 import { handleMcpHttpRequest } from './mcp/server';
 import { runMcpStdio } from './mcp/stdio';
 
+if (!process.env.ILC_SERVER_PATH) {
+  const scriptPath = path.resolve(import.meta.dir, 'index.ts');
+  if (fs.existsSync(scriptPath)) {
+    process.env.ILC_SERVER_PATH = scriptPath;
+  }
+}
+
 // ── 0. Stdio Mode Check (Claude Desktop / CLI) ───────────────────────────────
 // Must be evaluated BEFORE any HTTP binding or stdout logging.
 if (process.argv.includes('--mcp-stdio')) {

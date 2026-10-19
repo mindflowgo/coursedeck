@@ -122,11 +122,11 @@ describe('forgetCourseScroll', () => {
     storage.setItem('tab_scroll:baf3m:01.01:summary', '1200');
     storage.setItem('tab_scroll:baf3m:course:schedule', '80');
     storage.setItem('tab_scroll:mcr3u:02.01:lesson', '640');
-    storage.setItem('ilc_llm_model', 'qwen');
+    storage.setItem('app_llm_model', 'qwen');
 
     forgetCourseScroll('baf3m', storage);
 
-    expect(storage.keys()).toEqual(['tab_scroll:mcr3u:02.01:lesson', 'ilc_llm_model']);
+    expect(storage.keys()).toEqual(['tab_scroll:mcr3u:02.01:lesson', 'app_llm_model']);
   });
 
   it('matches the course id case-insensitively', () => {
@@ -151,14 +151,14 @@ describe('pruneScrollMemory', () => {
     storage.setItem('tab_scroll:baf3m:01.01:summary', '1200');
     storage.setItem('tab_scroll:mcr3u:02.01:lesson', '640');
     storage.setItem('tab_scroll:zzz9:course:test', '12');
-    storage.setItem('ilc_nav_base', '1');
+    storage.setItem('app_nav_base', '1');
 
     pruneScrollMemory(['BAF3M', 'mcr3u'], storage);
 
     expect(storage.keys()).toEqual([
       'tab_scroll:baf3m:01.01:summary',
       'tab_scroll:mcr3u:02.01:lesson',
-      'ilc_nav_base'
+      'app_nav_base'
     ]);
   });
 

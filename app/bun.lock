@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ilc-study-tool-app",
+      "name": "course-deck",
       "dependencies": {
         "@codemirror/commands": "^6.8.0",
         "@codemirror/lang-markdown": "^6.3.2",

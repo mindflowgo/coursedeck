@@ -5,7 +5,7 @@ import path from 'node:path';
 
 // CourseService resolves its directories through getDataDir(), which honours
 // DATA_DIR on every call — so pointing tests at a scratch dir needs no mocking.
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ilc-tabs-'));
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'app-tabs-'));
 process.env.DATA_DIR = scratch;
 
 import { CourseService } from './courses';
