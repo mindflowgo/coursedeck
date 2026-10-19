@@ -58,6 +58,14 @@ fs.writeFileSync(
   'utf8'
 );
 
+const testPromptsDir = path.join(dataDir, 'prompts');
+fs.mkdirSync(testPromptsDir, { recursive: true });
+fs.writeFileSync(
+  path.join(testPromptsDir, 'mcp_prompt_instructions.md'),
+  '# MCP Prompt Instructions\n\nAlways use get_lesson_doc to fetch lesson content.',
+  'utf8'
+);
+
 import { describe, it, expect, afterAll } from 'bun:test';
 import { handleMcpHttpRequest } from './server';
 import { PromptService } from '../../app/src/lib/server/prompts';
