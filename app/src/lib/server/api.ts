@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { PromptService } from './prompts';
 import { LLMService, type LLMConfig, type LlmModelCard } from './llm';
+import { stripLessonMedia } from '../markdown/stripMedia';
 import { queueManager } from './queue';
 import {
   getDataDir,
@@ -351,7 +352,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             const result = await LLMService.generateResult(
               effective,
               systemPrompt as string,
-              userPrompt as string
+              stripLessonMedia(userPrompt as string)
             );
             return json({ success: true, completion: result.completion, usage: result.usage });
           } catch (err) {
@@ -1256,7 +1257,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           const jobKey = `${courseId.toLowerCase()}:${type}`;
 
           const runGeneration = async () => {
-            const result = await LLMService.generateResult(config, systemPrompt, payload, { timeoutMs });
+            const result = await LLMService.generateResult(config, systemPrompt, stripLessonMedia(payload), { timeoutMs });
             const parsed = parseFrontmatter(result.completion.trim());
             const content = serializeWithFrontmatter(
               {

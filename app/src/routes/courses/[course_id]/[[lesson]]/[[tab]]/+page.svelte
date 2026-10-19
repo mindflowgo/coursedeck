@@ -19,6 +19,7 @@
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
   import { parseFrontmatter, serializeWithFrontmatter } from '$lib/parser/frontmatter';
+  import { stripLessonMedia } from '$lib/markdown/stripMedia';
   import { validateScheduleMarkdown } from '$lib/parser/scheduleValidation';
   import { ScheduleParser } from '$lib/parser/scheduleParser';
   import { formatUserNote, insertAnnotationAfterText, removeAnnotation } from '$lib/parser/annotationInserter';
@@ -1374,7 +1375,8 @@
         'You are an expert Ontario secondary school tutor. A student studying course material has highlighted a specific passage and asked a question. Provide a concise, clear, and insightful answer directly addressing the question in the context of the Ontario curriculum and lesson material. Emphasize key terms, legal doctrines, or definitions in bold. Keep the answer focused (1 to 3 short paragraphs or bullet points). Do not repeat the student query or include conversational filler.';
 
       const lessonContext = tabContents.lesson || tabContents[activeTab] || '';
-      const userPrompt = `Course: ${course?.title || courseId}\nLesson: ${currentLessonTitle}\n\nSelected Passage to Explain:\n"${selectedText}"\n\nStudent's Question:\n"${query}"\n\nFull Reference Context:\n${lessonContext}`;
+      const cleanContext = stripLessonMedia(lessonContext);
+      const userPrompt = `Course: ${course?.title || courseId}\nLesson: ${currentLessonTitle}\n\nSelected Passage to Explain:\n"${selectedText}"\n\nStudent's Question:\n"${query}"\n\nFull Reference Context:\n${cleanContext}`;
 
       console.log(`[ILC AI Note Request]`);
       console.log(`- Session ID: ${sessionId}`);

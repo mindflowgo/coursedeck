@@ -427,7 +427,7 @@ export function registerMcpTools(mcp: McpServer): void {
               const result = await LLMService.generateResult(
                 config,
                 promptTemplate.content,
-                bundle.lesson
+                CourseService.stripLessonMedia(bundle.lesson)
               );
               CourseService.saveLessonTab(args.courseId, args.lessonId, tab, result.completion);
               JobService.updateJob(job.id, {
@@ -576,7 +576,7 @@ export function registerMcpTools(mcp: McpServer): void {
             const bundle = CourseService.getLessonContent(args.courseId, lId);
             if (bundle) {
               const text = (bundle.tabs && bundle.tabs.summary) || bundle.lesson || '';
-              context += `\n\n## Lesson ${lId}\n${text}\n`;
+              context += `\n\n## Lesson ${lId}\n${CourseService.stripLessonMedia(text)}\n`;
             }
           }
         }

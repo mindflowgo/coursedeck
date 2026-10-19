@@ -3,6 +3,7 @@ import { PromptService } from './prompts';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { JobService } from './services/job.service';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
+import { stripLessonMedia } from '../markdown/stripMedia';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import {
   defaultSchedulePreferences,
@@ -765,7 +766,8 @@ export class GenerationQueue {
             `You are an expert Ontario curriculum educator. Produce a high quality ${nextTask.tab} in Markdown format.`;
         }
 
-        const userPrompt = `Course: ${nextTask.courseId.toUpperCase()}\nLesson: ${nextTask.lessonTitle}\n\nFull Lesson Material:\n${bundle.lesson}`;
+        const cleanLesson = stripLessonMedia(bundle.lesson);
+        const userPrompt = `Course: ${nextTask.courseId.toUpperCase()}\nLesson: ${nextTask.lessonTitle}\n\nFull Lesson Material:\n${cleanLesson}`;
 
         // Use the CURRENT active settings: clean model (blank if not specified) and session_id
         const effectiveConfig: LLMConfig = {

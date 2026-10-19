@@ -282,6 +282,10 @@ export class CourseService {
     return BaseCourseService.getLessonBundle(normalizeCourseId(courseId), lessonId);
   }
 
+  static stripLessonMedia(content: string | null | undefined): string {
+    return BaseCourseService.stripLessonMedia(content);
+  }
+
   static saveLessonTab(
     courseId: string,
     lessonId: string,

@@ -5,6 +5,7 @@ import type { Checkpoint } from '../checkpoint';
 import { tabFileName, courseDocFileName, parseDocFileName } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
+import { stripLessonMedia } from '../markdown/stripMedia';
 import type { LessonEffort, PlannedSession } from '../scheduleGenerator';
 export type { LessonEffort };
 import {
@@ -201,6 +202,13 @@ export class CourseService {
 
   static getLessonBundle(courseId: string, lessonId: string): LessonContentBundle | null {
     return this.getLessonContent(courseId, lessonId);
+  }
+
+  /**
+   * Strips pictures and inaccessible links from lesson markdown before LLM processing.
+   */
+  static stripLessonMedia(content: string | null | undefined): string {
+    return stripLessonMedia(content);
   }
 
   /**
@@ -488,7 +496,7 @@ export class CourseService {
       if (!item.content || item.content.trim().length === 0) continue;
 
       const parsed = parseFrontmatter(item.content);
-      const cleanBody = (parsed.body || item.content).trim();
+      const cleanBody = stripLessonMedia((parsed.body || item.content).trim());
       if (!cleanBody) continue;
 
       if (item.unitNumber !== currentUnit) {
@@ -520,7 +528,7 @@ export class CourseService {
         return null;
       }
       const parsed = parseFrontmatter(raw);
-      const body = (parsed.body || raw).trim();
+      const body = stripLessonMedia((parsed.body || raw).trim());
       return body.length > 0 ? body : null;
     } catch (e) {
       console.warn(`Failed to read curated file ${filePath}:`, e);
