@@ -33,7 +33,7 @@ import { SyncService } from './services/sync/sync.service';
 import { GoogleCalendarProvider } from './services/sync/google.provider';
 import { ArcSyncProvider } from './services/sync/arc.provider';
 import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
-import { TeacherCheckinService, type PopQuizQuestionResult, type PopQuizResultPayload } from './services/teacherCheckin.service';
+import { TeacherCheckinService, cleanImageReferences, type PopQuizQuestionResult, type PopQuizResultPayload } from './services/teacherCheckin.service';
 import { QuestionParser } from '../parser/questionParser';
 
 /**
@@ -1083,7 +1083,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         const body = (await req.json().catch(() => ({}))) as Record<string, any>;
         const rawCourseId = String(body.courseId || '').trim();
         const rawLessonId = String(body.lessonId || '').trim();
-        const lessonTitle = typeof body.lessonTitle === 'string' ? body.lessonTitle : '';
+        const rawLessonTitle = typeof body.lessonTitle === 'string' ? body.lessonTitle : '';
         const timestamp = String(body.timestamp || new Date().toISOString());
         const testMarkdown = String(body.testMarkdown || '');
         const answers = (body.answers && typeof body.answers === 'object') ? body.answers as Record<string, string> : {};
@@ -1097,12 +1097,34 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         const courseId = assertCourseId(rawCourseId).toLowerCase();
         const lessonId = assertLessonId(rawLessonId);
 
+        // Sanitize lesson title and remove any image references
+        let lessonTitle = cleanImageReferences(rawLessonTitle);
+
         // Parse quiz using QuestionParser
         const parsedQuiz = QuestionParser.parseMarkdown(testMarkdown);
+
+        if (!lessonTitle && parsedQuiz.title) {
+          lessonTitle = cleanImageReferences(parsedQuiz.title);
+        }
+
+        if (!lessonTitle) {
+          try {
+            const courseData = CourseService.getCourse(courseId);
+            const manifestLesson = courseData?.units
+              ?.flatMap((u) => u.lessons || [])
+              ?.find((l) => l.id.toLowerCase() === lessonId.toLowerCase());
+            if (manifestLesson?.title) {
+              lessonTitle = cleanImageReferences(manifestLesson.title);
+            }
+          } catch {
+            // ignore
+          }
+        }
+
         let score = 0;
 
         const evaluatedQuestions: PopQuizQuestionResult[] = parsedQuiz.questions.map((q) => {
-          const studentAns = (answers[q.number] || '').trim();
+          const studentAns = (answers[q.number] || answers[String(parseInt(q.number, 10))] || '').trim();
           const correctAns = (q.correctAnswer || '').trim();
           let isCorrect = false;
 

@@ -26,6 +26,44 @@ export interface PopQuizResultPayload {
   percentage: number;
 }
 
+/**
+ * Strips markdown and HTML image references from text.
+ * e.g. ![alt|50%](./assets/img/...) or <img ...>
+ */
+export function cleanImageReferences(text: string | null | undefined): string {
+  if (!text) return '';
+  let cleaned = text
+    // Strip markdown images: ![alt](url)
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    // Strip HTML images and picture tags
+    .replace(/<picture\b[^>]*>[\s\S]*?<\/picture>/gi, '')
+    .replace(/<img\b[^>]*>(?:<\/img>)?/gi, '')
+    // Strip markdown header hashes if present
+    .replace(/^#+\s*/, '')
+    // Collapse excess whitespace
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  // Strip leading and trailing separator artifacts e.g. " - " or ": "
+  cleaned = cleaned.replace(/^[\s—–:-]+/, '').replace(/[\s—–:-]+$/, '').trim();
+
+  return cleaned;
+}
+
+/**
+ * Splits a raw string by comma and trims whitespace from each entry,
+ * filtering out any empty strings.
+ * e.g. "name1@email.com, name2@email.com" -> ["name1@email.com", "name2@email.com"]
+ * e.g. "name1@email.com,name2@email.com"  -> ["name1@email.com", "name2@email.com"]
+ */
+export function parseRecipientEmails(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((e) => e.trim())
+    .filter((e) => e.length > 0);
+}
+
 export class TeacherCheckinService {
   static getConfig(): TeacherCheckinConfig | null {
     const settings = loadAppSettings();
@@ -33,9 +71,11 @@ export class TeacherCheckinService {
   }
 
   static saveConfig(config: TeacherCheckinConfig): void {
+    const recipients = parseRecipientEmails(config.email);
+    const normalizedEmail = recipients.join(', ');
     saveAppSettings({
       teacher_checkin: {
-        email: (config.email || '').trim(),
+        email: normalizedEmail,
         sender: config.sender === 'outlook' ? 'outlook' : 'gmail',
         loginEmail: (config.loginEmail || '').trim(),
         loginPassword: config.loginPassword || ''
@@ -63,8 +103,9 @@ export class TeacherCheckinService {
     if (!cfg) {
       throw new Error('Teacher Check-In is not configured. Please set up your credentials in Settings.');
     }
-    if (!cfg.email || !cfg.loginEmail || !cfg.loginPassword) {
-      throw new Error('Incomplete Teacher Check-In settings: email, login email, and login password are required.');
+    const recipients = parseRecipientEmails(cfg.email);
+    if (recipients.length === 0 || !cfg.loginEmail || !cfg.loginPassword) {
+      throw new Error('Incomplete Teacher Check-In settings: at least one recipient email, login email, and login password are required.');
     }
 
     // Clean password: strip leading/trailing whitespace.
@@ -91,12 +132,14 @@ export class TeacherCheckinService {
 
   static async sendTestEmail(overrideConfig?: TeacherCheckinConfig): Promise<{ success: boolean; message: string }> {
     const cfg = overrideConfig || this.getConfig();
-    if (!cfg || !cfg.email || !cfg.loginEmail || !cfg.loginPassword) {
+    const recipients = parseRecipientEmails(cfg?.email);
+    if (!cfg || recipients.length === 0 || !cfg.loginEmail || !cfg.loginPassword) {
       throw new Error('Please fill in all Teacher Check-In fields (Email, Login Email, and Password) before sending a test.');
     }
 
     const transport = this.createMailerTransport(cfg);
     const now = new Date().toLocaleString();
+    const recipientsLabel = recipients.join(', ');
 
     const html = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff; color: #111827;">
@@ -109,7 +152,7 @@ export class TeacherCheckinService {
         </p>
         <div style="background-color: #f3f4f6; padding: 12px 16px; border-radius: 8px; margin: 16px 0; font-size: 13px; color: #4b5563;">
           <p style="margin: 4px 0;"><strong>Sender Account:</strong> ${cfg.loginEmail}</p>
-          <p style="margin: 4px 0;"><strong>Recipient:</strong> ${cfg.email}</p>
+          <p style="margin: 4px 0;"><strong>Recipient${recipients.length > 1 ? 's' : ''}:</strong> ${recipientsLabel}</p>
           <p style="margin: 4px 0;"><strong>Timestamp:</strong> ${now}</p>
         </div>
         <p style="font-size: 13px; color: #059669; font-weight: 500;">
@@ -121,14 +164,14 @@ export class TeacherCheckinService {
     const text = `CourseDeck Teacher Check-In Verified\n\n` +
       `Test connection from student accountability system.\n\n` +
       `Sender: ${cfg.loginEmail}\n` +
-      `Recipient: ${cfg.email}\n` +
+      `Recipient${recipients.length > 1 ? 's' : ''}: ${recipientsLabel}\n` +
       `Timestamp: ${now}\n\n` +
       `Pop quiz attempts and accountability updates will be sent to this address.`;
 
     try {
       const result = await transport.send({
         from: cfg.loginEmail.trim(),
-        to: cfg.email.trim(),
+        to: recipients,
         subject: `[CourseDeck] Teacher Check-In Test Email - ${now}`,
         html,
         text
@@ -136,7 +179,7 @@ export class TeacherCheckinService {
 
       return {
         success: true,
-        message: `Test email sent successfully to ${cfg.email} (Message ID: ${result.messageId || 'OK'})`
+        message: `Test email sent successfully to ${recipientsLabel} (Message ID: ${result.messageId || 'OK'})`
       };
     } catch (err: any) {
       const errMsg = err?.message || String(err);
@@ -166,13 +209,16 @@ export class TeacherCheckinService {
 
   static async sendQuizResultEmail(payload: PopQuizResultPayload): Promise<{ success: boolean; messageId: string }> {
     const cfg = this.getConfig();
-    if (!cfg || !cfg.email || !cfg.loginEmail || !cfg.loginPassword) {
+    const recipients = parseRecipientEmails(cfg?.email);
+    if (!cfg || recipients.length === 0 || !cfg.loginEmail || !cfg.loginPassword) {
       throw new Error('Teacher Check-In is not configured. Quiz results were recorded locally, but could not be emailed.');
     }
 
     const transport = this.createMailerTransport(cfg);
     const courseCode = payload.courseId.toUpperCase();
-    const lessonTitle = payload.lessonTitle || payload.lessonId;
+    const cleanTitle = cleanImageReferences(payload.lessonTitle);
+    const headingTitle = cleanTitle ? ` - ${cleanTitle}` : '';
+    const textTitle = cleanTitle ? ` (${cleanTitle})` : '';
     const timeFormatted = payload.timeSpentSeconds !== undefined
       ? `${Math.floor(payload.timeSpentSeconds / 60)}m ${payload.timeSpentSeconds % 60}s`
       : 'Under 5m';
@@ -191,13 +237,19 @@ export class TeacherCheckinService {
       const statusBg = isCorrect ? '#f0fdf4' : '#fef2f2';
       const borderCol = isCorrect ? '#bbf7d0' : '#fecaca';
 
+      const cleanPrompt = cleanImageReferences(q.prompt);
+      const cleanStudentAnswer = cleanImageReferences(q.studentAnswer);
+      const cleanCorrectAnswer = cleanImageReferences(q.correctAnswer);
+      const cleanExplanation = q.explanation ? cleanImageReferences(q.explanation) : '';
+
       let optionsHtml = '';
       if (q.type === 'multiple-choice' && q.options && q.options.length > 0) {
         optionsHtml = `
           <div style="margin: 8px 0; padding-left: 8px;">
             ${q.options.map(opt => {
-              const isSelected = q.studentAnswer.toUpperCase() === opt.letter.toUpperCase();
-              const isOptionCorrect = q.correctAnswer.toUpperCase() === opt.letter.toUpperCase();
+              const cleanOptText = cleanImageReferences(opt.text);
+              const isSelected = cleanStudentAnswer.toUpperCase() === opt.letter.toUpperCase();
+              const isOptionCorrect = cleanCorrectAnswer.toUpperCase() === opt.letter.toUpperCase();
               let optStyle = 'color: #4b5563; font-size: 13px; margin: 3px 0;';
               let optBadge = `<span style="font-family: monospace; display: inline-block; width: 18px;">${opt.letter})</span>`;
               if (isSelected && isCorrect) {
@@ -207,7 +259,7 @@ export class TeacherCheckinService {
               } else if (isOptionCorrect && !isCorrect) {
                 optStyle = 'color: #15803d; font-weight: 600; font-size: 13px; margin: 3px 0;';
               }
-              return `<div style="${optStyle}">${optBadge} ${opt.text}</div>`;
+              return `<div style="${optStyle}">${optBadge} ${cleanOptText}</div>`;
             }).join('')}
           </div>
         `;
@@ -223,22 +275,22 @@ export class TeacherCheckinService {
               ${statusIcon} ${isCorrect ? 'CORRECT' : 'INCORRECT'}
             </div>
           </div>
-          <p style="margin: 4px 0 8px 0; font-size: 13px; color: #1f2937; line-height: 1.4;">${q.prompt}</p>
+          <p style="margin: 4px 0 8px 0; font-size: 13px; color: #1f2937; line-height: 1.4;">${cleanPrompt}</p>
           ${optionsHtml}
           <div style="margin-top: 8px; font-size: 12px; line-height: 1.5; border-top: 1px dashed ${borderCol}; padding-top: 6px;">
             <div style="margin: 2px 0;">
               <strong>Student Answer:</strong>
-              <span style="color: ${statusColor}; font-weight: 600;">${q.studentAnswer || '(No answer provided)'}</span>
+              <span style="color: ${statusColor}; font-weight: 600;">${cleanStudentAnswer || '(No answer provided)'}</span>
             </div>
             ${!isCorrect ? `
               <div style="margin: 2px 0;">
                 <strong>Correct Answer:</strong>
-                <span style="color: #15803d; font-weight: 600;">${q.correctAnswer}</span>
+                <span style="color: #15803d; font-weight: 600;">${cleanCorrectAnswer}</span>
               </div>
             ` : ''}
-            ${q.explanation ? `
+            ${cleanExplanation ? `
               <div style="margin-top: 4px; color: #4b5563; font-style: italic;">
-                <strong>Explanation:</strong> ${q.explanation}
+                <strong>Explanation:</strong> ${cleanExplanation}
               </div>
             ` : ''}
           </div>
@@ -254,7 +306,7 @@ export class TeacherCheckinService {
             ${courseCode}
           </div>
           <h2 style="margin: 4px 0 0 0; color: #111827; font-size: 20px;">
-            Pop Quiz: Lesson ${payload.lessonId} - ${lessonTitle}
+            Pop Quiz: Lesson ${payload.lessonId}${headingTitle}
           </h2>
           <p style="margin: 4px 0 0 0; color: #6b7280; font-size: 12px;">
             Completed on ${new Date().toLocaleString()} &bull; Duration: ${timeFormatted} ${payload.timedOut ? '<strong style="color: #dc2626;">(Timer expired at 5m)</strong>' : ''}
@@ -288,7 +340,7 @@ export class TeacherCheckinService {
     `;
 
     // Plain text alternative
-    let text = `[CourseDeck] Pop Quiz Results: ${courseCode} - ${payload.lessonId} (${lessonTitle})\n\n`;
+    let text = `[CourseDeck] Pop Quiz Results: ${courseCode} - ${payload.lessonId}${textTitle}\n\n`;
     text += `Score: ${payload.score} / ${payload.total} (${payload.percentage}%)\n`;
     text += `Duration: ${timeFormatted} ${payload.timedOut ? '(Timer Expired)' : ''}\n`;
     text += `Date: ${new Date().toLocaleString()}\n\n`;
@@ -296,23 +348,31 @@ export class TeacherCheckinService {
 
     for (const q of payload.questions) {
       const isCorrect = q.isCorrect;
-      text += `Q${q.number}) [${q.type}] ${q.prompt}\n`;
-      text += `Student Answer: ${q.studentAnswer || '(None)'} [${isCorrect ? 'CORRECT' : 'INCORRECT'}]\n`;
+      const cleanQPrompt = cleanImageReferences(q.prompt);
+      const cleanQStudent = cleanImageReferences(q.studentAnswer);
+      const cleanQCorrect = cleanImageReferences(q.correctAnswer);
+      const cleanQExpl = q.explanation ? cleanImageReferences(q.explanation) : '';
+
+      text += `Q${q.number}) [${q.type}] ${cleanQPrompt}\n`;
+      text += `Student Answer: ${cleanQStudent || '(None)'} [${isCorrect ? 'CORRECT' : 'INCORRECT'}]\n`;
       if (!isCorrect) {
-        text += `Correct Answer: ${q.correctAnswer}\n`;
+        text += `Correct Answer: ${cleanQCorrect}\n`;
       }
-      if (q.explanation) {
-        text += `Explanation: ${q.explanation}\n`;
+      if (cleanQExpl) {
+        text += `Explanation: ${cleanQExpl}\n`;
       }
       text += `\n`;
     }
 
+    const finalHtml = html.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+    const finalText = text.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+
     const result = await transport.send({
-      from: cfg.loginEmail,
-      to: cfg.email,
+      from: cfg.loginEmail.trim(),
+      to: recipients,
       subject,
-      html,
-      text
+      html: finalHtml,
+      text: finalText
     });
 
     return {

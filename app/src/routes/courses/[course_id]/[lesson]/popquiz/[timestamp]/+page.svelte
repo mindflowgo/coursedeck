@@ -35,15 +35,49 @@
     return cleaned;
   }
 
+  function cleanTitle(raw: string): string {
+    if (!raw) return '';
+    let cleaned = raw
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+      .replace(/<picture\b[^>]*>[\s\S]*?<\/picture>/gi, '')
+      .replace(/<img\b[^>]*>(?:<\/img>)?/gi, '')
+      .replace(/^#+\s*/, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return cleaned.replace(/^[\s—–:-]+/, '').replace(/[\s—–:-]+$/, '').trim();
+  }
+
   async function loadLessonMeta() {
     try {
       const res = await apiFetch(`/api/courses/${courseId}/${lessonId}`);
       if (res.ok) {
         const bundle = await res.json();
-        const firstLine = (bundle.lesson || '').split('\n').find((l: string) => l.startsWith('# '));
-        lessonTitle = firstLine ? firstLine.replace(/^#\s+/, '').trim() : lessonId;
+        const lines = (bundle.lesson || '').split('\n');
+        for (const line of lines) {
+          if (/^#+\s/.test(line)) {
+            const cleaned = cleanTitle(line);
+            if (cleaned.length > 0) {
+              lessonTitle = cleaned;
+              break;
+            }
+          }
+        }
       }
     } catch {}
+
+    if (!lessonTitle) {
+      try {
+        const courseRes = await apiFetch(`/api/courses/${courseId}`);
+        if (courseRes.ok) {
+          const data = await courseRes.json();
+          const allLessons = data?.course?.units ? data.course.units.flatMap((u: any) => u.lessons || []) : [];
+          const match = allLessons.find((l: any) => (l.id || '').toLowerCase() === lessonId.toLowerCase());
+          if (match?.title) {
+            lessonTitle = cleanTitle(match.title);
+          }
+        }
+      } catch {}
+    }
   }
 
   async function fetchOrGeneratePopQuiz(forceRegenerate = false) {

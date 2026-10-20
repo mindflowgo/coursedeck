@@ -267,7 +267,8 @@
               <div class="min-w-0">
                 <button
                   type="button"
-                  onclick={() => goto(`/courses/${course.courseId.toLowerCase()}`)}
+                  onclick={() => openCourseSchedule(course.courseId)}
+                  // onclick={() => goto(`/courses/${course.courseId.toLowerCase()}`)}
                   class="text-sm font-semibold text-stone-900 dark:text-stone-100 hover:underline truncate block text-left cursor-pointer"
                 >{course.courseTitle}</button>
                 <p class="text-[11px] text-stone-400">

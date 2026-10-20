@@ -8,6 +8,7 @@ process.env.DATA_DIR = scratch;
 
 import { handleApiRequest } from './api';
 import { CourseService } from './courses';
+import { cleanImageReferences, parseRecipientEmails } from './services/teacherCheckin.service';
 
 const courseId = 'testcourse';
 const courseDir = path.join(scratch, 'courses', courseId);
@@ -89,6 +90,66 @@ describe('Pop Quiz Accountability & Schedule Mark-Done API', () => {
     expect(getBody.hasPassword).toBe(true);
   });
 
+  it('GET and POST /api/settings/emailserver supports multiple comma-separated emails', async () => {
+    const postReq = new Request('http://127.0.0.1:3182/api/settings/emailserver', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'teacher1@school.edu, teacher2@school.edu,parent@home.org',
+        sender: 'gmail',
+        loginEmail: 'student@gmail.com',
+        loginPassword: 'abcd efgh ijkl mnop'
+      })
+    });
+    const postRes = await handleApiRequest(postReq, new URL('http://127.0.0.1:3182/api/settings/emailserver'));
+    expect(postRes.status).toBe(200);
+    const postBody = await postRes.json();
+    expect(postBody.success).toBe(true);
+    expect(postBody.email).toBe('teacher1@school.edu, teacher2@school.edu, parent@home.org');
+
+    const getReq = new Request('http://127.0.0.1:3182/api/settings/emailserver', { method: 'GET' });
+    const getRes = await handleApiRequest(getReq, new URL('http://127.0.0.1:3182/api/settings/emailserver'));
+    expect(getRes.status).toBe(200);
+    const getBody = await getRes.json();
+    expect(getBody.email).toBe('teacher1@school.edu, teacher2@school.edu, parent@home.org');
+  });
+
+  describe('parseRecipientEmails', () => {
+    it('parses single email', () => {
+      expect(parseRecipientEmails('name@email.com')).toEqual(['name@email.com']);
+    });
+
+    it('parses multiple comma-separated emails with or without spaces ("," and ", ")', () => {
+      expect(parseRecipientEmails('name1@email.com,name2@email.com')).toEqual([
+        'name1@email.com',
+        'name2@email.com'
+      ]);
+      expect(parseRecipientEmails('name1@email.com, name2@email.com')).toEqual([
+        'name1@email.com',
+        'name2@email.com'
+      ]);
+      expect(parseRecipientEmails('  name1@email.com ,  name2@email.com , name3@email.com  ')).toEqual([
+        'name1@email.com',
+        'name2@email.com',
+        'name3@email.com'
+      ]);
+    });
+
+    it('ignores empty entries and extra commas', () => {
+      expect(parseRecipientEmails(',name1@email.com, , name2@email.com,')).toEqual([
+        'name1@email.com',
+        'name2@email.com'
+      ]);
+    });
+
+    it('handles empty, null, undefined, and whitespace-only strings', () => {
+      expect(parseRecipientEmails('')).toEqual([]);
+      expect(parseRecipientEmails(null)).toEqual([]);
+      expect(parseRecipientEmails(undefined)).toEqual([]);
+      expect(parseRecipientEmails('   ')).toEqual([]);
+    });
+  });
+
   it('POST /api/courses/:course_id/schedule/mark-lesson-done toggles schedule checkbox and returns nextLessonId', async () => {
     const req = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/schedule/mark-lesson-done`, {
       method: 'POST',
@@ -128,5 +189,77 @@ describe('Pop Quiz Accountability & Schedule Mark-Done API', () => {
 
     const updatedContent = fs.readFileSync(path.join(courseDir, 'course.schedule.md'), 'utf8');
     expect(updatedContent).toContain('- [x] **Study** 01.02 — Introduction to the second lesson (60m)');
+  });
+
+  describe('cleanImageReferences', () => {
+    it('strips standalone markdown image references', () => {
+      const input = '![Minds On|50%](./assets/img/baf3m_01.02_mindsOn.jpg)';
+      expect(cleanImageReferences(input)).toBe('');
+    });
+
+    it('strips markdown images embedded in titles with heading hash and separators', () => {
+      const input = '# ![Minds On|50%](./assets/img/baf3m_01.02_mindsOn.jpg) The Accounting Equation';
+      expect(cleanImageReferences(input)).toBe('The Accounting Equation');
+
+      const inputWithDash = '# ![Minds On|50%](./assets/img/baf3m_01.02_mindsOn.jpg) - The Accounting Equation';
+      expect(cleanImageReferences(inputWithDash)).toBe('The Accounting Equation');
+
+      const inputTrailingDash = 'The Accounting Equation - ![icon](./assets/img/icon.png)';
+      expect(cleanImageReferences(inputTrailingDash)).toBe('The Accounting Equation');
+    });
+
+    it('strips HTML picture and img tags', () => {
+      const input = '<picture><source srcset="test.webp"><img src="./assets/img/baf3m.jpg" alt="test"></picture> Balance Sheet';
+      expect(cleanImageReferences(input)).toBe('Balance Sheet');
+    });
+
+    it('handles null, undefined, and empty string', () => {
+      expect(cleanImageReferences(null)).toBe('');
+      expect(cleanImageReferences(undefined)).toBe('');
+      expect(cleanImageReferences('')).toBe('');
+    });
+  });
+
+  it('POST /api/pop-quiz/submit sanitizes image references from lessonTitle and falls back to manifest', async () => {
+    const rawMarkdown = `---
+type: popquiz
+course: ${courseId.toUpperCase()}
+lesson: 01.01
+---
+# ![Minds On|50%](./assets/img/baf3m_01.02_mindsOn.jpg)
+
+## Questions
+01) [KU] What is an asset?
+<Multiple-Choice>
+- [ ] An economic resource
+- [ ] A debt
+- [ ] An expense
+- [ ] None
+
+## Answers
+01) A - (explanation) Assets are resources owned by the business.
+`;
+
+    const req = new Request('http://127.0.0.1:3182/api/pop-quiz/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        courseId,
+        lessonId: '01.01',
+        lessonTitle: '![Minds On|50%](./assets/img/baf3m_01.02_mindsOn.jpg)',
+        testMarkdown: rawMarkdown,
+        answers: { '1': 'A' },
+        timeSpentSeconds: 45
+      })
+    });
+
+    const res = await handleApiRequest(req, new URL('http://127.0.0.1:3182/api/pop-quiz/submit'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.score).toBe(1);
+    expect(body.total).toBe(1);
+    expect(body.percentage).toBe(100);
+    expect(body.supervisorMessage).toBe('Updated course supervisor, thank you!');
   });
 });

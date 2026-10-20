@@ -1410,12 +1410,12 @@
           </label>
           <input
             id="teacher-email-input"
-            type="email"
+            type="text"
             bind:value={teacherEmail}
-            placeholder="e.g. teacher@school.org"
+            placeholder="e.g. name1@email.com, name2@email.com"
             class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
           />
-          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">Quiz results and progress updates are delivered here.</p>
+          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">Separate multiple emails with commas. Each recipient will receive the same email.</p>
         </div>
 
         <div>
