@@ -105,6 +105,14 @@
   const GOOGLE_REDIRECT_URI = 'http://127.0.0.1:3182/api/sync/oauth/google/callback';
   let googlePollInterval: ReturnType<typeof setInterval> | null = null;
 
+  // Timeflow / ARC state
+  let arcEndpoint = $state('http://127.0.0.1:3001/v1/groups');
+  let arcApiKey = $state('');
+  let arcHasCredentials = $state(false);
+  let arcStatusMessage = $state('');
+  let isSavingArcCreds = $state(false);
+  let showArcCredsForm = $state(false);
+
   onDestroy(() => {
     stopGooglePolling();
   });
@@ -190,6 +198,13 @@
           clientIdInput = googleStatus.clientId;
         }
 
+        const arcStatus = data.providers?.arc;
+        arcHasCredentials = Boolean(arcStatus?.hasCredentials);
+        if (arcStatus?.endpoint) {
+          arcEndpoint = arcStatus.endpoint;
+        }
+        arcStatusMessage = arcStatus?.accountEmail || '';
+
         if (isConnected) {
           const calRes = await apiFetch('/api/sync/calendars?provider=google');
           if (calRes.ok) {
@@ -205,6 +220,38 @@
       console.warn('Failed to check sync status:', e);
     } finally {
       isCheckingStatus = false;
+    }
+  }
+
+  async function saveArcCredentials() {
+    if (!arcApiKey.trim()) {
+      errorMsg = 'Timeflow API Key is required.';
+      return;
+    }
+    isSavingArcCreds = true;
+    errorMsg = null;
+    try {
+      const res = await apiFetch('/api/sync/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: 'arc',
+          endpoint: arcEndpoint.trim() || 'http://127.0.0.1:3001/v1/groups',
+          apiKey: arcApiKey.trim()
+        })
+      });
+      if (res.ok) {
+        showArcCredsForm = false;
+        arcHasCredentials = true;
+        await fetchStatusAndCalendars();
+      } else {
+        const d = await res.json().catch(() => ({}));
+        errorMsg = d.message || 'Failed to save Timeflow credentials.';
+      }
+    } catch (err: any) {
+      errorMsg = err.message || 'Failed to save Timeflow credentials.';
+    } finally {
+      isSavingArcCreds = false;
     }
   }
 
@@ -362,10 +409,14 @@
           onclick={() => { selectedProvider = 'arc'; errorMsg = null; }}
           class="py-2 px-3 rounded-lg transition flex items-center justify-center space-x-2 cursor-pointer {selectedProvider === 'arc'
             ? 'bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold'
-            : 'text-stone-400 dark:text-stone-500 hover:text-stone-600'}"
+            : 'text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200'}"
         >
-          <span>ARC Sync</span>
-          <span class="text-[9px] px-1.5 py-0.2 rounded-full bg-stone-200 dark:bg-stone-700 text-stone-600 dark:text-stone-300">Preview</span>
+          <span>Timeflow</span>
+          {#if arcHasCredentials}
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+          {:else}
+            <span class="text-[9px] px-1.5 py-0.2 rounded-full bg-stone-200 dark:bg-stone-700 text-stone-600 dark:text-stone-300">Setup</span>
+          {/if}
         </button>
       </div>
 
@@ -635,17 +686,159 @@
           </div>
         {/if}
       {:else}
-        <!-- ARC View -->
-        <div class="p-5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/40 space-y-3">
-          <div class="flex items-center space-x-2 text-xs font-semibold text-sky-700 dark:text-sky-300">
-            <Calendar class="w-4 h-4 text-sky-500" />
-            <span>ARC Markdown Import Generator (Simulation)</span>
+        <!-- Timeflow View -->
+        <div class="space-y-3.5">
+          <!-- Connection Status Bar -->
+          <div class="flex items-center justify-between py-1.5 px-3 rounded-lg bg-stone-50 dark:bg-stone-800/40 border border-stone-200/80 dark:border-stone-800 text-xs">
+            <div class="flex items-center space-x-2 min-w-0">
+              <span class="w-2 h-2 rounded-full {arcHasCredentials ? 'bg-emerald-500' : 'bg-amber-500'} shrink-0"></span>
+              <span class="text-[11px] text-stone-600 dark:text-stone-400 truncate">
+                {arcHasCredentials ? 'Timeflow Server:' : 'Status:'} <strong class="font-medium text-stone-800 dark:text-stone-200">{arcStatusMessage || 'Credentials Required'}</strong>
+              </span>
+            </div>
+            <button
+              type="button"
+              onclick={() => { showArcCredsForm = !showArcCredsForm; }}
+              class="flex items-center space-x-1 p-1 rounded text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition cursor-pointer shrink-0"
+              title="Configure Timeflow server and API key"
+            >
+              <Settings class="w-3.5 h-3.5" />
+            </button>
           </div>
-          <p class="text-[11px] text-stone-600 dark:text-stone-400 leading-relaxed">
-            Transforms the course schedule into ARC's group markdown format (<code class="font-mono text-[10px] bg-stone-100 dark:bg-stone-800 px-1 py-0.5 rounded">docs/arc.md</code>) with <code class="font-mono text-[10px] bg-stone-100 dark:bg-stone-800 px-1 py-0.5 rounded">##</code> group headers, <code class="font-mono text-[10px] bg-stone-100 dark:bg-stone-800 px-1 py-0.5 rounded">&gt;</code> description lines, and <code class="font-mono text-[10px] bg-stone-100 dark:bg-stone-800 px-1 py-0.5 rounded">| %Date%</code> event items.
-          </p>
-          <div class="text-[11px] text-stone-500 dark:text-stone-400 bg-white dark:bg-stone-800/80 p-2.5 rounded-lg border border-stone-200/60 dark:border-stone-700/60">
-            Clicking <strong>Simulate Sync to ARC</strong> will generate the payload and output the full formatted markdown to the server console log.
+
+          <!-- Configuration Form -->
+          {#if showArcCredsForm || !arcHasCredentials}
+            <div class="space-y-3 p-3.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-800/30 text-xs">
+              <div class="flex items-center justify-between">
+                <h4 class="text-xs font-semibold text-stone-800 dark:text-stone-200">Timeflow API Configuration</h4>
+                {#if arcHasCredentials}
+                  <button
+                    type="button"
+                    onclick={() => { showArcCredsForm = false; }}
+                    class="text-[11px] text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-pointer"
+                  >
+                    Hide
+                  </button>
+                {/if}
+              </div>
+              <p class="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                Connect your course schedule to Timeflow. Enter your Timeflow Server Endpoint and API Key (found in Timeflow under <em>Settings → Sync & MCP → API Key</em>).
+              </p>
+              <div class="space-y-2">
+                <div>
+                  <label for="arc-endpoint" class="block text-[11px] font-medium text-stone-600 dark:text-stone-400 mb-1">
+                    Server Endpoint URL
+                  </label>
+                  <input
+                    id="arc-endpoint"
+                    type="text"
+                    bind:value={arcEndpoint}
+                    placeholder="http://127.0.0.1:3001/v1/groups"
+                    class="w-full px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label for="arc-api-key" class="block text-[11px] font-medium text-stone-600 dark:text-stone-400 mb-1">
+                    Timeflow API Key <span class="text-sky-600">*</span>
+                  </label>
+                  <input
+                    id="arc-api-key"
+                    type="password"
+                    bind:value={arcApiKey}
+                    placeholder="e1a2b3c.xxxxxxxxxxxxxxxx"
+                    class="w-full px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-1 focus:ring-sky-500 outline-none"
+                  />
+                </div>
+              </div>
+              <div class="flex justify-end pt-1">
+                <button
+                  type="button"
+                  onclick={saveArcCredentials}
+                  disabled={isSavingArcCreds}
+                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-2xs cursor-pointer disabled:opacity-50"
+                >
+                  {#if isSavingArcCreds}
+                    <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                    <span>Saving...</span>
+                  {:else}
+                    <Check class="w-3.5 h-3.5" />
+                    <span>Save Configuration</span>
+                  {/if}
+                </button>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Collapsible List of Scheduled Course Dates -->
+          <div class="space-y-1.5 pt-1.5 border-t border-stone-100 dark:border-stone-800">
+            <button
+              type="button"
+              onclick={() => { showDatesList = !showDatesList; }}
+              class="flex items-center justify-between w-full py-1 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer select-none text-left"
+            >
+              <span class="flex items-center space-x-1.5">
+                <CalendarDays class="w-3.5 h-3.5 text-stone-500" />
+                <span>Schedule Preview</span>
+                {#if showDatesList}
+                  <ChevronUp class="w-3.5 h-3.5 text-stone-400" />
+                {:else}
+                  <ChevronDown class="w-3.5 h-3.5 text-stone-400" />
+                {/if}
+              </span>
+              {#if scheduleEvents.length > 0}
+                <span class="text-[10px] text-stone-400 dark:text-stone-500 font-normal">
+                  {scheduleEvents.length} session{scheduleEvents.length === 1 ? '' : 's'} across {dayGroups.length} date{dayGroups.length === 1 ? '' : 's'}
+                </span>
+              {/if}
+            </button>
+
+            {#if showDatesList}
+              {#if isLoadingSchedule}
+                <div class="py-6 flex items-center justify-center space-x-2 text-stone-400 text-xs rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/40">
+                  <Loader2 class="w-4 h-4 animate-spin text-sky-500" />
+                  <span>Loading schedule dates...</span>
+                </div>
+              {:else if dayGroups.length === 0}
+                <div class="py-5 px-3 text-center text-xs text-stone-500 dark:text-stone-400 rounded-xl border border-dashed border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/40 space-y-1">
+                  <p class="font-medium text-stone-700 dark:text-stone-300">No scheduled dates found</p>
+                  <p class="text-[11px] text-stone-400">Please generate a study schedule for this course before syncing.</p>
+                </div>
+              {:else}
+                <div class="max-h-52 overflow-y-auto rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/40 dark:bg-stone-900/40 divide-y divide-stone-100 dark:divide-stone-800 text-xs">
+                  {#each dayGroups as group}
+                    <div class="p-2 space-y-1">
+                      <div class="flex items-center justify-between text-[11px]">
+                        <span class="font-medium text-stone-800 dark:text-stone-200">
+                          {group.label}
+                        </span>
+                        <span class="font-mono text-[10px] text-stone-400">
+                          {group.date}
+                        </span>
+                      </div>
+                      <div class="space-y-1">
+                        {#each group.events as evt}
+                          <div class="flex items-center justify-between text-[11px] bg-white dark:bg-stone-800/80 px-2 py-1 rounded border border-stone-200/60 dark:border-stone-700/60 gap-2">
+                            <div class="flex items-center space-x-1.5 truncate">
+                              <span class="px-1 py-0.2 rounded text-[9px] font-semibold uppercase tracking-wider {scheduleTypeBadge(evt.type)}">
+                                {evt.type || 'study'}
+                              </span>
+                              <span class="truncate text-stone-700 dark:text-stone-300">
+                                {evt.lessonId ? `${evt.lessonId} · ` : ''}{evt.title}
+                              </span>
+                            </div>
+                            {#if evt.durationMin}
+                              <span class="text-[10px] text-stone-400 whitespace-nowrap shrink-0">
+                                {evt.durationMin}m
+                              </span>
+                            {/if}
+                          </div>
+                        {/each}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            {/if}
           </div>
         </div>
       {/if}
@@ -740,10 +933,10 @@
           >
             {#if isSyncing}
               <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              <span>Simulating ARC Sync...</span>
+              <span>Pushing to Timeflow...</span>
             {:else}
               <RefreshCw class="w-3.5 h-3.5" />
-              <span>Simulate Sync to ARC{scheduleEvents.length > 0 ? ` (${scheduleEvents.length})` : ''}</span>
+              <span>{arcHasCredentials ? 'Push to Timeflow' : 'Simulate Timeflow Sync'}{scheduleEvents.length > 0 ? ` (${scheduleEvents.length})` : ''}</span>
             {/if}
           </button>
         {/if}

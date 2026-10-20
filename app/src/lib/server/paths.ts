@@ -52,8 +52,18 @@ export function assertTab(value: unknown): string {
   return value;
 }
 
+export interface TeacherCheckinConfig {
+  email: string;
+  sender: 'gmail' | 'outlook';
+  loginEmail: string;
+  loginPassword?: string;
+}
+
 export interface AppSettings {
   data_dir?: string;
+  theme?: string;
+  mcp_enabled?: boolean;
+  teacher_checkin?: TeacherCheckinConfig;
   [key: string]: any;
 }
 

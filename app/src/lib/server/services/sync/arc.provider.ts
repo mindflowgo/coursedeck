@@ -68,13 +68,14 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
   async getAuthStatus(): Promise<ProviderAuthStatus> {
     const creds = ArcSyncProvider.loadCredentials();
     const hasApiKey = Boolean(creds.apiKey && creds.apiKey.trim().length > 0);
+    const endpoint = creds.endpoint?.trim() || (hasApiKey ? 'http://127.0.0.1:3001/v1/groups' : '');
     return {
-      connected: true, // Simulation is ready out of the box
+      connected: true, // Simulation or live endpoint ready
       provider: 'arc',
-      endpoint: creds.endpoint,
+      endpoint: endpoint || undefined,
       hasCredentials: hasApiKey,
-      accountEmail: creds.endpoint ? `Endpoint: ${creds.endpoint}` : 'ARC Simulator (Ready)',
-      calendars: [{ id: 'arc_default', name: 'ARC Primary Workspace', primary: true }]
+      accountEmail: hasApiKey ? `Timeflow Server (${endpoint})` : (endpoint ? `Endpoint: ${endpoint}` : 'Timeflow / ARC Simulator (Ready)'),
+      calendars: [{ id: 'arc_default', name: 'Timeflow / ARC Primary Workspace', primary: true }]
     };
   }
 
@@ -275,8 +276,9 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
     const parsedSchedule = ScheduleParser.parseMarkdown(parsedFm.body);
     const validEvents = parsedSchedule.events.filter((e) => e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date));
 
-    // If a REST endpoint is configured, execute the live HTTP POST
-    if (creds.endpoint && creds.endpoint.trim().startsWith('http')) {
+    // If a REST endpoint is configured or an API key is present, execute the live HTTP POST
+    const effectiveEndpoint = creds.endpoint?.trim() || (creds.apiKey ? 'http://127.0.0.1:3001/v1/groups' : '');
+    if (effectiveEndpoint && effectiveEndpoint.startsWith('http')) {
       const headers: Record<string, string> = {
         'Content-Type': 'application/json'
       };
@@ -292,7 +294,7 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
       };
 
       try {
-        const res = await fetch(creds.endpoint.trim(), {
+        const res = await fetch(effectiveEndpoint, {
           method: 'POST',
           headers,
           body: JSON.stringify(bodyPayload)
@@ -300,8 +302,13 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
 
         if (!res.ok) {
           const errText = await res.text().catch(() => res.statusText);
-          throw new Error(`ARC endpoint returned HTTP ${res.status}: ${errText}`);
+          throw new Error(`Timeflow endpoint returned HTTP ${res.status}: ${errText}`);
         }
+
+        const data = (await res.json().catch(() => ({}))) as Record<string, any>;
+        const createdCount = typeof data.itemsCount === 'number' ? data.itemsCount : validEvents.length;
+        const calendarCount = typeof data.calendarCount === 'number' ? data.calendarCount : validEvents.length;
+        const groupTitle = data.title || courseId.toUpperCase();
 
         return {
           success: true,
@@ -310,18 +317,18 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
           calendarId,
           stats: {
             totalDesired: validEvents.length,
-            created: validEvents.length,
+            created: createdCount,
             updated: 0,
             unchanged: 0,
             deletedObsolete: 0,
             failed: 0
           },
           syncedAt: new Date().toISOString(),
-          message: `Schedule pushed successfully via RESTful POST to ARC (${creds.endpoint}).`
+          message: `Schedule pushed successfully to Timeflow for "${groupTitle}" with ${createdCount} items and ${calendarCount} calendar triggers (${effectiveEndpoint}).`
         };
       } catch (err: any) {
         console.error('[ArcSyncProvider] REST POST failed:', err);
-        throw new Error(`Failed to POST schedule to ARC at ${creds.endpoint}: ${err.message}`);
+        throw new Error(`Failed to POST schedule to Timeflow at ${effectiveEndpoint}: ${err.message}`);
       }
     }
 

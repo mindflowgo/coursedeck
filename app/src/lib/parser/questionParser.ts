@@ -8,9 +8,10 @@ export interface QuestionOption {
 export interface QuizQuestion {
   number: string; // e.g. "01"
   category?: string; // e.g. "Knowledge & Understanding"
+  type?: 'multiple-choice' | 'fill-in-the-blank';
   prompt: string;
   options: QuestionOption[];
-  correctAnswer: string; // e.g. "B"
+  correctAnswer: string; // e.g. "B" or text answer
   explanation?: string;
 }
 
@@ -81,20 +82,39 @@ export class QuestionParser {
 
       // Robust regex for answer entries:
       // - Question number: e.g. "01)", "1.", "01:"
-      // - Optional label: "Option", "Correct Answer:", "Answer:"
-      // - Answer letter: "B", "**B**", "*B*", "[B]", "(B)", etc.
-      // - Separator: "-", "–" (\u2013), "—" (\u2014), ":", or spaces
-      // - Explanation: with or without "(explanation)"
-      const entryRegex = /(?:^|\n)\s*(\d+)[\).:]\s*(?:(?:Option|Correct Answer:?|Answer:?)\s*)?(?:\*{1,2}|_{1,2}|\[|\()?\s*([A-Da-d])\s*(?:\*{1,2}|_{1,2}|\]|\)|\.)?(?:\s*[-–—:]|\s+)?(?:\s*\(?explanation\)?:?)?\s*([\s\S]*?)(?=(?:\n\s*\d+[\).:]|\n##|$))/gi;
+      // - Handles MC answers (A-D) as well as text answers for fill-in-the-blank
+      // - Explanations with or without "(explanation)"
+      const entryRegex = /(?:^|\n)\s*(\d+)[\).:]\s*(?:(?:Option|Correct Answer:?|Answer:?)\s*)?([^\n]+)/gi;
       let aMatch: RegExpExecArray | null;
       while ((aMatch = entryRegex.exec(answersText)) !== null) {
         const numPadded = aMatch[1].padStart(2, '0');
         const numRaw = parseInt(aMatch[1], 10).toString();
-        const letter = aMatch[2].toUpperCase();
-        const explanation = (aMatch[3] || '').trim();
-        answerMap.set(numPadded, { letter, explanation });
+        const line = aMatch[2].trim();
+
+        let answerText = line;
+        let explanation = '';
+
+        // Match "- (explanation) ...", "— (explanation) ...", or " - explanation"
+        const explMatch = line.match(/^([^\-–—:]+)(?:\s*[-–—:]\s*(?:\(?explanation\)?:?)?\s*(.*))$/i);
+        if (explMatch) {
+          answerText = explMatch[1].trim();
+          explanation = explMatch[2].trim();
+        } else {
+          const dashMatch = line.match(/^([^\s\-–—:]+)\s*[-–—:]\s*(.*)$/);
+          if (dashMatch) {
+            answerText = dashMatch[1].trim();
+            explanation = dashMatch[2].trim().replace(/^\(?explanation\)?:?\s*/i, '');
+          }
+        }
+
+        let cleaned = answerText.replace(/^[\*\_\[\(]+/, '').replace(/[\*\_\]\)\.]+$/, '').trim();
+        if (/^[a-d]$/i.test(cleaned)) {
+          cleaned = cleaned.toUpperCase();
+        }
+
+        answerMap.set(numPadded, { letter: cleaned, explanation });
         if (numRaw !== numPadded) {
-          answerMap.set(numRaw, { letter, explanation });
+          answerMap.set(numRaw, { letter: cleaned, explanation });
         }
       }
     }
@@ -151,11 +171,13 @@ export class QuestionParser {
       }
 
       const correctAnswer = answerInfo?.letter || checkedLetter || inlineAnswer || '';
+      const isFillIn = options.length === 0 && (prompt.includes('___') || /fill[- ]in/i.test(category || ''));
 
-      if (options.length > 0) {
+      if (options.length > 0 || isFillIn) {
         questions.push({
           number: num,
           category,
+          type: isFillIn ? 'fill-in-the-blank' : 'multiple-choice',
           prompt,
           options,
           correctAnswer,
@@ -185,9 +207,11 @@ export class QuestionParser {
     for (const q of quiz.questions) {
       const categoryPart = q.category ? `[${q.category}] ` : '';
       md += `${q.number}) ${categoryPart}${q.prompt}\n`;
-      md += `<Multiple-Choice>\n`;
-      for (const opt of q.options) {
-        md += `- [ ] ${opt.text}\n`;
+      if (q.options && q.options.length > 0) {
+        md += `<Multiple-Choice>\n`;
+        for (const opt of q.options) {
+          md += `- [ ] ${opt.text}\n`;
+        }
       }
       md += `\n--\n\n`;
     }

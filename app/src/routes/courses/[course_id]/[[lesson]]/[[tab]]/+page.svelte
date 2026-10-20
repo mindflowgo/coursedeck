@@ -1,5 +1,6 @@
 <script lang="ts">
   import { apiFetch } from '$lib/api';
+  import { confirmDialog } from '$lib/dialog';
   import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
   import { page } from '$app/stores';
@@ -60,7 +61,9 @@
     RotateCcw,
     CalendarSync,
     FileDown,
-    MoreHorizontal
+    MoreHorizontal,
+    ChevronRight,
+    ThumbsUp
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
@@ -92,6 +95,44 @@
   let isLoadingCourseDoc: boolean = $state(false);
   let isGeneratingCourseDoc: boolean = $state(false);
   let quizRunnerKey: number = $state(0);
+
+  let allCourseLessons: CourseManifestLesson[] = $derived.by(() => {
+    const currentCourse = course;
+    if (!currentCourse || !Array.isArray(currentCourse.units)) return [];
+    return currentCourse.units.flatMap((u) => u.lessons || []);
+  });
+
+  let currentLessonIndex = $derived(
+    allCourseLessons.findIndex((l) => l.id.toLowerCase() === (selectedLessonId || '').toLowerCase())
+  );
+
+  let nextLessonItem: CourseManifestLesson | null = $derived(
+    currentLessonIndex !== -1 && currentLessonIndex < allCourseLessons.length - 1
+      ? allCourseLessons[currentLessonIndex + 1]
+      : null
+  );
+
+  function goToNextLesson() {
+    if (nextLessonItem) {
+      isLessonActionsOpen = false;
+      selectLesson(nextLessonItem.id);
+    }
+  }
+
+  async function startPopQuiz() {
+    if (!courseId || !selectedLessonId) return;
+
+    const confirmed = await confirmDialog(
+      'Have you read the lesson fully? Are you ready to do the completion test?',
+      'Pop Quiz Readiness Check'
+    );
+    if (!confirmed) return;
+
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
+    goto(`/courses/${courseId.toLowerCase()}/${encodeURIComponent(selectedLessonId)}/popquiz/${timestamp}`);
+  }
 
   // Lesson bundle and generic prompt templates
   let lessonBundle: LessonContentBundle | null = $state(null);
@@ -132,6 +173,46 @@
     test: '',
     schedule: ''
   });
+
+  let courseScheduleMarkdown: string = $state('');
+
+  let isCurrentLessonDoneInSchedule = $derived.by(() => {
+    if (!selectedLessonId) return false;
+    const schedule = courseScheduleMarkdown || tabContents.schedule;
+    if (!schedule || !schedule.trim()) return false;
+
+    try {
+      const parsed = ScheduleParser.parseMarkdown(schedule);
+      const targetNormalized = selectedLessonId.toLowerCase();
+      const targetWithoutZero = targetNormalized.replace(/^0/, '');
+
+      const matchingEvents = parsed.events.filter((e) => {
+        const evLesson = (e.lessonId || '').toLowerCase();
+        const evWithoutZero = evLesson.replace(/^0/, '');
+        return evLesson === targetNormalized || evWithoutZero === targetWithoutZero;
+      });
+
+      if (matchingEvents.length === 0) return false;
+      return matchingEvents.some((e) => e.done);
+    } catch {
+      return false;
+    }
+  });
+
+  async function loadCourseSchedule() {
+    if (!courseId) return;
+    try {
+      const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=schedule`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.exists && typeof data.markdown === 'string') {
+          courseScheduleMarkdown = data.markdown;
+          tabContents.schedule = data.markdown;
+          originalContents.schedule = data.markdown;
+        }
+      }
+    } catch {}
+  }
 
   let isLoadingCourse = $state(true);
   let isLoadingLesson = $state(false);
@@ -428,6 +509,7 @@
         const data = await res.json();
         course = data.course;
         await loadCheckpoints();
+        await loadCourseSchedule();
         if (!opts?.skipAutoLesson && !isCourseScope && course && course.units.length > 0 && course.units[0].lessons.length > 0) {
           const target = selectTargetLessonId || selectedLessonId || course.units[0].lessons[0].id;
           await loadLesson(target);
@@ -455,6 +537,9 @@
         if (res.ok) {
           const data = await res.json();
           if (data.exists && data.markdown && data.markdown.trim().length > 0) {
+            if (tab === 'schedule') {
+              courseScheduleMarkdown = data.markdown;
+            }
             tabContents[tab] = data.markdown;
             originalContents[tab] = data.markdown;
           } else if (tab === 'schedule') {
@@ -821,7 +906,11 @@
           lesson: data.lesson || '',
           ...data.tabs
         };
+        if (courseScheduleMarkdown) {
+          tabContents.schedule = courseScheduleMarkdown;
+        }
         originalContents = { ...tabContents };
+        void loadCourseSchedule();
         console.log(`[NAV] loadLesson "${lessonId}" ✓ tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}]`);
       } else {
         console.warn(`[NAV] loadLesson "${lessonId}" failed: HTTP ${res.status}`);
@@ -945,6 +1034,7 @@
 
   /** Checkbox toggle from ScheduleViewer: update content, persist via the course-doc PUT. */
   async function handleScheduleToggle(updatedMarkdown: string) {
+    courseScheduleMarkdown = updatedMarkdown;
     tabContents.schedule = updatedMarkdown;
     tabContents = { ...tabContents };
     await saveCurrentTab();
@@ -1919,7 +2009,7 @@
               type="button"
               onclick={() => (isLessonActionsOpen = !isLessonActionsOpen)}
               class="w-8 h-8 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 flex items-center justify-center text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 transition shadow-2xs cursor-pointer {isLessonActionsOpen ? 'bg-stone-100 dark:bg-stone-700 text-stone-900 dark:text-stone-100 ring-2 ring-stone-400/20' : ''}"
-              title="More options (Add, Replace, Generate Missing)"
+              title="More options (Next Lesson, Add, Replace, Generate Missing)"
               aria-label="More lesson options"
               aria-expanded={isLessonActionsOpen}
             >
@@ -1939,6 +2029,26 @@
                 tabindex="-1"
                 class="absolute left-0 mt-1.5 w-52 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 py-1 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100"
               >
+                <!-- Next Lesson option -->
+                <div class="py-1">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={goToNextLesson}
+                    disabled={!nextLessonItem}
+                    class="flex w-full items-center justify-between px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer text-left font-medium"
+                    title={nextLessonItem ? `Go to next lesson: ${nextLessonItem.title || nextLessonItem.id}` : 'No next lesson'}
+                  >
+                    <div class="flex items-center space-x-2 truncate">
+                      <ChevronRight class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                      <span class="truncate">Next Lesson</span>
+                    </div>
+                    {#if nextLessonItem}
+                      <span class="text-[10px] text-stone-400 dark:text-stone-500 font-mono ml-2 shrink-0">{nextLessonItem.id}</span>
+                    {/if}
+                  </button>
+                </div>
+
                 <div class="py-1">
                   <button
                     type="button"
@@ -1995,6 +2105,25 @@
               </div>
             {/if}
           </div>
+
+          <!-- Pop Quiz button to the RIGHT of [...] (Grey thumbs-up if lesson done in schedule, Green checkmark if pending) -->
+          <button
+            type="button"
+            onclick={startPopQuiz}
+            class="w-8 h-8 rounded-lg flex items-center justify-center transition cursor-pointer shrink-0 {
+              isCurrentLessonDoneInSchedule
+                ? 'bg-stone-200 hover:bg-stone-300 active:bg-stone-400 dark:bg-stone-800 dark:hover:bg-stone-700 dark:active:bg-stone-600 text-stone-600 dark:text-stone-300 border border-stone-300 dark:border-stone-700 shadow-2xs'
+                : 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white shadow-sm hover:shadow'
+            }"
+            title={isCurrentLessonDoneInSchedule ? 'Lesson marked done in schedule (Click to retake pop quiz)' : 'Take Pop Quiz (5-minute accountability test)'}
+            aria-label={isCurrentLessonDoneInSchedule ? 'Retake Pop Quiz' : 'Start Pop Quiz'}
+          >
+            {#if isCurrentLessonDoneInSchedule}
+              <ThumbsUp class="w-4 h-4 stroke-[2.2]" />
+            {:else}
+              <Check class="w-4 h-4 stroke-[3]" />
+            {/if}
+          </button>
         {/if}
       </div>
 

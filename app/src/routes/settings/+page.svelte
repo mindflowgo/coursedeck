@@ -29,7 +29,12 @@
     ZoomIn,
     Plus,
     Trash2,
-    Compass
+    Compass,
+    Mail,
+    Send,
+    Eye,
+    EyeOff,
+    Info
   } from 'lucide-svelte';
   import { theme } from '$lib/theme.svelte';
   import { zoom } from '$lib/zoom.svelte';
@@ -615,10 +620,94 @@
     }
   }
 
+  // Teacher Check-In state
+  let teacherEmail = $state('');
+  let teacherSender = $state<'gmail' | 'outlook'>('gmail');
+  let teacherLoginEmail = $state('');
+  let teacherLoginPassword = $state('');
+  let teacherHasPassword = $state(false);
+  let showTeacherPassword = $state(false);
+  let showAppPasswordGuide = $state(false);
+  let isSavingTeacher = $state(false);
+  let isTestingTeacher = $state(false);
+  let teacherStatusMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  async function loadTeacherCheckin() {
+    try {
+      const res = await apiFetch('/api/settings/emailserver');
+      if (res.ok) {
+        const data = await res.json();
+        teacherEmail = data.email || '';
+        teacherSender = data.sender || 'gmail';
+        teacherLoginEmail = data.loginEmail || '';
+        teacherHasPassword = Boolean(data.hasPassword);
+      }
+    } catch (err) {
+      console.warn('Failed to load teacher checkin settings:', err);
+    }
+  }
+
+  async function saveTeacherCheckin() {
+    isSavingTeacher = true;
+    teacherStatusMessage = null;
+    try {
+      const res = await apiFetch('/api/settings/emailserver', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: teacherEmail,
+          sender: teacherSender,
+          loginEmail: teacherLoginEmail,
+          loginPassword: teacherLoginPassword
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        teacherHasPassword = Boolean(data.hasPassword);
+        teacherLoginPassword = '';
+        teacherStatusMessage = { type: 'success', text: 'Teacher Check-In settings saved successfully!' };
+      } else {
+        teacherStatusMessage = { type: 'error', text: data.message || 'Failed to save settings' };
+      }
+    } catch (err: any) {
+      teacherStatusMessage = { type: 'error', text: err?.message || 'Error saving settings' };
+    } finally {
+      isSavingTeacher = false;
+    }
+  }
+
+  async function testTeacherCheckin() {
+    isTestingTeacher = true;
+    teacherStatusMessage = null;
+    try {
+      const res = await apiFetch('/api/settings/emailserver/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: teacherEmail,
+          sender: teacherSender,
+          loginEmail: teacherLoginEmail,
+          loginPassword: teacherLoginPassword
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        teacherStatusMessage = { type: 'success', text: data.message || 'Test email sent successfully!' };
+      } else {
+        teacherStatusMessage = { type: 'error', text: data.message || 'Test failed' };
+      }
+    } catch (err: any) {
+      teacherStatusMessage = { type: 'error', text: err?.message || 'Failed to send test email' };
+    } finally {
+      isTestingTeacher = false;
+    }
+  }
+
   onMount(() => {
     resumeLastPosition = getResumeLastPosition();
     loadModelCards();
     loadStorageInfo();
+    loadTeacherCheckin();
   });
 </script>
 
@@ -1265,6 +1354,191 @@
       {#if compressImagesResult}
         <div class="text-[11px] px-2 py-1 rounded bg-stone-50 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-stone-700 dark:text-stone-300">
           {compressImagesResult}
+        </div>
+      {/if}
+    </div>
+  </section>
+
+  <!-- Panel 3: Supervisor Check-In (Accountability) -->
+  <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs divide-y divide-stone-100 dark:divide-stone-800 text-xs">
+    <div class="p-3 space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-2">
+          <Mail class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
+          <span class="font-medium text-stone-900 dark:text-stone-100">Supervisor Check-In</span>
+          <span class="text-[11px] text-stone-400 dark:text-stone-500 hidden sm:inline">Accountability updates &amp; pop quiz reporting</span>
+        </div>
+
+        <div class="flex items-center space-x-1.5">
+          <button
+            type="button"
+            onclick={testTeacherCheckin}
+            disabled={isTestingTeacher || !teacherEmail || !teacherLoginEmail}
+            class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-xs font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer disabled:opacity-50"
+            title="Send a verification test email to the supervisor address"
+          >
+            {#if isTestingTeacher}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+              <span>Sending Test...</span>
+            {:else}
+              <Send class="w-3.5 h-3.5" />
+              <span>Send Test Email</span>
+            {/if}
+          </button>
+
+          <button
+            type="button"
+            onclick={saveTeacherCheckin}
+            disabled={isSavingTeacher}
+            class="flex items-center space-x-1 px-3 py-1 rounded bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+          >
+            {#if isSavingTeacher}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+              <span>Saving...</span>
+            {:else}
+              <Save class="w-3.5 h-3.5" />
+              <span>Save</span>
+            {/if}
+          </button>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        <div>
+          <label for="teacher-email-input" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+            Supervisor / Admin Email <span class="text-rose-500">*</span>
+          </label>
+          <input
+            id="teacher-email-input"
+            type="email"
+            bind:value={teacherEmail}
+            placeholder="e.g. teacher@school.org"
+            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          />
+          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">Quiz results and progress updates are delivered here.</p>
+        </div>
+
+        <div>
+          <label for="teacher-sender-select" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+            Email Sender <span class="text-rose-500">*</span>
+          </label>
+          <select
+            id="teacher-sender-select"
+            bind:value={teacherSender}
+            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          >
+            <option value="gmail">Gmail</option>
+            <option value="outlook">Outlook</option>
+          </select>
+          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">SMTP service provider used to send the emails.</p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        <div>
+          <label for="teacher-login-email-input" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+            Login Email <span class="text-rose-500">*</span>
+          </label>
+          <input
+            id="teacher-login-email-input"
+            type="email"
+            bind:value={teacherLoginEmail}
+            placeholder={teacherSender === 'gmail' ? 'your-name@gmail.com' : 'your-name@outlook.com'}
+            class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+          />
+          <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">The sending account username/email.</p>
+        </div>
+
+        <div>
+          <label for="teacher-password-input" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+            Login Password / App Password <span class="text-rose-500">*</span>
+            {#if teacherHasPassword && !teacherLoginPassword}
+              <span class="text-[10px] text-emerald-600 dark:text-emerald-400 font-normal ml-1">(Saved in config)</span>
+            {/if}
+            {#if teacherSender === 'gmail'}
+              <button
+                type="button"
+                onclick={(e) => { e.preventDefault(); e.stopPropagation(); showAppPasswordGuide = !showAppPasswordGuide; }}
+                class="text-[10px] text-amber-700 dark:text-amber-400 hover:text-amber-900 dark:hover:text-amber-200 underline font-normal ml-1 cursor-pointer"
+                title="Toggle Google App Password guide"
+              >
+                (Info)
+              </button>
+            {/if}
+          </label>
+          <div class="relative">
+            <input
+              id="teacher-password-input"
+              type={showTeacherPassword ? 'text' : 'password'}
+              bind:value={teacherLoginPassword}
+              placeholder={teacherHasPassword ? '•••••••••••••••• (Leave blank to keep saved)' : (teacherSender === 'gmail' ? '16-character Google App Password' : 'Password or App Password')}
+              class="w-full pl-2 pr-8 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+            />
+            <button
+              type="button"
+              onclick={() => (showTeacherPassword = !showTeacherPassword)}
+              class="absolute right-2 top-1.5 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition"
+              title={showTeacherPassword ? 'Hide password' : 'Show password'}
+            >
+              {#if showTeacherPassword}
+                <EyeOff class="w-3.5 h-3.5" />
+              {:else}
+                <Eye class="w-3.5 h-3.5" />
+              {/if}
+            </button>
+          </div>
+          {#if teacherSender === 'gmail'}
+            {#if showAppPasswordGuide}
+              <div class="mt-2 p-2.5 rounded-lg border border-amber-200 dark:border-amber-800/80 bg-amber-50/70 dark:bg-amber-950/30 text-[11px] text-stone-700 dark:text-stone-300 space-y-1.5 shadow-2xs animate-in fade-in duration-150">
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center space-x-1.5 font-semibold text-amber-900 dark:text-amber-200 text-[11px]">
+                    <Info class="w-3.5 h-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <span>How to get an App Password:</span>
+                  </div>
+                  <button
+                    type="button"
+                    onclick={() => (showAppPasswordGuide = false)}
+                    class="text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 text-xs cursor-pointer p-0.5 leading-none"
+                    title="Hide guide"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <ol class="list-decimal list-outside ml-3.5 space-y-1 text-[10.5px] leading-relaxed text-stone-600 dark:text-stone-300">
+                  <li>
+                    Go to your <a href="https://myaccount.google.com/security" target="_blank" rel="noreferrer" class="text-amber-700 dark:text-amber-400 font-medium underline hover:text-amber-900 dark:hover:text-amber-200">Google Account Security</a> page.
+                  </li>
+                  <li>
+                    Verify that 2-Step Verification is turned ON on your account (required by Google to generate App Passwords).
+                  </li>
+                  <li>
+                    Search for "App passwords" in the top search bar (or visit <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" class="text-amber-700 dark:text-amber-400 font-medium underline hover:text-amber-900 dark:hover:text-amber-200">myaccount.google.com/apppasswords</a>).
+                  </li>
+                  <li>
+                    Under "App name", enter CourseDeck and click Create.
+                  </li>
+                  <li>
+                    Google will display a 16-character code (e.g., <code class="font-mono bg-amber-100/80 dark:bg-amber-900/50 px-1 py-0.5 rounded text-[10px] text-amber-950 dark:text-amber-200">abcd efgh ijkl mnop</code>).
+                  </li>
+                </ol>
+              </div>
+            {/if}
+          {:else}
+            <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-1 leading-relaxed">
+              <span class="text-amber-600 dark:text-amber-400 font-medium">Important for Outlook:</span> Use an <strong>App Password</strong> if 2-Step Verification is enabled on your Microsoft account (created in Microsoft Account Security settings).
+            </p>
+          {/if}
+        </div>
+      </div>
+
+      {#if teacherStatusMessage}
+        <div class="flex items-center space-x-1.5 text-[11px] px-2.5 py-1.5 rounded border {teacherStatusMessage.type === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
+          {#if teacherStatusMessage.type === 'success'}
+            <CheckCircle2 class="w-3.5 h-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          {:else}
+            <AlertCircle class="w-3.5 h-3.5 shrink-0 text-rose-600 dark:text-rose-400" />
+          {/if}
+          <span>{teacherStatusMessage.text}</span>
         </div>
       {/if}
     </div>

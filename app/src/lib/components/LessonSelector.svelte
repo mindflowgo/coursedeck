@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { CourseManifest } from '$lib/parser/courseIngest';
-  import { ChevronRight, ChevronDown, Check, Search, FileText, Bookmark, GraduationCap } from 'lucide-svelte';
+  import { ChevronDown, Check, Search, FileText, Bookmark, GraduationCap } from 'lucide-svelte';
   import { isCourseTab } from '$lib/tabs';
 
   interface Props {
@@ -36,14 +36,6 @@
   let currentLesson = $derived(
     currentIndex !== -1 ? allLessons[currentIndex] : allLessons[0]
   );
-
-  let hasNext = $derived(currentIndex < allLessons.length - 1 && currentIndex !== -1);
-
-  function nextLesson() {
-    if (hasNext) {
-      onSelectLesson(allLessons[currentIndex + 1].id);
-    }
-  }
 
   function toggleDropdown() {
     isOpen = !isOpen;
@@ -176,16 +168,4 @@
       </div>
     {/if}
   </div>
-
-  <!-- Next Button (hidden in Complete Course mode) -->
-  {#if !isCourseMode}
-    <button
-      onclick={nextLesson}
-      disabled={!hasNext}
-      title="Next lesson"
-      class="p-1.5 rounded border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 disabled:opacity-30 disabled:cursor-not-allowed text-stone-700 dark:text-stone-300 transition"
-    >
-      <ChevronRight class="w-4 h-4" />
-    </button>
-  {/if}
 </div>

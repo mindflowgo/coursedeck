@@ -38,6 +38,9 @@ describe('classifyPrompt', () => {
     expect(classifyPrompt({ id: 'test' })).toBe('lessons');
     expect(classifyPrompt({ id: 'test_kica' })).toBe('lessons');
     expect(classifyPrompt({ id: 'lesson' })).toBe('lessons');
+    expect(classifyPrompt({ id: 'popquiz' })).toBe('lessons');
+    expect(classifyPrompt({ id: 'popquiz.md' })).toBe('lessons');
+    expect(classifyPrompt({ id: 'pop_quiz' })).toBe('lessons');
     expect(classifyPrompt({ id: 'summary.md' })).toBe('lessons');
   });
 
@@ -55,5 +58,6 @@ describe('prompt order constants', () => {
     expect(LESSON_PROMPT_ORDER).toContain('summary');
     expect(LESSON_PROMPT_ORDER).toContain('cheatsheet');
     expect(LESSON_PROMPT_ORDER).toContain('test_kica');
+    expect(LESSON_PROMPT_ORDER).toContain('popquiz');
   });
 });

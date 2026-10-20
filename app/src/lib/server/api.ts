@@ -26,13 +26,15 @@ import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatte
 import { CourseIngest, type CourseDocType, type CourseManifest } from '../parser/courseIngest';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import type { SchedulePreferences } from '../schedule';
-import { ScheduleParser } from '../parser/scheduleParser';
+import { ScheduleParser, toggleEventDone } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
 import { createDataBackupZip, createDataBackupZipStream, restoreDataBackupZip } from './backup';
 import { SyncService } from './services/sync/sync.service';
 import { GoogleCalendarProvider } from './services/sync/google.provider';
 import { ArcSyncProvider } from './services/sync/arc.provider';
 import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
+import { TeacherCheckinService, type PopQuizQuestionResult, type PopQuizResultPayload } from './services/teacherCheckin.service';
+import { QuestionParser } from '../parser/questionParser';
 
 /**
  * Single source of truth for the entire HTTP API.
@@ -679,7 +681,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             'cheatsheet',
             'test',
             'test_kica',
-            'lesson'
+            'lesson',
+            'popquiz'
           ];
           if (STANDARD_BUILTINS.includes(safeId.toLowerCase())) {
             return error(403, 'Standard prompt templates cannot be deleted');
@@ -936,6 +939,240 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       }
     }
 
+    // ---- /api/settings/emailserver ----
+    if (pathname === '/api/settings/emailserver') {
+      if (method === 'GET') {
+        return json(TeacherCheckinService.getSafeConfig());
+      }
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        const sender = body.sender === 'outlook' ? 'outlook' : 'gmail';
+        const loginEmail = typeof body.loginEmail === 'string' ? body.loginEmail.trim() : '';
+        const loginPassword = typeof body.loginPassword === 'string' ? body.loginPassword : '';
+
+        // If loginPassword wasn't passed or is empty, retain existing password
+        const existing = TeacherCheckinService.getConfig();
+        const effectivePassword = loginPassword || existing?.loginPassword || '';
+
+        TeacherCheckinService.saveConfig({
+          email,
+          sender,
+          loginEmail,
+          loginPassword: effectivePassword
+        });
+
+        return json({ success: true, message: 'Teacher Check-In settings saved', ...TeacherCheckinService.getSafeConfig() });
+      }
+    }
+
+    // ---- /api/settings/emailserver/test ----
+    if (pathname === '/api/settings/emailserver/test' && method === 'POST') {
+      try {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const existing = TeacherCheckinService.getConfig();
+        const cfg = {
+          email: typeof body.email === 'string' && body.email.trim() ? body.email.trim() : existing?.email || '',
+          sender: body.sender === 'outlook' ? 'outlook' : (body.sender === 'gmail' ? 'gmail' : existing?.sender || 'gmail'),
+          loginEmail: typeof body.loginEmail === 'string' && body.loginEmail.trim() ? body.loginEmail.trim() : existing?.loginEmail || '',
+          loginPassword: typeof body.loginPassword === 'string' && body.loginPassword ? body.loginPassword : existing?.loginPassword || ''
+        };
+        const result = await TeacherCheckinService.sendTestEmail(cfg as any);
+        return json(result);
+      } catch (err: any) {
+        console.error('[Teacher Check-In Test Email Error]', err);
+        return error(500, err?.message || 'Failed to send test email');
+      }
+    }
+
+    // ---- /api/pop-quiz/generate ----
+    if (pathname === '/api/pop-quiz/generate' && method === 'POST') {
+      try {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const rawCourseId = String(body.courseId || '').trim();
+        const rawLessonId = String(body.lessonId || '').trim();
+        const rawTimestamp = String(body.timestamp || '').trim();
+        const forceRegenerate = Boolean(body.forceRegenerate);
+
+        if (!rawCourseId || !rawLessonId) {
+          return error(400, 'courseId and lessonId are required to generate a pop quiz');
+        }
+
+        const courseId = assertCourseId(rawCourseId).toLowerCase();
+        const lessonId = assertLessonId(rawLessonId);
+        const coursesDir = getCoursesDir();
+        const courseDir = safeJoin(coursesDir, courseId);
+        if (!fs.existsSync(courseDir)) {
+          return error(404, `Course ${courseId} not found`);
+        }
+
+        // Sanitized timestamp for disk storage (alphanumerics, dash, underscore)
+        const safeTimestamp = (rawTimestamp || new Date().toISOString().replace(/[:.]/g, '-')).replace(/[^a-zA-Z0-9_-]/g, '_');
+        const quizFileName = `${lessonId}.popquiz.${safeTimestamp}.md`;
+        const quizFilePath = safeJoin(courseDir, quizFileName);
+
+        // Check if already generated on disk
+        if (!forceRegenerate && fs.existsSync(quizFilePath)) {
+          const cached = fs.readFileSync(quizFilePath, 'utf8');
+          if (cached && cached.trim().length > 50) {
+            return json({ success: true, cached: true, markdown: cached, timestamp: safeTimestamp });
+          }
+        }
+
+        // Read lesson text
+        const bundle = CourseService.getLessonContent(courseId, lessonId);
+        if (!bundle || !bundle.lesson || bundle.lesson.trim().length < 50) {
+          return error(400, `Lesson ${lessonId} content is empty or unavailable.`);
+        }
+
+        // Load prompt
+        let promptItem = PromptService.getPrompt('popquiz');
+        let systemPrompt = promptItem?.content || '';
+        if (!systemPrompt || systemPrompt.trim().length === 0) {
+          return error(500, 'PopQuiz prompt template is missing. Please ensure popquiz.md is configured in Prompts.');
+        }
+
+        // Active LLM config
+        const config = LLMService.loadStoredConfig();
+        if (!config || !config.baseUrl) {
+          return error(400, 'No active AI model configured. Please add and save a model in Settings → AI Models.');
+        }
+
+        const timeoutMs = LLMService.resolveRequestTimeoutMs(config);
+        console.log(`[PopQuiz AI] Generating pop quiz for ${courseId.toUpperCase()} ${lessonId} using ${config.model || 'default'}`);
+
+        const result = await LLMService.generateResult(
+          config,
+          systemPrompt,
+          stripLessonMedia(bundle.lesson),
+          { timeoutMs }
+        );
+
+        const parsed = parseFrontmatter(result.completion.trim());
+        const content = serializeWithFrontmatter(
+          {
+            ...parsed.frontmatter,
+            type: 'popquiz',
+            course: courseId.toUpperCase(),
+            lesson: lessonId,
+            timestamp: safeTimestamp,
+            createdAt: new Date().toISOString()
+          },
+          parsed.body.trim()
+        );
+
+        fs.writeFileSync(quizFilePath, content, 'utf8');
+        console.log(`[PopQuiz AI] Saved ${quizFileName} (${content.length} chars)`);
+
+        return json({
+          success: true,
+          cached: false,
+          markdown: content,
+          timestamp: safeTimestamp,
+          usage: result.usage
+        });
+      } catch (err: any) {
+        console.error('[PopQuiz Generation Error]', err);
+        return error(500, err?.message || 'Failed to generate pop quiz');
+      }
+    }
+
+    // ---- /api/pop-quiz/submit ----
+    if (pathname === '/api/pop-quiz/submit' && method === 'POST') {
+      try {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const rawCourseId = String(body.courseId || '').trim();
+        const rawLessonId = String(body.lessonId || '').trim();
+        const lessonTitle = typeof body.lessonTitle === 'string' ? body.lessonTitle : '';
+        const timestamp = String(body.timestamp || new Date().toISOString());
+        const testMarkdown = String(body.testMarkdown || '');
+        const answers = (body.answers && typeof body.answers === 'object') ? body.answers as Record<string, string> : {};
+        const timeSpentSeconds = typeof body.timeSpentSeconds === 'number' ? body.timeSpentSeconds : undefined;
+        const timedOut = Boolean(body.timedOut);
+
+        if (!rawCourseId || !rawLessonId || !testMarkdown) {
+          return error(400, 'courseId, lessonId, and testMarkdown are required');
+        }
+
+        const courseId = assertCourseId(rawCourseId).toLowerCase();
+        const lessonId = assertLessonId(rawLessonId);
+
+        // Parse quiz using QuestionParser
+        const parsedQuiz = QuestionParser.parseMarkdown(testMarkdown);
+        let score = 0;
+
+        const evaluatedQuestions: PopQuizQuestionResult[] = parsedQuiz.questions.map((q) => {
+          const studentAns = (answers[q.number] || '').trim();
+          const correctAns = (q.correctAnswer || '').trim();
+          let isCorrect = false;
+
+          if (q.type === 'fill-in-the-blank') {
+            // Normalized comparison: lowercase, remove non-alphanumeric except space, collapse whitespace
+            const cleanStudent = studentAns.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+            const cleanCorrect = correctAns.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+            isCorrect = cleanStudent.length > 0 && (cleanStudent === cleanCorrect || cleanCorrect.includes(cleanStudent) || cleanStudent.includes(cleanCorrect));
+          } else {
+            isCorrect = studentAns.length > 0 && studentAns.toUpperCase() === correctAns.toUpperCase();
+          }
+
+          if (isCorrect) score++;
+
+          return {
+            number: q.number,
+            category: q.category,
+            type: q.type || (q.options && q.options.length > 0 ? 'multiple-choice' : 'fill-in-the-blank'),
+            prompt: q.prompt,
+            options: q.options,
+            studentAnswer: studentAns,
+            correctAnswer: correctAns,
+            isCorrect,
+            explanation: q.explanation
+          };
+        });
+
+        const total = evaluatedQuestions.length;
+        const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
+
+        // Dispatch email via TeacherCheckinService
+        let emailSent = false;
+        let emailError: string | undefined;
+
+        try {
+          await TeacherCheckinService.sendQuizResultEmail({
+            courseId,
+            lessonId,
+            lessonTitle: lessonTitle || parsedQuiz.title,
+            timestamp,
+            timeSpentSeconds,
+            timedOut,
+            questions: evaluatedQuestions,
+            score,
+            total,
+            percentage
+          });
+          emailSent = true;
+        } catch (err: any) {
+          console.warn('[PopQuiz Email Dispatch Notice]', err?.message || err);
+          emailError = err?.message || 'Failed to dispatch email';
+        }
+
+        return json({
+          success: true,
+          score,
+          total,
+          percentage,
+          questions: evaluatedQuestions,
+          emailSent,
+          emailError,
+          supervisorSent: emailSent,
+          supervisorMessage: 'Updated course supervisor, thank you!'
+        });
+      } catch (err: any) {
+        console.error('[PopQuiz Submission Error]', err);
+        return error(500, err?.message || 'Failed to submit pop quiz');
+      }
+    }
+
     // ---- /api/backup/export | /api/backup/import ----
     if (pathname === '/api/backup/export' && method === 'GET') {
       try {
@@ -1076,6 +1313,71 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           return error(500, `Failed to update metadata for course ${courseId}`);
         }
         return json({ success: true, course: CourseService.getCourse(courseId) });
+      }
+
+      // POST /api/courses/:course_id/schedule/mark-lesson-done  { lessonId: string }
+      if (subpath === 'schedule/mark-lesson-done' && method === 'POST') {
+        const course = CourseService.getCourse(courseId);
+        if (!course) return error(404, `Course '${courseId}' not found`);
+
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        const rawLessonId = String(body.lessonId || '').trim();
+        if (!rawLessonId) {
+          return error(400, 'lessonId is required');
+        }
+
+        let lessonId: string;
+        try {
+          lessonId = assertLessonId(rawLessonId);
+        } catch {
+          return error(400, 'Invalid lessonId format');
+        }
+
+        // Toggle matching uncompleted event(s) in course schedule markdown
+        const scheduleMarkdown = CourseService.getCourseDocument(courseId, 'schedule');
+        let toggled = false;
+        if (scheduleMarkdown) {
+          const parsed = ScheduleParser.parseMarkdown(scheduleMarkdown);
+          const targetLessonNormalized = lessonId.toLowerCase();
+          const targetWithoutZero = targetLessonNormalized.replace(/^0/, '');
+
+          const targetEvents = parsed.events.filter((e) => {
+            const evLesson = (e.lessonId || '').toLowerCase();
+            const evWithoutZero = evLesson.replace(/^0/, '');
+            return evLesson === targetLessonNormalized || evWithoutZero === targetWithoutZero;
+          });
+
+          let updatedMarkdown = scheduleMarkdown;
+          for (const ev of targetEvents) {
+            if (!ev.done) {
+              updatedMarkdown = toggleEventDone(updatedMarkdown, ev.lineIndex);
+              toggled = true;
+            }
+          }
+
+          if (toggled) {
+            CourseService.saveCourseDocument(courseId, 'schedule', updatedMarkdown);
+          }
+        }
+
+        // Find next lesson in the curriculum
+        const allLessons = course.units ? course.units.flatMap((u) => u.lessons || []) : [];
+        const currentIndex = allLessons.findIndex(
+          (l) => l.id.toLowerCase() === lessonId.toLowerCase()
+        );
+        const nextLesson =
+          currentIndex >= 0 && currentIndex < allLessons.length - 1
+            ? allLessons[currentIndex + 1]
+            : null;
+
+        return json({
+          success: true,
+          toggled,
+          lessonId,
+          nextLessonId: nextLesson ? nextLesson.id : null,
+          nextLessonTitle: nextLesson ? nextLesson.title : null,
+          isLastLesson: !nextLesson
+        });
       }
 
       // GET|POST|PUT /api/courses/:course_id/course-docs
