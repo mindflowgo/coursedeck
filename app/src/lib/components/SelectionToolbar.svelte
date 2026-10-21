@@ -134,7 +134,16 @@
 <!-- AI Annotation Prompt Popover Modal -->
 {#if isPromptOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-    <div class="bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-2xl max-w-lg w-full p-5 space-y-4 animate-in zoom-in-95 duration-150">
+    <!-- Backdrop dismiss -->
+    <button
+      type="button"
+      class="absolute inset-0 w-full h-full cursor-default"
+      onclick={handleClosePrompt}
+      aria-label="Close modal overlay"
+      tabindex="-1"
+    ></button>
+
+    <div class="relative z-10 bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-2xl max-w-lg w-full p-5 space-y-4 animate-in zoom-in-95 duration-150">
       <!-- Header -->
       <div class="flex items-center justify-between border-b border-stone-100 dark:border-stone-800 pb-3">
         <div class="flex items-center space-x-2">

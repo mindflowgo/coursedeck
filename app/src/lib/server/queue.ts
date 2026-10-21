@@ -51,6 +51,8 @@ export interface GenerationTask {
   lessonTitle: string;
   tab: string;
   customPrompt?: string;
+  customContent?: string;
+  contextAttachment?: string;
   preferences?: SchedulePreferences;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
@@ -246,6 +248,8 @@ export class GenerationQueue {
       lessonTitle?: string;
       tab: string;
       customPrompt?: string;
+      customContent?: string;
+      contextAttachment?: string;
       preferences?: SchedulePreferences;
     }>
   ): GenerationTask[] {
@@ -269,6 +273,8 @@ export class GenerationQueue {
         lessonTitle,
         tab: item.tab,
         customPrompt: item.customPrompt,
+        customContent: item.customContent,
+        contextAttachment: item.contextAttachment,
         preferences: item.preferences,
         status: 'pending',
         createdAt: new Date().toISOString()
@@ -766,8 +772,12 @@ export class GenerationQueue {
             `You are an expert Ontario curriculum educator. Produce a high quality ${nextTask.tab} in Markdown format.`;
         }
 
-        const cleanLesson = stripLessonMedia(bundle.lesson);
-        const userPrompt = `Course: ${nextTask.courseId.toUpperCase()}\nLesson: ${nextTask.lessonTitle}\n\nFull Lesson Material:\n${cleanLesson}`;
+        const attachment = nextTask.contextAttachment || 'lesson - lessons';
+        const userPrompt =
+          nextTask.customContent !== undefined
+            ? nextTask.customContent
+            : CourseService.getPromptContext(nextTask.courseId, attachment, nextTask.lessonId) ||
+              stripLessonMedia(parseFrontmatter(bundle.lesson).body).trim();
 
         // Use the CURRENT active settings: clean model (blank if not specified) and session_id
         const effectiveConfig: LLMConfig = {
@@ -801,7 +811,8 @@ export class GenerationQueue {
           ...parsed.frontmatter,
           type: nextTask.tab,
           updatedAt: new Date().toISOString().split('T')[0],
-          prompt: systemPrompt
+          prompt: systemPrompt,
+          contextAttachment: attachment
         };
 
         const finalMarkdown = serializeWithFrontmatter(frontmatter, parsed.body.trim());

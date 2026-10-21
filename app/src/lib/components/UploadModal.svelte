@@ -128,10 +128,21 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (isOpen && e.key === 'Escape') onClose(); }} />
+
 {#if isOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 dark:bg-black/60 backdrop-blur-xs">
+    <!-- Backdrop dismiss -->
+    <button
+      type="button"
+      class="absolute inset-0 w-full h-full cursor-default"
+      onclick={onClose}
+      aria-label="Close modal overlay"
+      tabindex="-1"
+    ></button>
+
     <div
-      class="w-full max-w-md rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150"
+      class="relative z-10 w-full max-w-md rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150"
     >
       <!-- Modal Header -->
       <div class="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">

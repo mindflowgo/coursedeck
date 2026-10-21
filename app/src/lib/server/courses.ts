@@ -512,6 +512,109 @@ export class CourseService {
   }
 
   /**
+   * Resolves the actual context content to be supplied alongside a prompt,
+   * based on the contextAttachment string (e.g. "lesson - lessons", "unit - lessons", etc.)
+   */
+  static getPromptContext(
+    courseId: string,
+    attachment: string,
+    lessonId?: string
+  ): string {
+    const course = this.getCourse(courseId);
+    const courseDir = this.courseDir(courseId);
+    if (!course || !fs.existsSync(courseDir)) return '';
+
+    const norm = attachment.toLowerCase().trim();
+
+    if (norm === 'lesson - lessons' && lessonId) {
+      const bundle = this.getLessonContent(courseId, lessonId);
+      return bundle?.lesson ? this.cleanLessonText(bundle.lesson) : '';
+    }
+
+    if (norm === 'lesson - summaries' && lessonId) {
+      return this.readCuratedContent(courseDir, lessonId, 'summary') || '';
+    }
+
+    if (norm === 'lesson - cheatsheets' && lessonId) {
+      return this.readCuratedContent(courseDir, lessonId, 'cheatsheet') || '';
+    }
+
+    if (norm === 'unit - lessons') {
+      let targetUnit = course.units[0];
+      if (lessonId) {
+        const found = course.units.find((u) => u.lessons.some((l) => l.id === lessonId));
+        if (found) targetUnit = found;
+      }
+      if (!targetUnit) return '';
+
+      const parts: string[] = [];
+      for (const l of targetUnit.lessons) {
+        const bundle = this.getLessonContent(courseId, l.id);
+        if (bundle?.lesson) {
+          const clean = this.cleanLessonText(bundle.lesson);
+          if (clean.length > 0) {
+            parts.push(`## Lesson ${l.id} - ${l.title}\n\n${clean}`);
+          }
+        }
+      }
+      return parts.join('\n\n');
+    }
+
+    if (norm === 'course - lessons') {
+      const parts: string[] = [];
+      for (const u of course.units) {
+        for (const l of u.lessons) {
+          const bundle = this.getLessonContent(courseId, l.id);
+          if (bundle?.lesson) {
+            const clean = this.cleanLessonText(bundle.lesson);
+            if (clean.length > 0) {
+              parts.push(`## Lesson ${l.id} - ${l.title}\n\n${clean}`);
+            }
+          }
+        }
+      }
+      return parts.join('\n\n');
+    }
+
+    if (norm === 'course - summaries') {
+      const parts: string[] = [];
+      for (const u of course.units) {
+        for (const l of u.lessons) {
+          const summary = this.readCuratedContent(courseDir, l.id, 'summary');
+          if (summary && summary.trim()) {
+            parts.push(`## Lesson ${l.id} - ${l.title}\n\n${summary.trim()}`);
+          }
+        }
+      }
+      return parts.join('\n\n');
+    }
+
+    if (norm === 'course - cheatsheets') {
+      const parts: string[] = [];
+      for (const u of course.units) {
+        for (const l of u.lessons) {
+          const cs = this.readCuratedContent(courseDir, l.id, 'cheatsheet');
+          if (cs && cs.trim()) {
+            parts.push(`## Lesson ${l.id} - ${l.title}\n\n${cs.trim()}`);
+          }
+        }
+      }
+      return parts.join('\n\n');
+    }
+
+    return '';
+  }
+
+  /**
+   * Strips YAML frontmatter and inaccessible media from raw lesson files.
+   */
+  private static cleanLessonText(raw: string | null | undefined): string {
+    if (!raw) return '';
+    const body = parseFrontmatter(raw).body;
+    return stripLessonMedia(body).trim();
+  }
+
+  /**
    * Body of the lesson's curated tab file (summary/cheatsheet/test), skipping
    * "Not yet generated" stubs. Null when the file is absent or a stub.
    */

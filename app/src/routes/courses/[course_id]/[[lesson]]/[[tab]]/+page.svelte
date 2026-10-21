@@ -638,7 +638,10 @@
     }
   }
 
-  async function generateCourseDocument(type: PageTab, opts?: { customPrompt?: string }) {
+  async function generateCourseDocument(
+    type: PageTab,
+    opts?: { customPrompt?: string; customContent?: string; contextAttachment?: string }
+  ) {
     if (type === 'lesson' || !['summary', 'cheatsheet', 'test', 'schedule'].includes(type)) return;
 
     const promptKey = type === 'schedule' ? 'course_schedule' : `course_${type}`;
@@ -676,6 +679,8 @@
           type,
           forceRegenerate: true,
           customPrompt: activePrompt,
+          customContent: opts?.customContent,
+          contextAttachment: opts?.contextAttachment || parsedActiveTab.frontmatter.contextAttachment,
           async: true
         })
       });
@@ -1159,7 +1164,11 @@
     tabContents[activeTab] = serializeWithFrontmatter(currentParsed.frontmatter, newBody);
   }
 
-  async function triggerAIGeneration() {
+  async function triggerAIGeneration(opts?: {
+    customPrompt?: string;
+    customContent?: string;
+    contextAttachment?: string;
+  }) {
     if (activeTab === 'lesson') return;
 
     const activeModel = await getActiveLlmCard();
@@ -1169,7 +1178,8 @@
     }
 
     try {
-      const activeSystemPrompt = parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab;
+      const activeSystemPrompt =
+        opts?.customPrompt || parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab;
 
       console.log(`\n[ILC AI Enqueue: ${tabDisplayName}]`);
       console.log(`- Course: ${(courseId || '').toUpperCase()} | Lesson: ${selectedLessonId} (${currentLessonTitle})`);
@@ -1186,7 +1196,9 @@
           lessonId: selectedLessonId,
           lessonTitle: currentLessonTitle,
           tab: activeTab,
-          customPrompt: activeSystemPrompt
+          customPrompt: activeSystemPrompt,
+          customContent: opts?.customContent,
+          contextAttachment: opts?.contextAttachment || parsedActiveTab.frontmatter.contextAttachment
         })
       });
 
@@ -2350,13 +2362,22 @@
               defaultPrompt={defaultPromptForActiveTab}
               tabName={isCourseScope ? `Course ${tabDisplayName}` : tabDisplayName}
               isGenerating={isCourseScope ? (activeTab === 'schedule' ? isScheduleGenerating : isGeneratingCourseDoc) : isTabGenerating}
+              courseId={courseId}
+              lessonId={isCourseScope ? undefined : selectedLessonId}
+              activeTab={activeTab}
+              initialAttachment={parsedActiveTab.frontmatter.contextAttachment}
               onChangePrompt={handlePromptChange}
-              onRegenerate={isCourseScope
-              ? activeTab === 'schedule'
-                ? // Schedule regeneration always starts from the (adjustable) survey.
-                  () => (isScheduleModalOpen = true)
-                : () => generateCourseDocument(activeTab)
-              : triggerAIGeneration}
+              onRegenerate={(opts) => {
+                if (isCourseScope) {
+                  if (activeTab === 'schedule') {
+                    isScheduleModalOpen = true;
+                  } else {
+                    generateCourseDocument(activeTab, opts);
+                  }
+                } else {
+                  triggerAIGeneration(opts);
+                }
+              }}
               onResetPrompt={() => handlePromptChange(defaultPromptForActiveTab)}
               onClose={() => (showPromptCard = false)}
             />
@@ -2662,7 +2683,16 @@
   <!-- New custom tab modal -->
   {#if isNewTabModalOpen}
     <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 dark:bg-black/60 backdrop-blur-xs animate-in fade-in duration-150">
-      <div class="bg-white dark:bg-stone-900 rounded-xl border border-stone-200 dark:border-stone-800 shadow-xl max-w-sm w-full p-5 space-y-4">
+      <!-- Backdrop dismiss -->
+      <button
+        type="button"
+        class="absolute inset-0 w-full h-full cursor-default"
+        onclick={() => (isNewTabModalOpen = false)}
+        aria-label="Close modal overlay"
+        tabindex="-1"
+      ></button>
+
+      <div class="relative z-10 bg-white dark:bg-stone-900 rounded-xl border border-stone-200 dark:border-stone-800 shadow-xl max-w-sm w-full p-5 space-y-4">
         <div class="space-y-1">
           <div class="flex items-center space-x-2">
             <div class="p-1 rounded-md bg-stone-900 dark:bg-stone-800 text-white dark:text-stone-200">

@@ -74,7 +74,7 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
       provider: 'arc',
       endpoint: endpoint || undefined,
       hasCredentials: hasApiKey,
-      accountEmail: hasApiKey ? `Timeflow Server (${endpoint})` : (endpoint ? `Endpoint: ${endpoint}` : 'Timeflow / ARC Simulator (Ready)'),
+      accountEmail: hasApiKey ? 'Connected' : (endpoint ? 'Endpoint configured' : 'Simulator Ready'),
       calendars: [{ id: 'arc_default', name: 'Timeflow / ARC Primary Workspace', primary: true }]
     };
   }
@@ -293,6 +293,14 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
         itemCount: validEvents.length
       };
 
+      console.log('\n================== [TIMEFLOW POST REQUEST] ==================');
+      console.log(`[ArcSyncProvider] URL:     ${effectiveEndpoint}`);
+      console.log(`[ArcSyncProvider] API Key: ${creds.apiKey || '(none)'}`);
+      console.log(`[ArcSyncProvider] Headers:`, JSON.stringify(headers, null, 2));
+      console.log(`[ArcSyncProvider] Payload summary: extId=${bodyPayload.extId}, groupId=${bodyPayload.groupId || '(auto)'}, itemCount=${bodyPayload.itemCount}, markdownLength=${arcMarkdown.length}`);
+      console.log(`[ArcSyncProvider] Markdown snippet:\n${arcMarkdown.slice(0, 300)}...`);
+      console.log('=============================================================\n');
+
       try {
         const res = await fetch(effectiveEndpoint, {
           method: 'POST',
@@ -302,6 +310,9 @@ export class ArcSyncProvider implements ScheduleSyncProvider {
 
         if (!res.ok) {
           const errText = await res.text().catch(() => res.statusText);
+          console.error(`[ArcSyncProvider] HTTP ${res.status} Error from Timeflow at ${effectiveEndpoint}`);
+          console.error(`[ArcSyncProvider] API Key used: ${creds.apiKey}`);
+          console.error(`[ArcSyncProvider] Response body:`, errText);
           throw new Error(`Timeflow endpoint returned HTTP ${res.status}: ${errText}`);
         }
 

@@ -557,6 +557,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                   singleTab === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
                 tab: singleTab,
                 customPrompt: (customPrompt || prompt) as string | undefined,
+                customContent: typeof body.customContent === 'string' ? body.customContent : undefined,
+                contextAttachment: typeof body.contextAttachment === 'string' ? body.contextAttachment : undefined,
                 preferences: body.preferences as SchedulePreferences | undefined
               }
             ];
@@ -1402,6 +1404,23 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         });
       }
 
+      // GET /api/courses/:course_id/prompt-context
+      if (subpath === 'prompt-context' && method === 'GET') {
+        const course = CourseService.getCourse(courseId);
+        if (!course) return error(404, `Course '${courseId}' not found`);
+
+        const attachment = url.searchParams.get('attachment') || 'lesson - lessons';
+        const lessonId = url.searchParams.get('lessonId') || undefined;
+        const content = CourseService.getPromptContext(courseId, attachment, lessonId);
+
+        return json({
+          success: true,
+          attachment,
+          content,
+          charCount: content.length
+        });
+      }
+
       // GET|POST|PUT /api/courses/:course_id/course-docs
       if (subpath === 'course-docs') {
         const course = CourseService.getCourse(courseId);
@@ -1557,8 +1576,18 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             });
           }
 
+          const contextAttachment =
+            typeof body.contextAttachment === 'string'
+              ? body.contextAttachment.trim()
+              : `course - ${type === 'summary' ? 'summaries' : type === 'cheatsheet' ? 'cheatsheets' : 'lessons'}`;
+          const customContent = typeof body.customContent === 'string' ? body.customContent : undefined;
+
           // 4. Aggregated lesson payload for course summary / cheatsheet / test
-          const payload = CourseService.buildAggregatedPayload(courseId, type);
+          const payload =
+            customContent !== undefined
+              ? customContent
+              : CourseService.getPromptContext(courseId, contextAttachment) ||
+                CourseService.buildAggregatedPayload(courseId, type);
           if (!payload || payload.trim().length < 50) {
             return error(
               400,
@@ -1588,7 +1617,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                 ...parsed.frontmatter,
                 type: `course_${type}`,
                 updatedAt: new Date().toISOString().split('T')[0],
-                prompt: systemPrompt
+                prompt: systemPrompt,
+                contextAttachment
               },
               parsed.body.trim()
             );

@@ -116,12 +116,20 @@
     {/if}
 
     {#if isImage}
-      <div class="w-full h-full p-4 overflow-auto flex items-center justify-center">
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <div
+        class="w-full h-full p-4 overflow-auto flex items-center justify-center cursor-zoom-out"
+        onclick={(e) => {
+          if (e.target === e.currentTarget) {
+            onClose();
+          }
+        }}
+      >
         <img
           src={url}
           alt={displayTitle}
           onload={handleContentLoad}
-          class="max-w-full max-h-full object-contain rounded shadow-lg"
+          class="max-w-full max-h-full object-contain rounded shadow-lg cursor-default"
         />
       </div>
     {:else}

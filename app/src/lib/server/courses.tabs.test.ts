@@ -209,4 +209,88 @@ describe('CourseService tab file helpers', () => {
       expect(content).toContain('Key terms here');
     });
   });
+
+  describe('getPromptContext', () => {
+    const pcCourse = 'tstpc';
+    const pcDir = path.join(scratch, 'courses', pcCourse);
+
+    beforeAll(() => {
+      fs.mkdirSync(pcDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pcDir, 'meta.json'),
+        JSON.stringify({
+          id: pcCourse,
+          title: 'Prompt Context Test Course',
+          units: [
+            {
+              id: 'unit-1',
+              title: 'Unit 1 Title',
+              lessons: [
+                { id: '01.01', title: 'Lesson 1.1' },
+                { id: '01.02', title: 'Lesson 1.2' }
+              ]
+            },
+            {
+              id: 'unit-2',
+              title: 'Unit 2 Title',
+              lessons: [{ id: '02.01', title: 'Lesson 2.1' }]
+            }
+          ]
+        })
+      );
+      fs.writeFileSync(
+        path.join(pcDir, '01.01.lesson.md'),
+        '---\ntitle: Internal Lesson Title\norder: 1\n---\nLesson 1.1 content here'
+      );
+      fs.writeFileSync(path.join(pcDir, '01.01.summary.md'), '---\ntype: summary\n---\nSummary 1.1 content');
+      fs.writeFileSync(path.join(pcDir, '01.01.cheatsheet.md'), '---\ntype: cheatsheet\n---\nCheatsheet 1.1 content');
+      fs.writeFileSync(path.join(pcDir, '01.02.lesson.md'), 'Lesson 1.2 content here');
+      fs.writeFileSync(path.join(pcDir, '02.01.lesson.md'), 'Lesson 2.1 content here');
+      fs.writeFileSync(path.join(pcDir, '02.01.summary.md'), '---\ntype: summary\n---\nSummary 2.1 content');
+      fs.writeFileSync(path.join(pcDir, '02.01.cheatsheet.md'), '---\ntype: cheatsheet\n---\nCheatsheet 2.1 content');
+    });
+
+    it('resolves lesson - lessons', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'lesson - lessons', '01.01');
+      expect(res).toBe('Lesson 1.1 content here');
+    });
+
+    it('resolves lesson - summaries', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'lesson - summaries', '01.01');
+      expect(res).toBe('Summary 1.1 content');
+    });
+
+    it('resolves lesson - cheatsheets', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'lesson - cheatsheets', '01.01');
+      expect(res).toBe('Cheatsheet 1.1 content');
+    });
+
+    it('resolves unit - lessons for the unit containing the lesson', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'unit - lessons', '01.01');
+      expect(res).toContain('Lesson 01.01 - Lesson 1.1');
+      expect(res).toContain('Lesson 1.1 content here');
+      expect(res).toContain('Lesson 01.02 - Lesson 1.2');
+      expect(res).toContain('Lesson 1.2 content here');
+      expect(res).not.toContain('Lesson 2.1');
+    });
+
+    it('resolves course - lessons across all units', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'course - lessons');
+      expect(res).toContain('Lesson 1.1 content here');
+      expect(res).toContain('Lesson 1.2 content here');
+      expect(res).toContain('Lesson 2.1 content here');
+    });
+
+    it('resolves course - summaries across all units', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'course - summaries');
+      expect(res).toContain('Summary 1.1 content');
+      expect(res).toContain('Summary 2.1 content');
+    });
+
+    it('resolves course - cheatsheets across all units', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'course - cheatsheets');
+      expect(res).toContain('Cheatsheet 1.1 content');
+      expect(res).toContain('Cheatsheet 2.1 content');
+    });
+  });
 });

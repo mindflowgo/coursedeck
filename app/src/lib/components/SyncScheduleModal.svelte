@@ -106,12 +106,7 @@
   let googlePollInterval: ReturnType<typeof setInterval> | null = null;
 
   // Timeflow / ARC state
-  let arcEndpoint = $state('http://127.0.0.1:3001/v1/groups');
-  let arcApiKey = $state('');
   let arcHasCredentials = $state(false);
-  let arcStatusMessage = $state('');
-  let isSavingArcCreds = $state(false);
-  let showArcCredsForm = $state(false);
 
   onDestroy(() => {
     stopGooglePolling();
@@ -147,6 +142,34 @@
     };
     errors?: Array<{ eventId: string; error: string }>;
   } | null>(null);
+
+  function formatSyncSummary(stats?: {
+    created?: number;
+    updated?: number;
+    unchanged?: number;
+    deletedObsolete?: number;
+    failed?: number;
+  }): string {
+    if (!stats) return '';
+    const parts: string[] = [];
+    const created = stats.created ?? 0;
+    const modified = stats.updated ?? (stats as any).modified ?? 0;
+    const deleted = stats.deletedObsolete ?? (stats as any).deleted ?? 0;
+    const failed = stats.failed ?? 0;
+
+    if (created > 0) parts.push(`${created} created`);
+    if (modified > 0) parts.push(`${modified} modified`);
+    if (deleted > 0) parts.push(`${deleted} deleted`);
+    if (failed > 0) parts.push(`${failed} failed`);
+
+    if (parts.length === 0) {
+      if (stats.unchanged && stats.unchanged > 0) {
+        return `no changes (${stats.unchanged} up to date)`;
+      }
+      return 'no changes';
+    }
+    return parts.join('; ');
+  }
 
   let errorMsg = $state<string | null>(null);
 
@@ -200,10 +223,6 @@
 
         const arcStatus = data.providers?.arc;
         arcHasCredentials = Boolean(arcStatus?.hasCredentials);
-        if (arcStatus?.endpoint) {
-          arcEndpoint = arcStatus.endpoint;
-        }
-        arcStatusMessage = arcStatus?.accountEmail || '';
 
         if (isConnected) {
           const calRes = await apiFetch('/api/sync/calendars?provider=google');
@@ -220,38 +239,6 @@
       console.warn('Failed to check sync status:', e);
     } finally {
       isCheckingStatus = false;
-    }
-  }
-
-  async function saveArcCredentials() {
-    if (!arcApiKey.trim()) {
-      errorMsg = 'Timeflow API Key is required.';
-      return;
-    }
-    isSavingArcCreds = true;
-    errorMsg = null;
-    try {
-      const res = await apiFetch('/api/sync/credentials', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider: 'arc',
-          endpoint: arcEndpoint.trim() || 'http://127.0.0.1:3001/v1/groups',
-          apiKey: arcApiKey.trim()
-        })
-      });
-      if (res.ok) {
-        showArcCredsForm = false;
-        arcHasCredentials = true;
-        await fetchStatusAndCalendars();
-      } else {
-        const d = await res.json().catch(() => ({}));
-        errorMsg = d.message || 'Failed to save Timeflow credentials.';
-      }
-    } catch (err: any) {
-      errorMsg = err.message || 'Failed to save Timeflow credentials.';
-    } finally {
-      isSavingArcCreds = false;
     }
   }
 
@@ -363,9 +350,20 @@
   }
 </script>
 
+<svelte:window onkeydown={(e) => { if (isOpen && e.key === 'Escape') onClose(); }} />
+
 {#if isOpen}
   <div class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-900/40 dark:bg-black/60 backdrop-blur-xs">
-    <div class="w-full max-w-lg rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] flex flex-col">
+    <!-- Backdrop dismiss -->
+    <button
+      type="button"
+      class="absolute inset-0 w-full h-full cursor-default"
+      onclick={onClose}
+      aria-label="Close modal overlay"
+      tabindex="-1"
+    ></button>
+
+    <div class="relative z-10 w-full max-w-lg rounded-2xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-2xl p-6 space-y-4 animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] flex flex-col">
       
       <!-- Header -->
       <div class="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800 shrink-0">
@@ -585,7 +583,7 @@
                 type="button"
                 onclick={() => {
                   onClose();
-                  goto('/settings?tab=sync_mcp');
+                  goto('/settings/sync-mcp?provider=google');
                 }}
                 class="flex items-center space-x-1 p-1 rounded text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition cursor-pointer shrink-0"
                 title="Adjust Google Calendar & MCP settings"
@@ -693,77 +691,43 @@
             <div class="flex items-center space-x-2 min-w-0">
               <span class="w-2 h-2 rounded-full {arcHasCredentials ? 'bg-emerald-500' : 'bg-amber-500'} shrink-0"></span>
               <span class="text-[11px] text-stone-600 dark:text-stone-400 truncate">
-                {arcHasCredentials ? 'Timeflow Server:' : 'Status:'} <strong class="font-medium text-stone-800 dark:text-stone-200">{arcStatusMessage || 'Credentials Required'}</strong>
+                Timeflow: <strong class="font-medium text-stone-800 dark:text-stone-200">{arcHasCredentials ? 'Connected' : 'Credentials Required'}</strong>
               </span>
             </div>
             <button
               type="button"
-              onclick={() => { showArcCredsForm = !showArcCredsForm; }}
+              onclick={() => {
+                onClose();
+                goto('/settings/sync-mcp?provider=arc');
+              }}
               class="flex items-center space-x-1 p-1 rounded text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-700 transition cursor-pointer shrink-0"
-              title="Configure Timeflow server and API key"
+              title="Open Sync & MCP Settings"
             >
               <Settings class="w-3.5 h-3.5" />
             </button>
           </div>
 
-          <!-- Configuration Form -->
-          {#if showArcCredsForm || !arcHasCredentials}
-            <div class="space-y-3 p-3.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-800/30 text-xs">
-              <div class="flex items-center justify-between">
-                <h4 class="text-xs font-semibold text-stone-800 dark:text-stone-200">Timeflow API Configuration</h4>
-                {#if arcHasCredentials}
-                  <button
-                    type="button"
-                    onclick={() => { showArcCredsForm = false; }}
-                    class="text-[11px] text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-pointer"
-                  >
-                    Hide
-                  </button>
-                {/if}
-              </div>
-              <p class="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
-                Connect your course schedule to Timeflow. Enter your Timeflow Server Endpoint and API Key (found in Timeflow under <em>Settings → Sync & MCP → API Key</em>).
-              </p>
-              <div class="space-y-2">
-                <div>
-                  <label for="arc-endpoint" class="block text-[11px] font-medium text-stone-600 dark:text-stone-400 mb-1">
-                    Server Endpoint URL
-                  </label>
-                  <input
-                    id="arc-endpoint"
-                    type="text"
-                    bind:value={arcEndpoint}
-                    placeholder="http://127.0.0.1:3001/v1/groups"
-                    class="w-full px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-1 focus:ring-sky-500 outline-none"
-                  />
-                </div>
-                <div>
-                  <label for="arc-api-key" class="block text-[11px] font-medium text-stone-600 dark:text-stone-400 mb-1">
-                    Timeflow API Key <span class="text-sky-600">*</span>
-                  </label>
-                  <input
-                    id="arc-api-key"
-                    type="password"
-                    bind:value={arcApiKey}
-                    placeholder="e1a2b3c.xxxxxxxxxxxxxxxx"
-                    class="w-full px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-1 focus:ring-sky-500 outline-none"
-                  />
+          {#if !arcHasCredentials}
+            <div class="p-3.5 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-800/30 space-y-2.5 text-xs">
+              <div class="flex items-start space-x-2.5">
+                <Shield class="w-4 h-4 text-stone-400 mt-0.5 shrink-0" />
+                <div class="space-y-1">
+                  <h4 class="text-xs font-semibold text-stone-800 dark:text-stone-200">Connect Timeflow</h4>
+                  <p class="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                    Timeflow server endpoint and API key are required to synchronize your study schedule. Configure your connection in Sync & MCP Settings.
+                  </p>
                 </div>
               </div>
-              <div class="flex justify-end pt-1">
+              <div class="pt-1 flex justify-end">
                 <button
                   type="button"
-                  onclick={saveArcCredentials}
-                  disabled={isSavingArcCreds}
-                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-2xs cursor-pointer disabled:opacity-50"
+                  onclick={() => {
+                    onClose();
+                    goto('/settings/sync-mcp?provider=arc');
+                  }}
+                  class="px-3 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-2xs cursor-pointer"
                 >
-                  {#if isSavingArcCreds}
-                    <Loader2 class="w-3.5 h-3.5 animate-spin" />
-                    <span>Saving...</span>
-                  {:else}
-                    <Check class="w-3.5 h-3.5" />
-                    <span>Save Configuration</span>
-                  {/if}
+                  Configure in Settings
                 </button>
               </div>
             </div>
@@ -845,56 +809,39 @@
 
       <!-- Results Card -->
       {#if syncResult}
-        <div class="p-4 rounded-xl bg-stone-50 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-700 space-y-2">
-          <div class="flex items-center space-x-2 text-xs font-semibold {syncResult.success ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}">
+        <div class="p-3 rounded-xl bg-stone-50 dark:bg-stone-800/50 border border-stone-200 dark:border-stone-700 text-xs">
+          <div class="flex items-start sm:items-center space-x-2">
             {#if syncResult.success}
-              <CheckCircle2 class="w-4 h-4 text-emerald-500" />
-              <span>Synchronization Complete</span>
+              <CheckCircle2 class="w-4 h-4 text-emerald-500 shrink-0 mt-0.5 sm:mt-0" />
             {:else}
-              <AlertCircle class="w-4 h-4 text-amber-500" />
-              <span>Completed with Warnings</span>
+              <AlertCircle class="w-4 h-4 text-amber-500 shrink-0 mt-0.5 sm:mt-0" />
             {/if}
-          </div>
-          {#if syncResult.stats}
-            <div class="grid {syncResult.stats.failed > 0 ? 'grid-cols-5' : 'grid-cols-4'} gap-2 pt-1 text-center">
-              <div class="p-2 rounded-lg bg-white dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60">
-                <div class="text-sm font-semibold text-emerald-600 dark:text-emerald-400">{syncResult.stats.created}</div>
-                <div class="text-[10px] text-stone-500">Created</div>
-              </div>
-              <div class="p-2 rounded-lg bg-white dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60">
-                <div class="text-sm font-semibold text-sky-600 dark:text-sky-400">{syncResult.stats.updated}</div>
-                <div class="text-[10px] text-stone-500">Updated</div>
-              </div>
-              <div class="p-2 rounded-lg bg-white dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60">
-                <div class="text-sm font-semibold text-stone-600 dark:text-stone-300">{syncResult.stats.unchanged}</div>
-                <div class="text-[10px] text-stone-500">Unchanged</div>
-              </div>
-              <div class="p-2 rounded-lg bg-white dark:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60">
-                <div class="text-sm font-semibold text-stone-500 dark:text-stone-400">{syncResult.stats.deletedObsolete}</div>
-                <div class="text-[10px] text-stone-500">Deleted</div>
-              </div>
-              {#if syncResult.stats.failed > 0}
-                <div class="p-2 rounded-lg bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-900/60">
-                  <div class="text-sm font-semibold text-red-600 dark:text-red-400">{syncResult.stats.failed}</div>
-                  <div class="text-[10px] text-red-500">Failed</div>
-                </div>
+            <div class="leading-relaxed">
+              <span class="font-semibold {syncResult.success ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}">
+                {syncResult.success ? 'Synchronization Complete' : 'Completed with Warnings'}
+              </span>
+              {#if syncResult.stats}
+                <span class="text-stone-500 dark:text-stone-400">: {formatSyncSummary(syncResult.stats)}</span>
+              {:else if syncResult.message}
+                <span class="text-stone-500 dark:text-stone-400">: {syncResult.message}</span>
               {/if}
             </div>
-            {#if syncResult.errors && syncResult.errors.length > 0}
-              <div class="text-[11px] text-red-600 dark:text-red-400 p-2.5 rounded-lg bg-red-50/50 dark:bg-red-950/30 border border-red-200/60 dark:border-red-900/40 space-y-1">
-                <div class="font-medium flex items-center justify-between">
-                  <span>{syncResult.errors.length} event{syncResult.errors.length === 1 ? '' : 's'} failed to sync</span>
-                </div>
-                <ul class="list-disc pl-4 space-y-0.5 text-[10px] text-stone-600 dark:text-stone-400 max-h-24 overflow-y-auto">
-                  {#each syncResult.errors.slice(0, 3) as err}
-                    <li class="truncate">{err.error}</li>
-                  {/each}
-                  {#if syncResult.errors.length > 3}
-                    <li class="italic font-medium">...and {syncResult.errors.length - 3} more errors</li>
-                  {/if}
-                </ul>
+          </div>
+
+          {#if syncResult.errors && syncResult.errors.length > 0}
+            <div class="mt-2 text-[11px] text-red-600 dark:text-red-400 p-2.5 rounded-lg bg-red-50/50 dark:bg-red-950/30 border border-red-200/60 dark:border-red-900/40 space-y-1">
+              <div class="font-medium flex items-center justify-between">
+                <span>{syncResult.errors.length} event{syncResult.errors.length === 1 ? '' : 's'} failed to sync</span>
               </div>
-            {/if}
+              <ul class="list-disc pl-4 space-y-0.5 text-[10px] text-stone-600 dark:text-stone-400 max-h-24 overflow-y-auto">
+                {#each syncResult.errors.slice(0, 3) as err}
+                  <li class="truncate">{err.error}</li>
+                {/each}
+                {#if syncResult.errors.length > 3}
+                  <li class="italic font-medium">...and {syncResult.errors.length - 3} more errors</li>
+                {/if}
+              </ul>
+            </div>
           {/if}
         </div>
       {/if}

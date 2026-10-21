@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { page } from '$app/stores';
   import { apiFetch, isTauriEnvironment } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import {
@@ -45,7 +46,19 @@
 
   // ─── Sync Card State ─────────────────────────────────────────────────────────
   type SyncProviderId = 'google' | 'arc';
-  let activeSyncProvider: SyncProviderId = $state('google');
+  const initialProviderParam = $page.url.searchParams.get('provider');
+  let activeSyncProvider: SyncProviderId = $state(
+    initialProviderParam === 'arc' || initialProviderParam === 'timeflow' ? 'arc' : 'google'
+  );
+
+  $effect(() => {
+    const p = $page.url.searchParams.get('provider');
+    if (p === 'arc' || p === 'timeflow') {
+      activeSyncProvider = 'arc';
+    } else if (p === 'google') {
+      activeSyncProvider = 'google';
+    }
+  });
   let isLoadingSyncStatus = $state(true);
   let isSavingSync = $state(false);
   let syncMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -548,7 +561,7 @@
           onclick={() => { activeSyncProvider = 'arc'; syncMessage = null; }}
           class="flex items-center space-x-1.5 px-2.5 py-1 rounded text-xs font-medium transition cursor-pointer {activeSyncProvider === 'arc' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'}"
         >
-          <span>ARC</span>
+          <span>Timeflow</span>
           {#if arcStatus.connected}
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
           {/if}
@@ -578,13 +591,13 @@
           {:else}
             {#if arcStatus.connected}
               <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-              <span class="font-medium text-emerald-700 dark:text-emerald-300">Connected to ARC</span>
+              <span class="font-medium text-emerald-700 dark:text-emerald-300">Connected to Timeflow</span>
               {#if arcStatus.accountEmail}
                 <span class="text-stone-400 dark:text-stone-500 text-[11px]">&bull; {arcStatus.accountEmail}</span>
               {/if}
             {:else}
               <AlertCircle class="w-3.5 h-3.5 text-stone-400" />
-              <span class="text-stone-600 dark:text-stone-400">ARC not configured</span>
+              <span class="text-stone-600 dark:text-stone-400">Timeflow not configured</span>
             {/if}
           {/if}
         </div>
@@ -756,20 +769,20 @@
       {#if activeSyncProvider === 'arc'}
         <div class="space-y-3">
           <p class="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
-            Provide your ARC (Academic Resource Coordinator) API credentials. CourseDeck pushes Ontario-aligned schedule blocks directly into your active ARC workspace.
+            Provide your Timeflow server API credentials. CourseDeck pushes Ontario-aligned schedule blocks directly into your active Timeflow workspace.
           </p>
 
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div class="space-y-1">
               <label for="arc-api-key" class="block text-[11px] font-medium text-stone-700 dark:text-stone-300">
-                ARC API Key
+                Timeflow API Key
               </label>
               <div class="relative">
                 <input
                   id="arc-api-key"
                   type={showArcKey ? 'text' : 'password'}
                   bind:value={arcApiKey}
-                  placeholder="arc_live_xxxxxxxxxxxxxxxx"
+                  placeholder="e1a2b3c.xxxxxxxxxxxxxxxx"
                   class="w-full px-2.5 py-1.5 pr-8 rounded border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-950 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
                 />
                 <button
@@ -784,13 +797,13 @@
 
             <div class="space-y-1">
               <label for="arc-endpoint" class="block text-[11px] font-medium text-stone-700 dark:text-stone-300">
-                ARC Endpoint URL <span class="text-stone-400 font-normal">(optional)</span>
+                Timeflow Server Endpoint <span class="text-stone-400 font-normal">(optional)</span>
               </label>
               <input
                 id="arc-endpoint"
                 type="text"
                 bind:value={arcEndpoint}
-                placeholder="https://arc.internal/api/v1"
+                placeholder="https://api.rezox.com/v1/groups"
                 class="w-full px-2.5 py-1.5 rounded border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-950 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
               />
             </div>
@@ -808,7 +821,7 @@
                 <span>Saving...</span>
               {:else}
                 <Save class="w-3 h-3" />
-                <span>Save ARC Key</span>
+                <span>Save Timeflow Key</span>
               {/if}
             </button>
 

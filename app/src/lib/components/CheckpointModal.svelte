@@ -89,6 +89,7 @@
       class="absolute inset-0 w-full h-full cursor-default"
       onclick={onClose}
       aria-label="Close modal overlay"
+      tabindex="-1"
     ></button>
 
     <!-- Modal Card with Post-it styled note surface -->
