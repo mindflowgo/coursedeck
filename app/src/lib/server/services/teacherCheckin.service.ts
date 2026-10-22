@@ -4,13 +4,21 @@ import { loadAppSettings, saveAppSettings, type TeacherCheckinConfig } from '../
 export interface PopQuizQuestionResult {
   number: string;
   category?: string;
-  type: 'multiple-choice' | 'fill-in-the-blank';
+  type: 'multiple-choice' | 'fill-in-the-blank' | 'short-answer';
   prompt: string;
   options?: Array<{ letter: string; text: string }>;
   studentAnswer: string;
   correctAnswer: string;
   isCorrect: boolean;
+  score?: number;
   explanation?: string;
+  feedback?: string;
+  parts?: Array<{
+    part?: string;
+    label?: string;
+    isCorrect: boolean;
+    feedback?: string;
+  }>;
 }
 
 export interface PopQuizResultPayload {
@@ -21,6 +29,37 @@ export interface PopQuizResultPayload {
   timeSpentSeconds?: number;
   timedOut?: boolean;
   questions: PopQuizQuestionResult[];
+  score: number;
+  total: number;
+  percentage: number;
+}
+
+export interface UnitTestQuestionResult {
+  number: string;
+  category?: string;
+  type: 'multiple-choice' | 'fill-in-the-blank' | 'short-answer';
+  prompt: string;
+  options?: Array<{ letter: string; text: string }>;
+  studentAnswer: string;
+  correctAnswer: string;
+  isCorrect: boolean;
+  score?: number;
+  explanation?: string;
+  feedback?: string;
+  parts?: Array<{
+    part?: string;
+    label?: string;
+    isCorrect: boolean;
+    feedback?: string;
+  }>;
+}
+
+export interface UnitTestResultPayload {
+  courseId: string;
+  unitId: string;
+  unitTitle?: string;
+  timestamp: string;
+  questions: UnitTestQuestionResult[];
   score: number;
   total: number;
   percentage: number;
@@ -360,6 +399,273 @@ export class TeacherCheckinService {
       }
       if (cleanQExpl) {
         text += `Explanation: ${cleanQExpl}\n`;
+      }
+      text += `\n`;
+    }
+
+    const finalHtml = html.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+    const finalText = text.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
+
+    const result = await transport.send({
+      from: cfg.loginEmail.trim(),
+      to: recipients,
+      subject,
+      html: finalHtml,
+      text: finalText
+    });
+
+    return {
+      success: true,
+      messageId: result.messageId || 'SENT'
+    };
+  }
+
+  static async sendUnitTestResultEmail(payload: UnitTestResultPayload): Promise<{ success: boolean; messageId: string }> {
+    const cfg = this.getConfig();
+    const recipients = parseRecipientEmails(cfg?.email);
+    if (!cfg || recipients.length === 0 || !cfg.loginEmail || !cfg.loginPassword) {
+      throw new Error('Teacher Check-In is not configured. Unit test results were recorded locally, but could not be emailed.');
+    }
+
+    const transport = this.createMailerTransport(cfg);
+    const courseCode = payload.courseId.toUpperCase();
+    const cleanTitle = cleanImageReferences(payload.unitTitle);
+    const headingTitle = cleanTitle || `Unit ${payload.unitId} Practice Test`;
+    const textTitle = cleanTitle ? ` (${cleanTitle})` : '';
+
+    const subject = `[CourseDeck] ${courseCode} - ${payload.unitId} (Unit Practice Test)`;
+
+    const scoreColor = payload.percentage >= 75 ? '#059669' : payload.percentage >= 50 ? '#d97706' : '#dc2626';
+    const scoreBg = payload.percentage >= 75 ? '#ecfdf5' : payload.percentage >= 50 ? '#fffbeb' : '#fef2f2';
+
+    // Format questions HTML
+    const questionsHtml = payload.questions.map((q, idx) => {
+      const qNum = q.number || String(idx + 1).padStart(2, '0');
+      const isCorrect = q.isCorrect;
+      const qScore = typeof q.score === 'number' ? q.score : (isCorrect ? 1 : 0);
+      const isPartial = !isCorrect && qScore > 0 && qScore < 1;
+
+      const statusIcon = isCorrect ? '&#10004;' : isPartial ? '&#9650;' : '&#10008;';
+      const statusColor = isCorrect ? '#16a34a' : isPartial ? '#d97706' : '#dc2626';
+      const statusBg = isCorrect ? '#f0fdf4' : isPartial ? '#fffbeb' : '#fef2f2';
+      const borderCol = isCorrect ? '#bbf7d0' : isPartial ? '#fde68a' : '#fecaca';
+      const statusText = isCorrect ? `CORRECT (${qScore}/1)` : isPartial ? `PARTIAL (${qScore}/1)` : `INCORRECT (${qScore}/1)`;
+
+      const cleanPrompt = cleanImageReferences(q.prompt);
+      const cleanStudentAnswer = cleanImageReferences(q.studentAnswer);
+      const cleanCorrectAnswer = cleanImageReferences(q.correctAnswer);
+      const cleanFeedback = cleanImageReferences(q.feedback || q.explanation || '');
+
+      const typeLabel = q.type === 'fill-in-the-blank'
+        ? 'Fill in the Blank'
+        : q.type === 'short-answer'
+          ? 'Short Answer'
+          : 'Multiple Choice';
+
+      let optionsHtml = '';
+      if (q.type === 'multiple-choice' && q.options && q.options.length > 0) {
+        optionsHtml = `
+          <div style="margin: 8px 0; padding-left: 8px;">
+            ${q.options.map(opt => {
+              const cleanOptText = cleanImageReferences(opt.text);
+              const isSelected = cleanStudentAnswer.toUpperCase() === opt.letter.toUpperCase();
+              const isOptionCorrect = cleanCorrectAnswer.toUpperCase() === opt.letter.toUpperCase();
+              let optStyle = 'color: #4b5563; font-size: 13px; margin: 3px 0;';
+              let optBadge = `<span style="font-family: monospace; display: inline-block; width: 18px;">${opt.letter})</span>`;
+              if (isSelected && isCorrect) {
+                optStyle = 'color: #15803d; font-weight: 600; font-size: 13px; margin: 3px 0;';
+              } else if (isSelected && !isCorrect) {
+                optStyle = 'color: #b91c1c; font-weight: 600; font-size: 13px; margin: 3px 0; text-decoration: line-through;';
+              } else if (isOptionCorrect && !isCorrect) {
+                optStyle = 'color: #15803d; font-weight: 600; font-size: 13px; margin: 3px 0;';
+              }
+              return `<div style="${optStyle}">${optBadge} ${cleanOptText}</div>`;
+            }).join('')}
+          </div>
+        `;
+      }
+
+      let partsHtml = '';
+      if (q.parts && q.parts.length > 0) {
+        const correctPartsCount = q.parts.filter(p => p.isCorrect).length;
+        partsHtml = `
+          <div style="margin: 10px 0 6px 0; padding: 10px 12px; background-color: #ffffff; border: 1px solid ${borderCol}; border-radius: 6px;">
+            <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #4b5563; margin-bottom: 6px;">
+              Sub-Part Breakdown (${correctPartsCount}/${q.parts.length} Correct)
+            </div>
+            ${q.parts.map(p => {
+              const partIcon = p.isCorrect ? '&#10004;' : '&#10008;';
+              const partColor = p.isCorrect ? '#16a34a' : '#dc2626';
+              const partLabel = p.label || ('Part ' + (p.part || '').toUpperCase());
+              const partFeedback = p.feedback ? cleanImageReferences(p.feedback) : '';
+              return `
+                <div style="font-size: 12px; margin: 4px 0; display: flex; align-items: flex-start;">
+                  <span style="color: ${partColor}; font-weight: bold; width: 16px; display: inline-block;">${partIcon}</span>
+                  <div>
+                    <strong>${partLabel}:</strong>
+                    ${partFeedback ? `<span style="color: #374151; margin-left: 4px;">${partFeedback}</span>` : ''}
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        `;
+      }
+
+      let answerDetailsHtml = '';
+      if (q.type === 'multiple-choice') {
+        answerDetailsHtml = `
+          <div style="margin: 2px 0;">
+            <strong>Student Answer:</strong>
+            <span style="color: ${statusColor}; font-weight: 600;">${cleanStudentAnswer || '(No answer provided)'}</span>
+          </div>
+          ${!isCorrect && cleanCorrectAnswer ? `
+            <div style="margin: 2px 0;">
+              <strong>Correct Answer:</strong>
+              <span style="color: #15803d; font-weight: 600;">${cleanCorrectAnswer}</span>
+            </div>
+          ` : ''}
+        `;
+      } else if (q.type === 'fill-in-the-blank') {
+        answerDetailsHtml = `
+          <div style="margin: 2px 0;">
+            <strong>Student Answer:</strong>
+            <span style="color: ${statusColor}; font-weight: 600;">${cleanStudentAnswer || '(No answer provided)'}</span>
+          </div>
+          ${cleanCorrectAnswer ? `
+            <div style="margin: 2px 0;">
+              <strong>Expected Answer:</strong>
+              <span style="color: #15803d; font-weight: 600;">${cleanCorrectAnswer}</span>
+            </div>
+          ` : ''}
+        `;
+      } else {
+        // Short answer
+        answerDetailsHtml = `
+          <div style="margin: 4px 0;">
+            <strong>Student Response:</strong>
+            <div style="margin-top: 3px; padding: 8px 10px; background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 6px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; white-space: pre-wrap; color: #1f2937;">
+              ${cleanStudentAnswer || '(No answer provided)'}
+            </div>
+          </div>
+          ${cleanCorrectAnswer ? `
+            <div style="margin: 6px 0 2px 0;">
+              <strong>Rubric / Expected Content:</strong>
+              <div style="margin-top: 3px; padding: 8px 10px; background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; font-size: 12px; color: #374151; white-space: pre-wrap;">
+                ${cleanCorrectAnswer}
+              </div>
+            </div>
+          ` : ''}
+        `;
+      }
+
+      return `
+        <div style="margin-bottom: 16px; border: 1px solid ${borderCol}; border-radius: 8px; padding: 14px; background-color: ${statusBg};">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
+            <div style="font-weight: 600; font-size: 13px; color: #111827;">
+              Question ${qNum}
+              ${q.category ? `<span style="font-size: 11px; background-color: #f3f4f6; color: #4b5563; padding: 1px 6px; border-radius: 4px; margin-left: 6px; font-weight: 500;">${cleanImageReferences(q.category)}</span>` : ''}
+              <span style="font-weight: normal; color: #6b7280; font-size: 11px; margin-left: 4px;">(${typeLabel})</span>
+            </div>
+            <div style="font-weight: 700; font-size: 12px; color: ${statusColor};">
+              ${statusIcon} ${statusText}
+            </div>
+          </div>
+          <p style="margin: 4px 0 8px 0; font-size: 13px; color: #1f2937; line-height: 1.4;">${cleanPrompt}</p>
+          ${optionsHtml}
+          <div style="margin-top: 8px; font-size: 12px; line-height: 1.5; border-top: 1px dashed ${borderCol}; padding-top: 6px;">
+            ${answerDetailsHtml}
+            ${partsHtml}
+            ${cleanFeedback ? `
+              <div style="margin-top: 6px; color: #4b5563; font-style: italic; font-size: 12px;">
+                <strong>AI Feedback / Explanation:</strong> ${cleanFeedback}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 650px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px; background-color: #ffffff; color: #111827;">
+        <!-- Header -->
+        <div style="border-bottom: 2px solid #059669; padding-bottom: 14px; margin-bottom: 18px;">
+          <div style="margin-bottom: 6px;">
+            <span style="display: inline-block; background-color: #2563eb; color: #ffffff; font-size: 11px; font-weight: bold; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; margin-right: 6px;">
+              ${courseCode}
+            </span>
+            <span style="display: inline-block; background-color: #059669; color: #ffffff; font-size: 11px; font-weight: bold; padding: 2px 8px; border-radius: 4px; text-transform: uppercase;">
+              Unit Practice Test
+            </span>
+          </div>
+          <h2 style="margin: 4px 0 0 0; color: #111827; font-size: 20px;">
+            ${headingTitle}
+          </h2>
+          <p style="margin: 4px 0 0 0; color: #6b7280; font-size: 12px;">
+            Completed on ${payload.timestamp || new Date().toLocaleString()} &bull; Target: ${payload.unitId}
+          </p>
+        </div>
+
+        <!-- Score Banner -->
+        <div style="background-color: ${scoreBg}; border: 1px solid ${scoreColor}; border-radius: 8px; padding: 14px 18px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; color: #4b5563; font-weight: 600;">Unit Test Result</div>
+            <div style="font-size: 24px; font-weight: 800; color: ${scoreColor}; margin-top: 2px;">
+              ${payload.score} / ${payload.total} (${payload.percentage}%)
+            </div>
+            <div style="font-size: 11px; color: #059669; font-weight: 600; margin-top: 3px;">
+              &#10004; Recorded to Unit Frontmatter
+            </div>
+          </div>
+          <div style="text-align: right; font-size: 12px; color: #4b5563;">
+            <div><strong>Total Questions:</strong> ${payload.total}</div>
+            <div><strong>Mark:</strong> ${payload.score}</div>
+            <div><strong>Percentage:</strong> ${payload.percentage}%</div>
+          </div>
+        </div>
+
+        <!-- Questions Section -->
+        <h3 style="font-size: 15px; font-weight: 600; color: #111827; margin: 0 0 12px 0;">Itemized Unit Test Questions &amp; Evaluations:</h3>
+        ${questionsHtml}
+
+        <!-- Footer -->
+        <div style="margin-top: 24px; padding-top: 14px; border-top: 1px solid #e5e7eb; font-size: 11px; color: #9ca3af; text-align: center;">
+          Sent automatically by CourseDeck Accountability System &bull; Unit Practice Test: ${courseCode} - ${payload.unitId}
+        </div>
+      </div>
+    `;
+
+    // Plain text alternative
+    let text = `[CourseDeck] Unit Practice Test Results: ${courseCode} - ${payload.unitId}${textTitle}\n\n`;
+    text += `Score: ${payload.score} / ${payload.total} (${payload.percentage}%)\n`;
+    text += `Date: ${payload.timestamp || new Date().toLocaleString()}\n`;
+    text += `Status: Recorded to Unit Test Frontmatter\n\n`;
+    text += `--- QUESTIONS & ANSWERS ---\n\n`;
+
+    for (const q of payload.questions) {
+      const isCorrect = q.isCorrect;
+      const qScore = typeof q.score === 'number' ? q.score : (isCorrect ? 1 : 0);
+      const isPartial = !isCorrect && qScore > 0 && qScore < 1;
+      const statusTag = isCorrect ? 'CORRECT (1/1)' : isPartial ? `PARTIAL (${qScore}/1)` : 'INCORRECT (0/1)';
+      const cleanQPrompt = cleanImageReferences(q.prompt);
+      const cleanQStudent = cleanImageReferences(q.studentAnswer);
+      const cleanQCorrect = cleanImageReferences(q.correctAnswer);
+      const cleanFeedback = cleanImageReferences(q.feedback || q.explanation || '');
+
+      const categoryTag = q.category ? ` [${cleanImageReferences(q.category)}]` : '';
+      text += `Q${q.number})${categoryTag} [${q.type}] ${cleanQPrompt}\n`;
+      text += `Student Answer: ${cleanQStudent || '(No answer provided)'} [${statusTag}]\n`;
+      if (cleanQCorrect) {
+        text += `Expected Answer / Rubric: ${cleanQCorrect}\n`;
+      }
+      if (q.parts && q.parts.length > 0) {
+        text += `Sub-Parts:\n`;
+        for (const p of q.parts) {
+          text += `  - ${p.label || p.part}: ${p.isCorrect ? 'PASS' : 'FAIL'}${p.feedback ? ` (${cleanImageReferences(p.feedback)})` : ''}\n`;
+        }
+      }
+      if (cleanFeedback) {
+        text += `Feedback: ${cleanFeedback}\n`;
       }
       text += `\n`;
     }

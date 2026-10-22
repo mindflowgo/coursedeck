@@ -205,10 +205,11 @@ export const resolveFileFromRoute = docFileName;
  * Parses a disk filename back into its scope, lessonId, and tab slug.
  * Kept for backwards compatibility, delegating to `parseDocFileName` in `$lib/tabs`.
  */
-export function resolveRouteFromFile(file: string): { isCourseScope: boolean; lessonId: string; tab: string } {
+export function resolveRouteFromFile(file: string): { isCourseScope: boolean; isUnitScope: boolean; lessonId: string; tab: string; unitNumber?: number } {
   const parsed = parseDocFileName(file);
   return parsed ?? {
     isCourseScope: false,
+    isUnitScope: false,
     lessonId: '',
     tab: 'lesson'
   };

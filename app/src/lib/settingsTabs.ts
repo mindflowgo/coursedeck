@@ -8,18 +8,18 @@ export function resolveSettingsTab(tabParam?: string | null): SettingsTab {
   return 'settings';
 }
 
-export type PromptGroupKey = 'course' | 'lessons' | 'custom';
+export type PromptGroupKey = 'course' | 'unit' | 'lessons' | 'custom';
 
-export const COURSE_PROMPT_ORDER = ['course_summary', 'course_cheatsheet', 'course_schedule', 'course_test'] as const;
-export const LESSON_PROMPT_ORDER = ['summary', 'cheatsheet', 'test', 'test_kica', 'popquiz', 'lesson'] as const;
+export const COURSE_PROMPT_ORDER = ['course_summary', 'course_schedule', 'course_test'] as const;
+export const UNIT_PROMPT_ORDER = ['unit_assignments', 'unit_test'] as const;
+export const LESSON_PROMPT_ORDER = ['summary', 'cheatsheet', 'popquiz', 'lesson'] as const;
 
 export function classifyPrompt(p: { id: string }): PromptGroupKey {
   const id = p.id.toLowerCase().replace(/\.md$/, '').replace(/\./g, '_');
 
-  // Standard course-wide prompts
+  // Standard complete course prompts
   if (
     id === 'course_summary' ||
-    id === 'course_cheatsheet' ||
     id === 'course_schedule' ||
     id === 'course_test' ||
     id === 'course'
@@ -27,15 +27,23 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
     return 'course';
   }
 
+  // Standard unit prompts
+  if (
+    id === 'unit_assignments' ||
+    id === 'unit_assignment' ||
+    id === 'unit_test' ||
+    id === 'unit'
+  ) {
+    return 'unit';
+  }
+
   // Standard lesson prompts
   if (
     id === 'summary' ||
     id === 'cheatsheet' ||
-    id === 'test' ||
-    id === 'test_kica' ||
-    id === 'lesson' ||
     id === 'popquiz' ||
-    id === 'pop_quiz'
+    id === 'pop_quiz' ||
+    id === 'lesson'
   ) {
     return 'lessons';
   }

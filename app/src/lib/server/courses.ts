@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
 import type { Checkpoint } from '../checkpoint';
-import { tabFileName, courseDocFileName, parseDocFileName } from '../tabs';
+import { tabFileName, courseDocFileName, parseDocFileName, parseUnitNumber, isUnitScopeId } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
 import { stripLessonMedia } from '../markdown/stripMedia';
@@ -219,7 +219,7 @@ export class CourseService {
   static hasLessonTabContent(
     courseId: string,
     lessonId: string,
-    tab: 'summary' | 'cheatsheet' | 'test'
+    tab: string
   ): boolean {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) return false;
@@ -541,7 +541,11 @@ export class CourseService {
 
     if (norm === 'unit - lessons') {
       let targetUnit = course.units[0];
-      if (lessonId) {
+      const unitNum = lessonId ? parseUnitNumber(lessonId) : null;
+      if (unitNum !== null) {
+        const found = course.units.find((u) => u.number === unitNum);
+        if (found) targetUnit = found;
+      } else if (lessonId) {
         const found = course.units.find((u) => u.lessons.some((l) => l.id === lessonId));
         if (found) targetUnit = found;
       }
@@ -555,6 +559,50 @@ export class CourseService {
           if (clean.length > 0) {
             parts.push(`## Lesson ${l.id} - ${l.title}\n\n${clean}`);
           }
+        }
+      }
+      return parts.join('\n\n');
+    }
+
+    if (norm === 'unit - summaries') {
+      let targetUnit = course.units[0];
+      const unitNum = lessonId ? parseUnitNumber(lessonId) : null;
+      if (unitNum !== null) {
+        const found = course.units.find((u) => u.number === unitNum);
+        if (found) targetUnit = found;
+      } else if (lessonId) {
+        const found = course.units.find((u) => u.lessons.some((l) => l.id === lessonId));
+        if (found) targetUnit = found;
+      }
+      if (!targetUnit) return '';
+
+      const parts: string[] = [];
+      for (const l of targetUnit.lessons) {
+        const summary = this.readCuratedContent(courseDir, l.id, 'summary');
+        if (summary && summary.trim()) {
+          parts.push(`## Lesson ${l.id} - ${l.title}\n\n${summary.trim()}`);
+        }
+      }
+      return parts.join('\n\n');
+    }
+
+    if (norm === 'unit - cheatsheets') {
+      let targetUnit = course.units[0];
+      const unitNum = lessonId ? parseUnitNumber(lessonId) : null;
+      if (unitNum !== null) {
+        const found = course.units.find((u) => u.number === unitNum);
+        if (found) targetUnit = found;
+      } else if (lessonId) {
+        const found = course.units.find((u) => u.lessons.some((l) => l.id === lessonId));
+        if (found) targetUnit = found;
+      }
+      if (!targetUnit) return '';
+
+      const parts: string[] = [];
+      for (const l of targetUnit.lessons) {
+        const cs = this.readCuratedContent(courseDir, l.id, 'cheatsheet');
+        if (cs && cs.trim()) {
+          parts.push(`## Lesson ${l.id} - ${l.title}\n\n${cs.trim()}`);
         }
       }
       return parts.join('\n\n');

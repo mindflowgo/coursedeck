@@ -68,13 +68,22 @@ describe('Checkpoint Palette & Models', () => {
   it('resolves route from filename', () => {
     expect(resolveRouteFromFile('01.01.lesson.md')).toEqual({
       isCourseScope: false,
+      isUnitScope: false,
       lessonId: '01.01',
       tab: 'lesson'
     });
     expect(resolveRouteFromFile('course.summary.md')).toEqual({
       isCourseScope: true,
+      isUnitScope: false,
       lessonId: 'course',
       tab: 'summary'
+    });
+    expect(resolveRouteFromFile('01.unit.test.md')).toEqual({
+      isCourseScope: false,
+      isUnitScope: true,
+      unitNumber: 1,
+      lessonId: '01.unit',
+      tab: 'test'
     });
   });
 

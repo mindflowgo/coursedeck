@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { CourseManifest } from '$lib/parser/courseIngest';
-  import { ChevronDown, Check, Search, FileText, Bookmark, GraduationCap } from 'lucide-svelte';
-  import { isCourseTab } from '$lib/tabs';
+  import { ChevronDown, Check, Search, FileText, Bookmark, GraduationCap, Layers } from 'lucide-svelte';
+  import { isCourseTab, isUnitScopeId, parseUnitNumber, formatUnitScopeId } from '$lib/tabs';
 
   interface Props {
     course: CourseManifest;
@@ -37,6 +37,20 @@
     currentIndex !== -1 ? allLessons[currentIndex] : allLessons[0]
   );
 
+  let isUnitMode = $derived(
+    !isCourseMode && isUnitScopeId(selectedLessonId)
+  );
+
+  let currentUnitNumber = $derived(
+    parseUnitNumber(selectedLessonId)
+  );
+
+  let currentUnit = $derived(
+    currentUnitNumber !== null
+      ? course.units.find((u) => u.number === currentUnitNumber) || null
+      : null
+  );
+
   function toggleDropdown() {
     isOpen = !isOpen;
     if (isOpen) searchQuery = '';
@@ -46,6 +60,18 @@
     console.log(`[NAV] dropdown pick "${id}" (current "${selectedLessonId}")`);
     onSelectLesson(id);
     isOpen = false;
+  }
+
+  function matchesUnitItem(query: string): boolean {
+    const q = query.toLowerCase().trim();
+    if (!q) return true;
+    return (
+      'unit test / assignment'.includes(q) ||
+      'unit test'.includes(q) ||
+      'assignment'.includes(q) ||
+      'test'.includes(q) ||
+      'unit'.includes(q)
+    );
   }
 
   // Filtered units based on search
@@ -58,7 +84,7 @@
           l.id.includes(searchQuery)
         )
       }))
-      .filter((u) => u.lessons.length > 0)
+      .filter((u) => u.lessons.length > 0 || matchesUnitItem(searchQuery))
   );
 </script>
 
@@ -72,6 +98,9 @@
       {#if isCourseMode}
         <GraduationCap class="w-3.5 h-3.5 text-stone-700 dark:text-stone-300 shrink-0" />
         <span class="truncate">Complete Course</span>
+      {:else if isUnitMode && currentUnit}
+        <Layers class="w-3.5 h-3.5 text-stone-700 dark:text-stone-300 shrink-0" />
+        <span class="truncate">Unit {currentUnit.number}: Unit Test / Assignment</span>
       {:else}
         {#if currentLesson?.type === 'assignment'}
           <Bookmark class="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
@@ -128,11 +157,17 @@
         <!-- Lessons list by Unit -->
         <div class="overflow-y-auto divide-y divide-stone-100 dark:divide-stone-800/60 p-1">
           {#each filteredUnits as unit}
+            {@const unitScopeId = formatUnitScopeId(unit.number)}
+            {@const isUnitSelected = !isCourseMode && selectedLessonId === unitScopeId}
             <div class="py-1">
-              <div class="px-2 py-1 text-[11px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-wider">
-                Unit {unit.number}: {unit.title}
+              <!-- Unit Section Header (Static, non-clickable) -->
+              <div class="px-2.5 py-1.5 flex items-center space-x-1.5 text-stone-500 dark:text-stone-400 select-none">
+                <Layers class="w-3.5 h-3.5 shrink-0 text-stone-400 dark:text-stone-500" />
+                <span class="text-[11px] font-semibold uppercase tracking-wider truncate">
+                  Unit {unit.number}: {unit.title}
+                </span>
               </div>
-              <div class="space-y-0.5">
+              <div class="space-y-0.5 mt-0.5 pl-2">
                 {#each unit.lessons as lesson}
                   {@const isSelected = !isCourseMode && lesson.id === selectedLessonId}
                   <button
@@ -157,6 +192,25 @@
                     {/if}
                   </button>
                 {/each}
+
+                <!-- Unit Test / Assignment (after the last lesson) -->
+                {#if matchesUnitItem(searchQuery)}
+                  <button
+                    type="button"
+                    onclick={() => selectAndClose(unitScopeId)}
+                    class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition cursor-pointer {isUnitSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
+                  >
+                    <div class="flex items-center space-x-2 truncate pr-2">
+                      <span class="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase font-semibold {isUnitSelected ? 'bg-amber-800 text-amber-200 dark:bg-amber-300 dark:text-amber-950' : 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'}">
+                        Unit
+                      </span>
+                      <span class="truncate font-medium">Unit Test / Assignment</span>
+                    </div>
+                    {#if isUnitSelected}
+                      <Check class="w-3.5 h-3.5 shrink-0" />
+                    {/if}
+                  </button>
+                {/if}
               </div>
             </div>
           {:else}

@@ -35,6 +35,40 @@ function formatCoursesMarkdown(courses: Array<{
   return md;
 }
 
+function formatCoursesFullMarkdown(courses: Array<{
+  id: string;
+  title: string;
+  grade?: string;
+  level?: string;
+  description?: string;
+  units?: Array<{
+    number: number;
+    title: string;
+    lessons?: Array<{
+      id: string;
+      title: string;
+      type: string;
+    }>;
+  }>;
+}>): string {
+  if (courses.length === 0) return 'No courses found.';
+  let md = '';
+  for (const c of courses) {
+    md += `# ${c.title} (${c.id.toUpperCase()})\n`;
+    md += `**Grade:** ${c.grade || 'N/A'} | **Level:** ${c.level || 'N/A'}\n\n`;
+    if (c.description) md += `${c.description}\n\n`;
+    for (const u of c.units || []) {
+      md += `### Unit ${u.number}: ${u.title} (${u.lessons?.length || 0} lessons)\n`;
+      for (const l of u.lessons || []) {
+        md += `- [${l.id}] ${l.title} (${l.type})\n`;
+      }
+      md += '\n';
+    }
+    md += '---\n\n';
+  }
+  return md.trim();
+}
+
 function formatLessonsMarkdown(lessons: Array<{
   id: string;
   unitNumber: number;
@@ -93,12 +127,6 @@ export function registerMcpTools(mcp: McpServer): void {
       try {
         const courses = CourseService.listCourses(args);
 
-        if (args.detail === 'full') {
-          return {
-            content: [{ type: 'text', text: JSON.stringify(courses, null, 2) }]
-          };
-        }
-
         const summary = courses.map((c) => ({
           id: c.id,
           title: c.title,
@@ -112,8 +140,19 @@ export function registerMcpTools(mcp: McpServer): void {
         }));
 
         if (args.format === 'markdown') {
+          if (args.detail === 'full') {
+            return {
+              content: [{ type: 'text', text: formatCoursesFullMarkdown(courses) }]
+            };
+          }
           return {
             content: [{ type: 'text', text: formatCoursesMarkdown(summary) }]
+          };
+        }
+
+        if (args.detail === 'full') {
+          return {
+            content: [{ type: 'text', text: JSON.stringify(courses, null, 2) }]
           };
         }
 
@@ -223,11 +262,21 @@ export function registerMcpTools(mcp: McpServer): void {
       title: z.string().min(1).max(200).describe("Full title, e.g. 'Functions 11'"),
       grade: z.string().optional().default('11').describe("Grade level, e.g. '11' or '12'"),
       level: z.string().optional().default('University').describe("Academic level, e.g. 'University', 'College', or 'Open'"),
-      description: z.string().optional().default('').describe('Optional course syllabus description')
+      description: z.string().optional().default('').describe('Optional course syllabus description'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, human-readable confirmation) or "json" (structured result)')
     }),
     handler: async (args) => {
       try {
         const course = CourseService.createCourse(args);
+        if (args.format === 'markdown') {
+          let md = `✓ Course **${course.title}** (\`${course.id}\`) created successfully.\n\n`;
+          md += `- **ID:** \`${course.id}\`\n`;
+          md += `- **Title:** ${course.title}\n`;
+          if (course.grade) md += `- **Grade:** ${course.grade}\n`;
+          if (course.level) md += `- **Level:** ${course.level}\n`;
+          if (course.description) md += `- **Description:** ${course.description}\n`;
+          return { content: [{ type: 'text', text: md.trim() }] };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify({ success: true, course }, null, 2) }]
         };
@@ -246,11 +295,23 @@ export function registerMcpTools(mcp: McpServer): void {
     description: 'Archive or permanently delete a course and queue cleanup for synced calendar events.',
     inputSchema: z.object({
       id: z.string().describe("Course ID to delete, e.g. 'mcr3u'"),
-      permanent: z.boolean().default(false).describe('If true, removes folder from disk. If false, marks archived (reversible)')
+      permanent: z.boolean().default(false).describe('If true, removes folder from disk. If false, marks archived (reversible)'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, human-readable confirmation) or "json" (structured result)')
     }),
     handler: async (args) => {
       try {
         const result = CourseService.deleteCourse(args.id, args.permanent);
+        if (args.format === 'markdown') {
+          const actionText = result.permanent ? 'permanently deleted from disk' : 'archived';
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `✓ Course **${args.id.toUpperCase()}** ${actionText}.${result.message ? `\n\n${result.message}` : ''}`
+              }
+            ]
+          };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         };
@@ -279,11 +340,19 @@ export function registerMcpTools(mcp: McpServer): void {
           content: z.string().optional().describe('Full markdown lesson content'),
           tabs: z.record(z.string(), z.string()).optional().describe('Key-value pairs of tab slugs to markdown content, e.g. { summary: "...", cheatsheet: "..." }')
         })
-      ).min(1).describe('Array of lesson definitions to inject')
+      ).min(1).describe('Array of lesson definitions to inject'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, human-readable confirmation) or "json" (structured result)')
     }),
     handler: async (args) => {
       try {
         const result = CourseService.injectLessons(args.courseId, args.lessons);
+        if (args.format === 'markdown') {
+          let md = `✓ Successfully injected ${args.lessons.length} lesson(s) into course **${args.courseId.toUpperCase()}**.\n\n`;
+          for (const l of args.lessons) {
+            md += `- **[${l.id}]** ${l.title} (${l.type || 'lesson'})\n`;
+          }
+          return { content: [{ type: 'text', text: md.trim() }] };
+        }
         return {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         };
@@ -345,7 +414,8 @@ export function registerMcpTools(mcp: McpServer): void {
         'practice-sheet'
       ]).default('summary').describe("Document tab type ('lesson', 'summary', 'cheatsheet', 'test', 'schedule', 'notes'). Aliases 'full' and 'practice-sheet' are accepted."),
       generateIfMissing: z.boolean().default(true).describe('If true, generates on demand using the active LLM if missing (default: true)'),
-      async: z.boolean().default(false).describe('If true, starts generation in the background and returns a jobId immediately for polling via get_task_status.')
+      async: z.boolean().default(false).describe('If true, starts generation in the background and returns a jobId immediately for polling via get_task_status.'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, markdown content) or "json" (structured job result for async)')
     }),
     handler: async (args) => {
       try {
@@ -397,6 +467,16 @@ export function registerMcpTools(mcp: McpServer): void {
               }
             ]);
             const taskId = tasks[0]?.id || `${args.courseId.toLowerCase()}:${args.lessonId}:${tab}`;
+            if (args.format === 'markdown') {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `⏳ Document generation queued for **${args.courseId}/${args.lessonId}** (${tab}).\n- **Job ID:** \`${taskId}\`\n- Check progress with \`get_task_status\`.`
+                  }
+                ]
+              };
+            }
             return {
               content: [
                 {
@@ -554,7 +634,8 @@ export function registerMcpTools(mcp: McpServer): void {
       prompt: z.string().min(1).describe('Instruction or query to run'),
       contextScope: z.enum(['summaries_only', 'full_course', 'specific_lessons']).default('summaries_only').describe("Context scope: 'summaries_only' (recommended), 'full_course', or 'specific_lessons'"),
       lessonIds: z.array(z.string()).optional().describe("Array of lesson IDs to include when contextScope is 'specific_lessons', e.g. ['01.01', '01.02']"),
-      async: z.boolean().default(false).describe('If true, starts evaluation in background and returns a jobId immediately for polling via get_task_status (default: false)')
+      async: z.boolean().default(false).describe('If true, starts evaluation in background and returns a jobId immediately for polling via get_task_status (default: false)'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, direct markdown completion) or "json" (structured completion object)')
     }),
     handler: async (args) => {
       try {
@@ -618,6 +699,17 @@ export function registerMcpTools(mcp: McpServer): void {
             }
           })();
 
+          if (args.format === 'markdown') {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: `⏳ Prompt evaluation started in background for course **${args.courseId.toUpperCase()}**.\n- **Job ID:** \`${job.id}\`\n- Check status using \`get_task_status\`.`
+                }
+              ]
+            };
+          }
+
           return {
             content: [
               {
@@ -648,6 +740,12 @@ export function registerMcpTools(mcp: McpServer): void {
               tokensUsed: result.usage?.total_tokens
             }
           });
+
+          if (args.format === 'markdown') {
+            return {
+              content: [{ type: 'text', text: (result.completion + warning).trim() }]
+            };
+          }
 
           return {
             content: [
@@ -691,7 +789,8 @@ export function registerMcpTools(mcp: McpServer): void {
   mcp.tool('get_task_status', {
     description: 'Check status, progress, or result of an asynchronous generation or evaluation job.',
     inputSchema: z.object({
-      jobId: z.string().describe('Job identifier or dedup task key, e.g. "job_abc123" or "gwl3o:01.01:summary"')
+      jobId: z.string().describe('Job identifier or dedup task key, e.g. "job_abc123" or "gwl3o:01.01:summary"'),
+      format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, human-readable status and result markdown) or "json" (structured job object)')
     }),
     handler: async (args) => {
       const job = JobService.getJob(args.jobId);
@@ -699,6 +798,32 @@ export function registerMcpTools(mcp: McpServer): void {
         return {
           isError: true,
           content: [{ type: 'text', text: `Job '${args.jobId}' not found or expired.` }]
+        };
+      }
+      if (args.format === 'markdown') {
+        let md = `### Task Status: \`${job.id}\`\n`;
+        md += `- **Kind:** \`${job.kind}\`\n`;
+        md += `- **Course:** **${job.courseId.toUpperCase()}**\n`;
+        md += `- **State:** **${job.state.toUpperCase()}**\n`;
+        md += `- **Created:** ${new Date(job.createdAt).toLocaleString()}\n\n`;
+
+        if (job.state === 'succeeded' && job.result) {
+          if (job.result.type === 'prompt_answer') {
+            md += `---\n\n${job.result.answer}`;
+          } else if (job.result.type === 'document') {
+            md += `✓ Successfully generated tab **${job.result.tab}** for lesson \`${job.result.lessonId || 'course'}\`.`;
+          } else if (job.result.type === 'schedule') {
+            md += `✓ Schedule generated successfully.`;
+          } else {
+            md += `✓ Task completed successfully.`;
+          }
+        } else if (job.state === 'failed') {
+          md += `❌ **Job Failed:** ${job.error?.message || 'Unknown error'}`;
+        } else {
+          md += `⏳ Job is still running in background...`;
+        }
+        return {
+          content: [{ type: 'text', text: md.trim() }]
         };
       }
       return {

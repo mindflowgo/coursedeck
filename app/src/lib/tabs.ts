@@ -5,18 +5,27 @@
  * tab pattern enforced server-side (paths.ts).
  */
 
-/** Fixed, always-present tabs (rendered with icons in the tab bar). */
-export const BUILT_IN_TABS = ['lesson', 'summary', 'cheatsheet', 'test'] as const;
+/** Fixed, always-present tabs for lessons (rendered with icons in the tab bar). */
+export const BUILT_IN_TABS = ['lesson', 'summary', 'cheatsheet'] as const;
 
 export type BuiltInTab = (typeof BUILT_IN_TABS)[number];
 
 /** Valid tabs for the complete course scope. */
-export const COURSE_TABS = ['lesson', 'summary', 'cheatsheet', 'test', 'schedule'] as const;
+export const COURSE_TABS = ['lesson', 'summary', 'schedule', 'test'] as const;
 
 export type CourseTab = (typeof COURSE_TABS)[number];
 
 export function isCourseTab(slug: string): slug is CourseTab {
   return (COURSE_TABS as readonly string[]).includes(slug);
+}
+
+/** Valid tabs for unit scope. */
+export const UNIT_TABS = ['assignments', 'test'] as const;
+
+export type UnitTab = (typeof UNIT_TABS)[number];
+
+export function isUnitTab(slug: string): slug is UnitTab {
+  return (UNIT_TABS as readonly string[]).includes(slug);
 }
 
 /** Names users may not give a custom tab because the app already uses them. */
@@ -27,7 +36,8 @@ export const RESERVED_TABS = [
   'cheatsheet',
   'test',
   'schedule',
-  'course'
+  'course',
+  'assignments'
 ] as const;
 
 /** A tab slug: lowercase alphanumerics and underscores, 1–32 chars. */
@@ -119,29 +129,95 @@ export function courseDocFileName(tab: string): string {
 }
 
 /**
- * Unified helper returning the markdown filename for either lesson or course scope.
+ * Formats a unit scope identifier (e.g. 1 -> "01.unit", "02" -> "02.unit").
+ */
+export function formatUnitScopeId(unitNumber: number | string): string {
+  const num = typeof unitNumber === 'number' ? unitNumber : parseInt(String(unitNumber).replace(/\.unit$/i, ''), 10);
+  const pad = isNaN(num) ? String(unitNumber) : String(num).padStart(2, '0');
+  return `${pad}.unit`;
+}
+
+/**
+ * Checks whether an identifier represents a unit scope (e.g. "01.unit", "2.unit").
+ */
+export function isUnitScopeId(id: string | null | undefined): boolean {
+  if (!id) return false;
+  return /^\d+\.unit$/i.test(id.trim());
+}
+
+/**
+ * Parses the unit number out of a unit scope ID or lesson ID (e.g. "01.unit" -> 1, "02.03" -> 2).
+ */
+export function parseUnitNumber(id: string | null | undefined): number | null {
+  if (!id) return null;
+  const clean = id.trim();
+  const unitMatch = clean.match(/^(\d+)\.unit$/i);
+  if (unitMatch) return parseInt(unitMatch[1], 10);
+  const lessonMatch = clean.match(/^(\d+)\.\d+/);
+  if (lessonMatch) return parseInt(lessonMatch[1], 10);
+  const rawNum = clean.match(/^(\d+)$/);
+  if (rawNum) return parseInt(rawNum[1], 10);
+  return null;
+}
+
+/**
+ * Returns the standard markdown filename for a unit-level document (e.g. `01.unit.assignments.md`, `01.unit.test.md`).
+ */
+export function unitDocFileName(unitNumberOrId: number | string, tab: string): string {
+  const cleanTab = tab.trim().toLowerCase();
+  const num = parseUnitNumber(String(unitNumberOrId));
+  const pad = num !== null ? String(num).padStart(2, '0') : String(unitNumberOrId).trim().toLowerCase();
+  return `${pad}.unit.${cleanTab}.md`;
+}
+
+/**
+ * Unified helper returning the markdown filename for lesson, unit, or course scope.
  */
 export function docFileName(scope: string, tab: string, isCourseScope = false): string {
   if (isCourseScope || scope.trim().toLowerCase() === 'course') {
     return courseDocFileName(tab);
   }
+  if (isUnitScopeId(scope)) {
+    return unitDocFileName(scope, tab);
+  }
   return tabFileName(scope, tab);
 }
 
+export interface ParsedDocFileName {
+  isCourseScope: boolean;
+  isUnitScope: boolean;
+  unitNumber?: number;
+  lessonId: string;
+  tab: string;
+}
+
 /**
- * Parses a markdown document filename (e.g. `01.01.lesson.md` or `course.summary.md`)
+ * Parses a markdown document filename (e.g. `01.01.lesson.md`, `01.unit.test.md`, or `course.summary.md`)
  * back into its scope, lessonId, and tab slug.
  */
 export function parseDocFileName(
   file: string
-): { isCourseScope: boolean; lessonId: string; tab: string } | null {
+): ParsedDocFileName | null {
   const clean = file.trim();
   const courseMatch = clean.match(/^course\.([a-z0-9_-]+)\.md$/i);
   if (courseMatch) {
     return {
       isCourseScope: true,
+      isUnitScope: false,
       lessonId: 'course',
       tab: courseMatch[1].toLowerCase()
+    };
+  }
+
+  const unitMatch = clean.match(/^(\d+)\.unit\.([a-z0-9_-]+)\.md$/i);
+  if (unitMatch) {
+    const unitNum = parseInt(unitMatch[1], 10);
+    return {
+      isCourseScope: false,
+      isUnitScope: true,
+      unitNumber: unitNum,
+      lessonId: `${unitMatch[1].padStart(2, '0')}.unit`,
+      tab: unitMatch[2].toLowerCase()
     };
   }
 
@@ -149,6 +225,7 @@ export function parseDocFileName(
   if (lessonMatch) {
     return {
       isCourseScope: false,
+      isUnitScope: false,
       lessonId: lessonMatch[1],
       tab: lessonMatch[2].toLowerCase()
     };
@@ -158,7 +235,7 @@ export function parseDocFileName(
 }
 
 /**
- * Builds the URL path to a course document or lesson tab.
+ * Builds the URL path to a course document, unit tab, or lesson tab.
  */
 export function courseTabHref(
   courseId: string,

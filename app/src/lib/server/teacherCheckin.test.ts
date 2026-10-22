@@ -262,4 +262,65 @@ lesson: 01.01
     expect(body.percentage).toBe(100);
     expect(body.supervisorMessage).toBe('Updated course supervisor, thank you!');
   });
+
+  it('POST /api/courses/:course_id/unit-test/submit evaluates test, records frontmatter, and dispatches to supervisor', async () => {
+    const unitTestMarkdown = `---
+type: test
+course: ${courseId.toUpperCase()}
+lesson: 01.unit
+---
+# Unit Practice Exam
+
+## Questions
+
+01) [Knowledge & Understanding] What is owner's equity?
+<Multiple-Choice>
+- [ ] A. Claims of creditors
+- [ ] B. Residual claim of owners
+- [ ] C. Total assets
+- [ ] D. Net loss
+
+02) [Thinking & Investigation] Complete the formula: Assets = Liabilities + [___]
+<Fill-in-the-Blank>
+Expected: Owner's Equity
+
+## Answers
+
+01) B - Owner's equity is the owner's remaining claim on assets.
+02) Owner's Equity - (explanation) The fundamental accounting equation.
+`;
+
+    // Save unit test file
+    fs.writeFileSync(path.join(courseDir, '01.unit.test.md'), unitTestMarkdown);
+
+    const req = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/unit-test/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        unitId: '01.unit',
+        testMarkdown: unitTestMarkdown,
+        answers: {
+          '01': 'B',
+          '02': "Owner's Equity"
+        }
+      })
+    });
+
+    const res = await handleApiRequest(req, new URL(`http://127.0.0.1:3182/api/courses/${courseId}/unit-test/submit`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.score).toBe(2);
+    expect(body.total).toBe(2);
+    expect(body.percentage).toBe(100);
+    expect(body.supervisorMessage).toBe('Updated course supervisor, thank you!');
+    expect(body.lastAttemptDate).toBeDefined();
+
+    // Verify frontmatter was updated without storing student answers
+    const savedDoc = fs.readFileSync(path.join(courseDir, '01.unit.test.md'), 'utf8');
+    expect(savedDoc).toContain('score: 2');
+    expect(savedDoc).toContain('totalQuestions: 2');
+    expect(savedDoc).toContain('percentage: 100');
+    expect(savedDoc).not.toContain('answers:');
+  });
 });

@@ -33,7 +33,7 @@ import { SyncService } from './services/sync/sync.service';
 import { GoogleCalendarProvider } from './services/sync/google.provider';
 import { ArcSyncProvider } from './services/sync/arc.provider';
 import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
-import { TeacherCheckinService, cleanImageReferences, type PopQuizQuestionResult, type PopQuizResultPayload } from './services/teacherCheckin.service';
+import { TeacherCheckinService, cleanImageReferences, type PopQuizQuestionResult, type PopQuizResultPayload, type UnitTestQuestionResult, type UnitTestResultPayload } from './services/teacherCheckin.service';
 import { QuestionParser } from '../parser/questionParser';
 
 /**
@@ -86,7 +86,7 @@ interface ActiveCourseDocJob {
 
 const activeCourseDocJobs = new Map<string, ActiveCourseDocJob>();
 
-const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'cheatsheet', 'test'];
+const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'cheatsheet'];
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -1401,6 +1401,355 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           nextLessonId: nextLesson ? nextLesson.id : null,
           nextLessonTitle: nextLesson ? nextLesson.title : null,
           isLastLesson: !nextLesson
+        });
+      }
+
+      // POST /api/courses/:course_id/unit-test/submit
+      if (subpath === 'unit-test/submit' && method === 'POST') {
+        const course = CourseService.getCourse(courseId);
+        if (!course) return error(404, `Course '${courseId}' not found`);
+
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const rawUnitId = String(body.unitId || '').trim();
+        const testMarkdown = typeof body.testMarkdown === 'string' ? body.testMarkdown : '';
+        const answers = (body.answers && typeof body.answers === 'object') ? (body.answers as Record<string, string>) : {};
+
+        if (!rawUnitId) {
+          return error(400, 'unitId is required (e.g. "01.unit")');
+        }
+
+        // Get test content if not passed
+        let content = testMarkdown;
+        if (!content || !content.trim()) {
+          const bundle = CourseService.getLessonContent(courseId, rawUnitId);
+          content = bundle?.tabs['test'] || '';
+        }
+        if (!content || !content.trim()) {
+          return error(400, `Unit test for ${rawUnitId} is empty or not found.`);
+        }
+
+        const parsedQuiz = QuestionParser.parseMarkdown(content);
+        if (parsedQuiz.questions.length === 0) {
+          return error(400, 'No questions found in unit test.');
+        }
+
+        const evaluations: Record<string, {
+          isCorrect: boolean;
+          score: number;
+          feedback?: string;
+          parts?: Array<{
+            part?: string;
+            label?: string;
+            isCorrect: boolean;
+            feedback?: string;
+          }>;
+        }> = {};
+
+        // 1. Evaluate multiple-choice deterministically
+        const openEndedQuestions: typeof parsedQuiz.questions = [];
+
+        for (const q of parsedQuiz.questions) {
+          const studentAns = (answers[q.number] || answers[String(parseInt(q.number, 10))] || '').trim();
+
+          if (q.type === 'multiple-choice') {
+            const isCorrect = Boolean(studentAns && q.correctAnswer && studentAns.toUpperCase() === q.correctAnswer.toUpperCase());
+            const evalObj = {
+              isCorrect,
+              score: isCorrect ? 1 : 0,
+              feedback: q.explanation || (isCorrect ? 'Correct.' : `Correct answer was ${q.correctAnswer}.`)
+            };
+            evaluations[q.number] = evalObj;
+            evaluations[String(parseInt(q.number, 10))] = evalObj;
+          } else {
+            // Fill-in-the-blank or short-answer
+            if (!studentAns) {
+              const evalObj = {
+                isCorrect: false,
+                score: 0,
+                feedback: 'No response provided.'
+              };
+              evaluations[q.number] = evalObj;
+              evaluations[String(parseInt(q.number, 10))] = evalObj;
+            } else {
+              openEndedQuestions.push(q);
+            }
+          }
+        }
+
+        // 2. Evaluate open-ended (fill-in-the-blank & short-answer) with LLM
+        if (openEndedQuestions.length > 0) {
+          const config = LLMService.loadStoredConfig();
+
+          if (config && config.baseUrl) {
+            try {
+              const timeoutMs = LLMService.resolveRequestTimeoutMs(config, 60_000);
+              const systemPrompt = `You are a rigorous, objective Ontario Secondary School curriculum evaluator grading practice test questions.
+Grade each question strictly and objectively against the provided Expected Content / Rubric and Detailed Explanation.
+
+CRITICAL GRADING RULES:
+1. Fill-in-the-Blank Questions:
+   - Check if the student's answer accurately captures the required term, concept, or acceptable curriculum synonym.
+   - If correct: "isCorrect": true, "score": 1.
+   - If incorrect, blank, or inadequate: "isCorrect": false, "score": 0.
+
+2. Short-Answer / Written Problems (Multi-Part or Multi-Item):
+   - You MUST analyze the question prompt and rubric for all distinct sub-questions, parts, or items (e.g. parts a, b, c, d; or items like "Identify two risks", "Recommend a strategy", "Explain impact on two users").
+   - You MUST evaluate EACH sub-part individually in a "parts" array.
+   - For each part, specify:
+     * "part": the letter or index (e.g. "a", "b", "c", "d", or "1", "2")
+     * "label": descriptive label (e.g. "Part a: Calculation", "Part b: Interpretation", "Part c: Two risks", "Part d: Recommendation & Tech")
+     * "isCorrect": true (if student accurately and adequately answered this specific part) or false (if missing, incorrect, or inadequate)
+     * "feedback": concise 1-sentence explanation of why this specific part is correct or what was missed
+   - The question's "score" MUST be the exact proportion of correct parts: (number of correct parts) / (total parts).
+     * Example: If 2 of 4 parts are correct, "score": 0.5.
+     * Example: If 3 of 4 parts are correct, "score": 0.75.
+     * Example: If 1 of 2 parts is correct, "score": 0.5.
+   - "isCorrect" for the question is true ONLY if ALL parts are correct (score === 1). If any part is wrong, "isCorrect" MUST be false.
+
+3. Single-Part Short-Answer Questions:
+   - If the question cannot be broken into sub-parts, evaluate if the required core criteria were met:
+     * Fully correct: "score": 1, "isCorrect": true
+     * Partially correct: "score": 0.5, "isCorrect": false
+     * Incorrect: "score": 0, "isCorrect": false
+
+4. Output Format:
+Respond ONLY with a valid JSON array in this exact format:
+[
+  {
+    "number": "09",
+    "isCorrect": true,
+    "score": 1,
+    "feedback": "Correctly identified the term."
+  },
+  {
+    "number": "11",
+    "isCorrect": false,
+    "score": 0.5,
+    "feedback": "Parts a and b are correct, but missed parts c and d.",
+    "parts": [
+      { "part": "a", "label": "Part a: Calculation", "isCorrect": true, "feedback": "Owner's equity correctly calculated as $55,000." },
+      { "part": "b", "label": "Part b: Interpretation", "isCorrect": true, "feedback": "Accurately explained owner claim on assets." },
+      { "part": "c", "label": "Part c: Two risks", "isCorrect": false, "feedback": "Did not identify unlimited personal liability." },
+      { "part": "d", "label": "Part d: Strategy", "isCorrect": false, "feedback": "Did not propose a technology strategy." }
+    ]
+  }
+]`;
+
+              const userPrompt = `Please evaluate these student responses against the Ontario curriculum expected content and rubrics:
+${openEndedQuestions.map(q => `
+Question ${q.number} (${q.type}):
+Question Prompt:
+${q.prompt}
+
+Expected Content / Rubric:
+${q.correctAnswer}
+
+Detailed Explanation / Grading Criteria:
+${q.explanation || q.correctAnswer || 'None provided'}
+
+Student Response:
+${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response provided)'}
+`).join('\n---\n')}
+`;
+
+              const result = await LLMService.generateResult(config, systemPrompt, userPrompt, { timeoutMs });
+              const rawJson = result.completion.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+              const parsedArray = JSON.parse(rawJson);
+
+              if (Array.isArray(parsedArray)) {
+                for (const item of parsedArray) {
+                  const numPadded = String(item.number || '').padStart(2, '0');
+                  const numRaw = String(parseInt(item.number, 10));
+                  const matchingQ = openEndedQuestions.find(q => q.number === numPadded || q.number === numRaw);
+                  const key = matchingQ ? matchingQ.number : numPadded;
+
+                  let itemScore = typeof item.score === 'number' ? item.score : (item.isCorrect ? 1 : 0);
+                  let itemIsCorrect = Boolean(item.isCorrect);
+
+                  // Logical calculation: if parts are supplied, derive score directly from parts
+                  let parts: Array<{ part?: string; label?: string; isCorrect: boolean; feedback?: string }> | undefined = undefined;
+                  if (Array.isArray(item.parts) && item.parts.length > 0) {
+                    const mappedParts = item.parts.map((p: any) => ({
+                      part: p.part ? String(p.part) : undefined,
+                      label: p.label ? String(p.label) : (p.part ? `Part ${p.part}` : undefined),
+                      isCorrect: Boolean(p.isCorrect),
+                      feedback: p.feedback ? String(p.feedback) : undefined
+                    }));
+                    const correctPartsCount = mappedParts.filter((p: { isCorrect: boolean }) => p.isCorrect).length;
+                    itemScore = Math.round((correctPartsCount / mappedParts.length) * 100) / 100;
+                    itemIsCorrect = correctPartsCount === mappedParts.length;
+                    parts = mappedParts;
+                  } else {
+                    itemScore = Math.min(1, Math.max(0, itemScore));
+                    if (itemScore < 1) {
+                      itemIsCorrect = false;
+                    }
+                  }
+
+                  const evalObj = {
+                    isCorrect: itemIsCorrect,
+                    score: itemScore,
+                    feedback: typeof item.feedback === 'string' ? item.feedback : undefined,
+                    parts
+                  };
+
+                  evaluations[key] = evalObj;
+                  evaluations[numPadded] = evalObj;
+                  evaluations[numRaw] = evalObj;
+                }
+              }
+            } catch (llmErr) {
+              console.warn('[Unit Test LLM Evaluation Warning]', llmErr);
+            }
+          }
+
+          // Fallback for any open-ended question that wasn't evaluated by LLM
+          for (const q of openEndedQuestions) {
+            if (!evaluations[q.number]) {
+              const studentAns = (answers[q.number] || answers[String(parseInt(q.number, 10))] || '').trim();
+              if (q.type === 'fill-in-the-blank') {
+                const cleanStudent = studentAns.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+                const cleanCorrect = q.correctAnswer.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+                const isCorrect = cleanStudent.length > 0 && (cleanStudent === cleanCorrect || cleanCorrect.includes(cleanStudent) || cleanStudent.includes(cleanCorrect));
+                const evalObj = {
+                  isCorrect,
+                  score: isCorrect ? 1 : 0,
+                  feedback: q.explanation || (isCorrect ? 'Correct.' : `Expected: ${q.correctAnswer}`)
+                };
+                evaluations[q.number] = evalObj;
+                evaluations[String(parseInt(q.number, 10))] = evalObj;
+              } else {
+                // Short answer fallback: Detect sub-parts like a), b), c), d) in prompt
+                const subPartMatches = Array.from(q.prompt.matchAll(/(?:^|\n|\s)([a-d]\))/gi)).map(m => m[1].toLowerCase());
+                if (subPartMatches.length > 1) {
+                  const parts = subPartMatches.map(partKey => {
+                    const hasPartInAnswer = studentAns.toLowerCase().includes(partKey);
+                    return {
+                      part: partKey.replace(')', ''),
+                      label: `Part ${partKey.replace(')', '')}`,
+                      isCorrect: hasPartInAnswer && studentAns.length > 30,
+                      feedback: hasPartInAnswer ? 'Sub-part response detected.' : 'Missing sub-part response.'
+                    };
+                  });
+                  const correctCount = parts.filter((p: { isCorrect: boolean }) => p.isCorrect).length;
+                  const score = Math.round((correctCount / parts.length) * 100) / 100;
+                  const evalObj = {
+                    isCorrect: correctCount === parts.length,
+                    score,
+                    feedback: `Automated assessment: ${correctCount}/${parts.length} parts identified. Please review rubric.`,
+                    parts
+                  };
+                  evaluations[q.number] = evalObj;
+                  evaluations[String(parseInt(q.number, 10))] = evalObj;
+                } else {
+                  const hasSubstantialResponse = studentAns.length >= 30;
+                  const evalObj = {
+                    isCorrect: hasSubstantialResponse,
+                    score: hasSubstantialResponse ? 0.5 : 0,
+                    feedback: hasSubstantialResponse
+                      ? 'Automated evaluation: Response noted. Review expected rubric below.'
+                      : 'Response was too brief or incomplete.'
+                  };
+                  evaluations[q.number] = evalObj;
+                  evaluations[String(parseInt(q.number, 10))] = evalObj;
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Compute totals logically
+        const total = parsedQuiz.questions.length;
+        let score = 0;
+        for (const q of parsedQuiz.questions) {
+          const ev = evaluations[q.number] || evaluations[String(parseInt(q.number, 10))];
+          if (ev) {
+            score += (typeof ev.score === 'number' ? ev.score : (ev.isCorrect ? 1 : 0));
+          }
+        }
+        score = Math.round(score * 100) / 100;
+        const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
+        const today = new Date().toISOString().split('T')[0];
+
+        // 4. Update frontmatter on disk for the unit test file
+        // Remember mark and date of doing it, NOT the actual answers!
+        const parsedDoc = parseFrontmatter(content);
+        const updatedFrontmatter: Record<string, any> = {
+          ...parsedDoc.frontmatter,
+          lastAttemptDate: today,
+          score,
+          totalQuestions: total,
+          percentage
+        };
+        // Ensure no actual answers are saved in frontmatter
+        delete updatedFrontmatter.answers;
+        delete updatedFrontmatter.userAnswers;
+        delete updatedFrontmatter.studentAnswers;
+
+        const updatedMarkdown = serializeWithFrontmatter(updatedFrontmatter, parsedDoc.body);
+        CourseService.saveLessonTab(courseId, rawUnitId, 'test', updatedMarkdown);
+
+        // 5. Construct evaluated question payload for supervisor email
+        const evaluatedQuestions: UnitTestQuestionResult[] = parsedQuiz.questions.map((q) => {
+          const studentAns = (answers[q.number] || answers[String(parseInt(q.number, 10))] || '').trim();
+          const ev = evaluations[q.number] || evaluations[String(parseInt(q.number, 10))];
+          const isCorrect = ev ? ev.isCorrect : false;
+          const itemScore = ev && typeof ev.score === 'number' ? ev.score : (isCorrect ? 1 : 0);
+
+          return {
+            number: q.number,
+            category: q.category,
+            type: q.type || (q.options && q.options.length > 0 ? 'multiple-choice' : 'fill-in-the-blank'),
+            prompt: q.prompt,
+            options: q.options,
+            studentAnswer: studentAns,
+            correctAnswer: q.correctAnswer || '',
+            isCorrect,
+            score: itemScore,
+            explanation: q.explanation,
+            feedback: ev?.feedback,
+            parts: ev?.parts
+          };
+        });
+
+        // 6. Dispatch email to Supervisor via TeacherCheckinService
+        let emailSent = false;
+        let emailError: string | undefined;
+
+        const unitNumMatch = rawUnitId.match(/^(\d+)/);
+        const unitNum = unitNumMatch ? parseInt(unitNumMatch[1], 10) : undefined;
+        const unitObj = course.units?.find((u) => u.number === unitNum);
+        const resolvedUnitTitle = cleanImageReferences(parsedQuiz.title) || (unitObj ? `Unit ${unitObj.number}: ${cleanImageReferences(unitObj.title)}` : `Unit ${rawUnitId}`);
+
+        try {
+          await TeacherCheckinService.sendUnitTestResultEmail({
+            courseId,
+            unitId: rawUnitId,
+            unitTitle: resolvedUnitTitle,
+            timestamp: new Date().toLocaleString(),
+            questions: evaluatedQuestions,
+            score,
+            total,
+            percentage
+          });
+          emailSent = true;
+        } catch (err: any) {
+          console.warn('[Unit Test Email Dispatch Notice]', err?.message || err);
+          emailError = err?.message || 'Failed to dispatch email';
+        }
+
+        return json({
+          success: true,
+          score,
+          total,
+          percentage,
+          lastAttemptDate: today,
+          evaluations,
+          updatedMarkdown,
+          emailSent,
+          emailError,
+          supervisorSent: emailSent,
+          supervisorMessage: 'Updated course supervisor, thank you!'
         });
       }
 

@@ -8,10 +8,10 @@ export interface QuestionOption {
 export interface QuizQuestion {
   number: string; // e.g. "01"
   category?: string; // e.g. "Knowledge & Understanding"
-  type?: 'multiple-choice' | 'fill-in-the-blank';
+  type?: 'multiple-choice' | 'fill-in-the-blank' | 'short-answer';
   prompt: string;
   options: QuestionOption[];
-  correctAnswer: string; // e.g. "B" or text answer
+  correctAnswer: string; // e.g. "B" or text answer / rubric
   explanation?: string;
 }
 
@@ -45,97 +45,113 @@ export class QuestionParser {
       }
     }
 
-    // 2. Identify Multiple-Choice Answers section
-    // Exclude 'Fill-in-the-Blank' headers from matching as MC answers
+    // 2. Identify Answers section (exclude legacy "Fill-in-the-Blank Answers" which has its own format)
     const answersHeaderMatch = body.match(
       /(?:^|\n)##\s+(?!Fill-in-the-Blank)(?:Answers?(?:\s*&|\s+and|\s+Key|\s+Detailed|\s+Solutions?)?|Answer Key|Solutions?)\b[^\n]*/i
     );
 
-    // Questions section ends at the earliest of: MC answers header or other non-question ## headers
-    const otherSectionMatch = body.match(
-      /(?:^|\n)##\s+(?:Fill-in-the-Blank|Comprehensive Short Answer|Case Problems)\b[^\n]*/i
-    );
+    let questionsEndIndex = answersHeaderMatch && answersHeaderMatch.index !== undefined
+      ? answersHeaderMatch.index
+      : body.length;
 
-    let questionsEndIndex = body.length;
-    if (answersHeaderMatch && answersHeaderMatch.index !== undefined) {
-      questionsEndIndex = Math.min(questionsEndIndex, answersHeaderMatch.index);
-    }
-    if (otherSectionMatch && otherSectionMatch.index !== undefined) {
-      const questionsHeaderMatch = body.match(/(?:^|\n)##\s+Questions\b/i);
-      const qStart = questionsHeaderMatch?.index ?? 0;
-      if (otherSectionMatch.index > qStart) {
-        questionsEndIndex = Math.min(questionsEndIndex, otherSectionMatch.index);
+    // In legacy files with a separate "## Fill-in-the-Blank Answers" section, exclude that legacy block from MC questions
+    const legacyAnswersMatch = body.match(/(?:^|\n)##\s+Fill-in-the-Blank Answers\b/i);
+    const legacyQuestionsMatch = body.match(/(?:^|\n)##\s+Fill-in-the-Blank Questions\b/i);
+    if (legacyAnswersMatch && legacyQuestionsMatch && legacyQuestionsMatch.index !== undefined) {
+      const qStart = body.search(/(?:^|\n)##\s+Questions\b/i);
+      if (legacyQuestionsMatch.index > (qStart >= 0 ? qStart : 0)) {
+        questionsEndIndex = Math.min(questionsEndIndex, legacyQuestionsMatch.index);
       }
     }
 
     const questionsText = body.substring(0, questionsEndIndex);
 
-    // 3. Parse Answers map from the MC answers section
+    // 3. Parse Answers map from the answers section
     const answerMap = new Map<string, { letter: string; explanation: string }>();
+    const answersList: Array<{ num: string; letter: string; explanation: string }> = [];
+
     if (answersHeaderMatch && answersHeaderMatch.index !== undefined) {
       const startIdx = answersHeaderMatch.index + answersHeaderMatch[0].length;
       const rest = body.substring(startIdx);
-      const nextSectionMatch = rest.match(/(?:^|\n)##\s+/);
+      const nextSectionMatch = rest.match(/(?:^|\n)##\s+(?!#)/);
       const answersText = nextSectionMatch && nextSectionMatch.index !== undefined
         ? rest.substring(0, nextSectionMatch.index)
         : rest;
 
       // Robust regex for answer entries:
-      // - Question number: e.g. "01)", "1.", "01:"
-      // - Handles MC answers (A-D) as well as text answers for fill-in-the-blank
-      // - Explanations with or without "(explanation)"
-      const entryRegex = /(?:^|\n)\s*(\d+)[\).:]\s*(?:(?:Option|Correct Answer:?|Answer:?)\s*)?([^\n]+)/gi;
+      // Matches question numbers with optional bullets and bold: e.g. "01)", "- **13)**", "**15) ...", "1."
+      const entryRegex = /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?(\d+)[\).:]\s*(?:\*\*)?\s*([\s\S]*?)(?=(?:\n\s*(?:[-*]\s*)?(?:\*\*)?\d+[\).:]|\n##\s+(?!#)|$))/g;
       let aMatch: RegExpExecArray | null;
       while ((aMatch = entryRegex.exec(answersText)) !== null) {
         const numPadded = aMatch[1].padStart(2, '0');
         const numRaw = parseInt(aMatch[1], 10).toString();
-        const line = aMatch[2].trim();
+        const rawBody = aMatch[2].trim();
 
-        let answerText = line;
+        let answerText = rawBody;
         let explanation = '';
 
-        // Match "- (explanation) ...", "— (explanation) ...", or " - explanation"
-        const explMatch = line.match(/^([^\-–—:]+)(?:\s*[-–—:]\s*(?:\(?explanation\)?:?)?\s*(.*))$/i);
-        if (explMatch) {
-          answerText = explMatch[1].trim();
-          explanation = explMatch[2].trim();
+        // 1. Multiple-choice letter format: e.g. "**B** — ...", "B - ...", "**B**."
+        const mcMatch = rawBody.match(/^(?:(?:Option|Correct Answer:?|Answer:?)\s*)?(?:\*\*)?([A-Da-d])(?:\*\*)?\s*(?:[-–—:]|\.|\))\s*([\s\S]*)$/);
+        if (mcMatch) {
+          answerText = mcMatch[1].toUpperCase();
+          explanation = mcMatch[2].trim().replace(/^\(?explanation\)?:?\s*/i, '').replace(/^\(?rationale\)?:?\s*/i, '');
         } else {
-          const dashMatch = line.match(/^([^\s\-–—:]+)\s*[-–—:]\s*(.*)$/);
+          // 2. Dash separated format: "Answer - (explanation) ..." or "[Answer] - ..."
+          const dashMatch = rawBody.match(/^([^\-–—\n]+?)\s*[-–—]\s*([\s\S]*)$/);
           if (dashMatch) {
-            answerText = dashMatch[1].trim();
-            explanation = dashMatch[2].trim().replace(/^\(?explanation\)?:?\s*/i, '');
+            answerText = dashMatch[1].replace(/^[\*\_\[\(]+/, '').replace(/[\*\_\]\)\.]+$/, '').trim();
+            explanation = dashMatch[2].trim()
+              .replace(/^\(?explanation\)?:?\s*/i, '')
+              .replace(/^\(?rationale\)?:?\s*/i, '')
+              .replace(/^\(?rubric\)?:?\s*/i, '');
+          } else {
+            // 3. Open-ended / model response without dash (e.g. bold terms or full rubric)
+            const boldMatches = Array.from(rawBody.matchAll(/\*\*([^*]+)\*\*/g)).map((m) => m[1].trim());
+            answerText = boldMatches.length > 0 ? boldMatches.join(', ') : rawBody.split('\n')[0].replace(/^[\*\_#]+/, '').trim();
+            explanation = rawBody;
           }
         }
 
-        let cleaned = answerText.replace(/^[\*\_\[\(]+/, '').replace(/[\*\_\]\)\.]+$/, '').trim();
-        if (/^[a-d]$/i.test(cleaned)) {
-          cleaned = cleaned.toUpperCase();
-        }
-
-        answerMap.set(numPadded, { letter: cleaned, explanation });
+        const entry = { num: numPadded, letter: answerText, explanation };
+        answersList.push(entry);
+        answerMap.set(numPadded, entry);
         if (numRaw !== numPadded) {
-          answerMap.set(numRaw, { letter: cleaned, explanation });
+          answerMap.set(numRaw, entry);
         }
       }
     }
 
     // 4. Parse Questions blocks
-    let questionBlocks = questionsText.split(/--+/);
-    if (questionBlocks.length <= 1 && /- \[[ xX]\]/.test(questionsText)) {
-      const parts = questionsText.split(/(?=(?:^|\n)\s*\d+[\).:]\s*(?:\[.*?\])?)/);
-      if (parts.length > 1) {
-        questionBlocks = parts;
+    const rawBlocks = questionsText.split(/--+/);
+    const questionBlocks: string[] = [];
+
+    // Detect top-level question markers (e.g. "01)", "02)", "12)", "1)", "01.")
+    // Avoid splitting on inner numbered lists like "1. ", "2. " inside a prompt
+    const qSplitRegex = /(?=(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?(?:0\d|\d{2,})[\).:]\s*(?:\*\*)?|(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\d+\)\s*(?:\*\*)?)/;
+    const qDetectRegex = /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?(?:0\d|\d{2,})[\).:]\s*(?:\*\*)?|(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?\d+\)\s*(?:\*\*)?/g;
+
+    for (const raw of rawBlocks) {
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+      const numMatches = Array.from(trimmed.matchAll(qDetectRegex));
+      if (numMatches.length > 1) {
+        const subBlocks = trimmed.split(qSplitRegex);
+        for (const sub of subBlocks) {
+          if (sub.trim()) questionBlocks.push(sub.trim());
+        }
+      } else {
+        questionBlocks.push(trimmed);
       }
     }
 
     for (const block of questionBlocks) {
       const trimmedBlock = block.trim();
       const qNumMatch = trimmedBlock.match(
-        /(?:^|\n)\s*(\d+)[\).:]\s*(?:\[(.*?)\])?\s*([\s\S]*?)(?=<Multiple-Choice>|<\/Multiple-Choice>|\n- \[[ xX]\]|$)/i
+        /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?(\d+)[\).:]\s*(?:\*\*)?\s*(?:\[(.*?)\])?(?:\*\*)?\s*([\s\S]*?)(?=<Multiple-Choice>|<\/Multiple-Choice>|\n- \[[ xX]\]|$)/i
       );
       if (!qNumMatch) continue;
 
-      const num = qNumMatch[1].padStart(2, '0');
+      let num = qNumMatch[1].padStart(2, '0');
       const category = qNumMatch[2]?.trim();
       let prompt = qNumMatch[3]?.trim() || '';
       // Remove any <Multiple-Choice> or </Multiple-Choice> tags
@@ -159,8 +175,14 @@ export class QuestionParser {
         });
       }
 
-      // Look up answer from answerMap (try padded and raw)
-      const answerInfo = answerMap.get(num) || answerMap.get(parseInt(num, 10).toString());
+      // If num is already in questions (duplicate numbering in separate sections),
+      // re-index to sequential number so keys do not collide
+      if (questions.some((q) => q.number === num)) {
+        num = String(questions.length + 1).padStart(2, '0');
+      }
+
+      // Look up answer from answerMap (try padded, raw, or sequential index)
+      const answerInfo = answerMap.get(num) || answerMap.get(parseInt(num, 10).toString()) || answersList[questions.length];
 
       // Fallback 1: check if an option was marked with [x]
       // Fallback 2: check for inline "Answer: B" inside question block
@@ -170,14 +192,26 @@ export class QuestionParser {
         inlineAnswer = inlineMatch[1].toUpperCase();
       }
 
-      const correctAnswer = answerInfo?.letter || checkedLetter || inlineAnswer || '';
+      let correctAnswer = answerInfo?.letter || checkedLetter || inlineAnswer || '';
       const isFillIn = options.length === 0 && (prompt.includes('___') || /fill[- ]in/i.test(category || ''));
+      const isShortAnswer = options.length === 0 && !isFillIn && prompt.trim().length > 0;
 
-      if (options.length > 0 || isFillIn) {
+      if (isShortAnswer && /^(?:expected criteria|rubric|model response|criteria)/i.test(correctAnswer) && answerInfo?.explanation) {
+        correctAnswer = `${correctAnswer} — ${answerInfo.explanation}`;
+      }
+
+      const qType: 'multiple-choice' | 'fill-in-the-blank' | 'short-answer' =
+        options.length > 0
+          ? 'multiple-choice'
+          : isFillIn
+            ? 'fill-in-the-blank'
+            : 'short-answer';
+
+      if (options.length > 0 || isFillIn || isShortAnswer) {
         questions.push({
           number: num,
           category,
-          type: isFillIn ? 'fill-in-the-blank' : 'multiple-choice',
+          type: qType,
           prompt,
           options,
           correctAnswer,

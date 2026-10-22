@@ -241,10 +241,125 @@ describe('QuestionParser', () => {
         expect(allA).toBe(false);
       }
 
-      // Ensure every question has a valid letter A-D
-      for (const a of answers) {
-        expect(['A', 'B', 'C', 'D']).toContain(a);
+      // Ensure every multiple-choice question has a valid letter A-D
+      // and fill-in-the-blank has non-empty answer
+      for (const q of quiz.questions) {
+        if (q.type === 'multiple-choice') {
+          expect(['A', 'B', 'C', 'D']).toContain(q.correctAnswer);
+        } else {
+          expect(q.correctAnswer.length).toBeGreaterThan(0);
+        }
       }
     }
+  });
+
+  it('parses mixed unit test with multiple-choice, fill-in-the-blank, and short-answer questions', () => {
+    const md = `
+# Unit 1 Practice Exam
+
+## Questions
+01) [Knowledge & Understanding] What is velocity?
+<Multiple-Choice>
+- [ ] Rate of change of position
+- [ ] Scalar speed
+- [ ] Total distance
+- [ ] Acceleration
+
+--
+
+02) [Fill-in-the-Blank] The rate of change of velocity is known as ___________.
+
+--
+
+## Short Answer / Application Problems
+03) [Application] Describe how to calculate net force on an inclined plane.
+
+--
+
+## Answers & Explanations
+01) A - (explanation) Velocity is vector displacement over time.
+02) acceleration - (explanation) Acceleration is dv/dt.
+03) Rubric: Resolve gravitational force into parallel and perpendicular components, subtract friction - (explanation) F_net = mg sin(theta) - f_k.
+`;
+    const quiz = QuestionParser.parseMarkdown(md);
+    expect(quiz.questions.length).toBe(3);
+    expect(quiz.questions[0].type).toBe('multiple-choice');
+    expect(quiz.questions[0].correctAnswer).toBe('A');
+
+    expect(quiz.questions[1].type).toBe('fill-in-the-blank');
+    expect(quiz.questions[1].correctAnswer).toBe('acceleration');
+
+    expect(quiz.questions[2].type).toBe('short-answer');
+    expect(quiz.questions[2].category).toBe('Application');
+    expect(quiz.questions[2].prompt).toContain('inclined plane');
+    expect(quiz.questions[2].correctAnswer).toContain('Resolve gravitational force');
+    expect(quiz.questions[2].explanation).toContain('F_net = mg sin(theta)');
+  });
+
+  it('parses real Ontario BAF3M unit test from disk with MC, fill-in, and short-answer', () => {
+    const filePath = path.resolve(process.cwd(), '..', 'data/courses/baf3m/01.unit.test.md');
+    if (!fs.existsSync(filePath)) return;
+    const md = fs.readFileSync(filePath, 'utf8');
+    const quiz = QuestionParser.parseMarkdown(md);
+
+    expect(quiz.title).toBe('Unit Practice Exam');
+    expect(quiz.questions.length).toBe(12);
+
+    // 8 Multiple choice
+    for (let i = 0; i < 8; i++) {
+      expect(quiz.questions[i].type).toBe('multiple-choice');
+      expect(quiz.questions[i].options.length).toBe(4);
+      expect(['A', 'B', 'C', 'D']).toContain(quiz.questions[i].correctAnswer);
+      expect(quiz.questions[i].explanation?.length).toBeGreaterThan(0);
+    }
+
+    // 2 Fill in the blank
+    expect(quiz.questions[8].type).toBe('fill-in-the-blank');
+    expect(quiz.questions[8].correctAnswer.toLowerCase()).toContain("owner’s equity".toLowerCase());
+    expect(quiz.questions[9].type).toBe('fill-in-the-blank');
+    expect(quiz.questions[9].correctAnswer.toLowerCase()).toContain('cpa');
+
+    // 2 Short answer
+    expect(quiz.questions[10].type).toBe('short-answer');
+    expect(quiz.questions[10].correctAnswer).toContain('Expected Criteria');
+    expect(quiz.questions[10].explanation).toContain('Calculation');
+    expect(quiz.questions[11].type).toBe('short-answer');
+    expect(quiz.questions[11].correctAnswer).toContain('Expected Criteria');
+    expect(quiz.questions[11].explanation).toContain('Principles/standards');
+  });
+
+  it('parses comprehensive 16-question unit test output (with subheadings and bold answer formats)', () => {
+    const scratchPath = path.resolve(
+      process.env.HOME || '',
+      '.gemini/antigravity/brain/f11f16d4-8593-4673-a1a1-9bb2a0789e19/scratch/llm_response.md'
+    );
+    if (!fs.existsSync(scratchPath)) return;
+    const md = fs.readFileSync(scratchPath, 'utf8');
+    const quiz = QuestionParser.parseMarkdown(md);
+
+    expect(quiz.title).toBe('Unit Practice Exam');
+    expect(quiz.questions.length).toBe(16);
+
+    // 12 Multiple-choice questions
+    for (let i = 0; i < 12; i++) {
+      expect(quiz.questions[i].type).toBe('multiple-choice');
+      expect(quiz.questions[i].options.length).toBe(4);
+      expect(['A', 'B', 'C', 'D']).toContain(quiz.questions[i].correctAnswer);
+      expect(quiz.questions[i].explanation?.length).toBeGreaterThan(0);
+    }
+
+    // 2 Fill-in-the-blank questions
+    expect(quiz.questions[12].type).toBe('fill-in-the-blank');
+    expect(quiz.questions[12].correctAnswer).toContain("owner's equity");
+    expect(quiz.questions[13].type).toBe('fill-in-the-blank');
+    expect(quiz.questions[13].correctAnswer).toContain('database');
+
+    // 2 Short-answer / Problem-solving questions
+    expect(quiz.questions[14].type).toBe('short-answer');
+    expect(quiz.questions[14].prompt).toContain("Bakery Owner's Three Requests");
+    expect(quiz.questions[14].explanation).toContain('Model Response');
+    expect(quiz.questions[15].type).toBe('short-answer');
+    expect(quiz.questions[15].prompt).toContain("Landscaper's Balance Sheet");
+    expect(quiz.questions[15].explanation).toContain('Model Response');
   });
 });

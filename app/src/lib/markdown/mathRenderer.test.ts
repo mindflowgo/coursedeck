@@ -182,4 +182,17 @@ Negative exponent	(x^{-n}=\\frac{1}{x^n}).`;
     const html = renderTextWithMath('Depreciation & amortization');
     expect(html).toBe('Depreciation &amp; amortization');
   });
+
+  it('renderTextWithMath parses **bold** into <strong> tags without double-escaping', () => {
+    const html = renderTextWithMath("Which statement best defines **owner's equity** and **$85,000**?");
+    expect(html).toContain("<strong>owner&#39;s equity</strong>");
+    expect(html).toContain("<strong>$85,000</strong>");
+    expect(html).not.toContain("**owner");
+  });
+
+  it('renderTextWithMath handles mixed LaTeX math and markdown **bold**', () => {
+    const html = renderTextWithMath("Find the **hypotenuse** when \\(c = \\sqrt{a^2 + b^2}\\).");
+    expect(html).toContain('<strong>hypotenuse</strong>');
+    expect(html).toContain('class="katex"');
+  });
 });

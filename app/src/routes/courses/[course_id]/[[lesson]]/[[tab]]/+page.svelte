@@ -30,6 +30,11 @@
     isCustomTabSlug,
     isTabSlug,
     isCourseTab,
+    isUnitTab,
+    isUnitScopeId,
+    parseUnitNumber,
+    formatUnitScopeId,
+    UNIT_TABS,
     customTabDisplayName,
     validateTabName,
     slugifyTabName,
@@ -40,6 +45,7 @@
   import {
     ArrowUp,
     ArrowRight,
+    Bookmark,
     BookOpen,
     FileText,
     ListCollapse,
@@ -95,6 +101,21 @@
   let isLoadingCourseDoc: boolean = $state(false);
   let isGeneratingCourseDoc: boolean = $state(false);
   let quizRunnerKey: number = $state(0);
+
+  // Unit scope states
+  let isUnitScope: boolean = $derived(
+    !isCourseScope && isUnitScopeId(selectedLessonId)
+  );
+
+  let currentUnitNumber = $derived(
+    parseUnitNumber(selectedLessonId)
+  );
+
+  let currentUnit = $derived.by(() => {
+    const c = course;
+    if (currentUnitNumber === null || !c || !Array.isArray(c.units)) return null;
+    return c.units.find((u) => u.number === currentUnitNumber) || null;
+  });
 
   let allCourseLessons: CourseManifestLesson[] = $derived.by(() => {
     const currentCourse = course;
@@ -461,6 +482,9 @@
     if (isCourseScope) {
       return genericPrompts[`course_${activeTab}`] || genericPrompts[activeTab] || '';
     }
+    if (isUnitScope) {
+      return genericPrompts[`unit_${activeTab}`] || genericPrompts[activeTab] || '';
+    }
     return genericPrompts[activeTab] || '';
   });
 
@@ -474,7 +498,8 @@
   let tabDisplayName = $derived.by(() => {
     if (activeTab === 'summary') return 'Summary';
     if (activeTab === 'cheatsheet') return 'Cheatsheet';
-    if (activeTab === 'test') return 'Practice Test';
+    if (activeTab === 'assignments') return 'Assignments';
+    if (activeTab === 'test') return isUnitScope ? 'Unit Test' : isCourseScope ? 'Course Test' : 'Practice Test';
     if (activeTab === 'schedule') return 'Schedule';
     if (isCustomTabSlug(activeTab)) return customTabDisplayName(activeTab);
     return isCourseScope ? 'Course Notes' : 'Notes';
@@ -792,7 +817,7 @@
   }
 
   function switchTab(tab: PageTab) {
-    console.log(`[NAV] switchTab "${tab}" | scope=${isCourseScope} lesson=${selectedLessonId}`);
+    console.log(`[NAV] switchTab "${tab}" | scope=${isCourseScope} unit=${isUnitScope} lesson=${selectedLessonId}`);
     if (isCourseScope && !hasCourseDoc(tab)) {
       console.log(`[NAV] switchTab: "${tab}" has no course doc → falling back to lesson`);
       tab = 'lesson';
@@ -800,7 +825,7 @@
     activeTab = tab;
     isEditing = false;
     showPromptCard = false;
-    const tabSuffix = tab !== 'lesson' ? `/${tab}` : '';
+    const tabSuffix = (tab !== 'lesson' || isUnitScope) ? `/${tab}` : '';
     if (isCourseScope) {
       loadCourseDocument(tab);
       const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course${tabSuffix}`;
@@ -825,14 +850,19 @@
     isEditing = false;
     showPromptCard = false;
     isLessonActionsOpen = false;
-    // Schedule is course-only; custom tabs are checked against file existence in loadLesson.
-    if (activeTab === 'schedule') {
-      activeTab = 'lesson';
+    if (isUnitScopeId(lessonId)) {
+      if (activeTab !== 'assignments' && activeTab !== 'test' && !isCustomTabSlug(activeTab)) {
+        activeTab = 'assignments';
+      }
+    } else {
+      if (activeTab === 'schedule' || activeTab === 'assignments' || activeTab === 'test') {
+        activeTab = 'lesson';
+      }
     }
     await loadLesson(lessonId);
     console.log(`[NAV] selectLesson loaded → tab=${activeTab}`);
     const targetTab = activeTab;
-    const tabSuffix = targetTab && targetTab !== 'lesson' ? `/${targetTab}` : '';
+    const tabSuffix = targetTab && (targetTab !== 'lesson' || isUnitScopeId(lessonId)) ? `/${targetTab}` : '';
     const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(lessonId)}${tabSuffix}`;
     if ($page.url.pathname !== targetUrl) {
       nav(targetUrl);
@@ -875,6 +905,7 @@
     const seq = ++lessonLoadSeq;
     console.log(`[NAV] loadLesson "${lessonId}" …`);
     selectedLessonId = lessonId;
+    unitTestSupervisorMessage = '';
     isLoadingLesson = true;
     try {
       const res = await apiFetch(`/api/courses/${courseId}/${lessonId}`);
@@ -915,6 +946,7 @@
           tabContents.schedule = courseScheduleMarkdown;
         }
         originalContents = { ...tabContents };
+        quizRunnerKey++;
         void loadCourseSchedule();
         console.log(`[NAV] loadLesson "${lessonId}" ✓ tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}]`);
       } else {
@@ -1238,6 +1270,50 @@
     }
   }
 
+  let unitTestSupervisorMessage: string = $state('');
+
+  async function handleSubmitUnitTest(answers: Record<string, string>) {
+    if (!courseId || !selectedLessonId) return;
+
+    try {
+      const res = await apiFetch(`/api/courses/${courseId}/unit-test/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          unitId: selectedLessonId,
+          testMarkdown: tabContents.test,
+          answers
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || data.error || 'Failed to submit unit test');
+      }
+
+      // Update local tab contents and frontmatter so UI reflects the newly saved attempt immediately
+      if (data.updatedMarkdown) {
+        tabContents.test = data.updatedMarkdown;
+        originalContents.test = data.updatedMarkdown;
+      }
+
+      if (data.supervisorMessage) {
+        unitTestSupervisorMessage = data.supervisorMessage;
+      }
+
+      saveSuccessMessage = `Unit test evaluated: ${data.score}/${data.total} (${data.percentage}%)`;
+      setTimeout(() => {
+        saveSuccessMessage = '';
+      }, 4000);
+
+      return data;
+    } catch (err: any) {
+      console.error('[Unit Test Submit Error]', err);
+      alert('Error evaluating unit test: ' + (err?.message || 'Check connection'));
+      throw err;
+    }
+  }
+
   /**
    * Event-driven generation feedback: the shared queueStatus store polls the
    * backend once for everyone and emits finished tasks; we just toast the
@@ -1346,6 +1422,14 @@
           console.groupEnd();
 
           console.groupEnd();
+        } else if (isCourseScope) {
+          if (task.lessonId === 'course' || task.tab === activeTab) {
+            await loadCourseDocument(activeTab);
+            quizRunnerKey++;
+          }
+        } else if (task.lessonId === selectedLessonId) {
+          await loadLesson(selectedLessonId);
+          quizRunnerKey++;
         }
       } else if (task.status === 'failed') {
         console.error(`[ILC AI Failed] ${label} for ${task.lessonId}: ${task.error}`);
@@ -1693,7 +1777,7 @@
     if (!t) return null;
     const clean = t.toLowerCase().trim();
     if (clean === 'notes') return 'lesson';
-    if (['lesson', 'summary', 'cheatsheet', 'test', 'schedule'].includes(clean)) {
+    if (['lesson', 'summary', 'cheatsheet', 'test', 'schedule', 'assignments'].includes(clean)) {
       return clean;
     }
     // Custom tabs: any valid slug (created on visit if the lesson lacks it)
@@ -1831,66 +1915,104 @@
           nav(canonical, { replace: true });
         }
       } else {
-        const allLessons = (course.units || []).flatMap((u) => u.lessons);
-        const requestedLesson = (resumeTarget && !resumeTarget.isCourseScope)
-          ? resumeTarget.lessonId
-          : (pLesson || qLesson || '');
-        const foundLesson = findLesson(allLessons, requestedLesson);
-        const targetLesson = foundLesson ? foundLesson.id : (allLessons[0]?.id || '');
-        if (!foundLesson && requestedLesson) {
-          console.log(`[NAV] syncRoute: lesson "${requestedLesson}" not found in manifest → falling back to "${targetLesson}"`);
-        }
+        const rawRequested = (pLesson || qLesson || '').trim();
+        const isTargetUnit = isUnitScopeId(rawRequested);
 
-        // A user-initiated switch (selectLesson) loads the lesson first and
-        // gotos when it settles — so while that load is in flight the URL
-        // still shows OUR (older) params. Loading or rewriting the URL now
-        // would fight the user's pick. Stand down; their goto re-triggers us.
-        if (isLoadingLesson && selectedLessonId && selectedLessonId !== targetLesson) {
-          console.log(
-            `[NAV] syncRoute standing down — switch to "${selectedLessonId}" already in flight (params still target "${targetLesson}")`
-          );
-          return;
-        }
+        if (isTargetUnit) {
+          const uNum = parseUnitNumber(rawRequested);
+          const foundUnit = uNum !== null ? (course.units || []).find((u) => u.number === uNum) : null;
+          const targetLesson = foundUnit ? formatUnitScopeId(foundUnit.number) : rawRequested;
 
-        let targetTab: PageTab = (resumeTarget && !resumeTarget.isCourseScope)
-          ? resumeTarget.tab
-          : (parseTabName(pTab) || parseTabName(qTab) || 'lesson');
-        if (targetTab === 'schedule') {
-          targetTab = 'lesson';
-        }
+          const parsed = parseTabName(pTab) || parseTabName(qTab);
+          const targetTab: PageTab = parsed && (isUnitTab(parsed) || isCustomTabSlug(parsed)) ? parsed : 'assignments';
 
-        const scopeChanged = isCourseScope;
-        const lessonChanged = selectedLessonId !== targetLesson;
-        const tabChanged = activeTab !== targetTab;
-        console.log(
-          `[NAV] syncRoute lesson branch | target="${targetLesson}" targetTab=${targetTab} lessonChanged=${lessonChanged} scopeChanged=${scopeChanged}`
-        );
+          const scopeChanged = isCourseScope;
+          const lessonChanged = selectedLessonId !== targetLesson;
+          const tabChanged = activeTab !== targetTab;
 
-        isCourseScope = false;
-        activeTab = targetTab;
-        if (scopeChanged || lessonChanged || tabChanged) {
-          showPromptCard = false;
-        }
+          isCourseScope = false;
+          activeTab = targetTab;
+          selectedLessonId = targetLesson;
+          if (scopeChanged || lessonChanged || tabChanged) {
+            showPromptCard = false;
+          }
 
-        if (scopeChanged || lessonChanged || !selectedLessonId) {
-          if (targetLesson) {
+          if (scopeChanged || lessonChanged || !selectedLessonId) {
             await loadLesson(targetLesson);
             if (routeMovedOn()) throw ROUTE_MOVED_ON;
           }
-        }
 
-        // A URL naming a custom tab the lesson doesn't have yet (schedule
-        // deep link, bookmark) creates the tab file so it can be used.
-        if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs?.[targetTab]) {
-          await createCustomTab(targetTab, customTabDisplayName(targetTab));
-          if (routeMovedOn()) throw ROUTE_MOVED_ON;
-        }
+          if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs?.[targetTab]) {
+            await createCustomTab(targetTab, customTabDisplayName(targetTab));
+            if (routeMovedOn()) throw ROUTE_MOVED_ON;
+          }
 
-        if (targetLesson) {
-          const tabSuffix = targetTab !== 'lesson' ? `/${targetTab}` : '';
-          const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}${tabSuffix}`;
+          const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}/${targetTab}`;
           if ($page.url.pathname !== canonical || $page.url.search) {
             nav(canonical, { replace: true });
+          }
+        } else {
+          const allLessons = (course.units || []).flatMap((u) => u.lessons);
+          const requestedLesson = (resumeTarget && !resumeTarget.isCourseScope && !isUnitScopeId(resumeTarget.lessonId))
+            ? resumeTarget.lessonId
+            : (pLesson || qLesson || '');
+          const foundLesson = findLesson(allLessons, requestedLesson);
+          const targetLesson = foundLesson ? foundLesson.id : (allLessons[0]?.id || '');
+          if (!foundLesson && requestedLesson) {
+            console.log(`[NAV] syncRoute: lesson "${requestedLesson}" not found in manifest → falling back to "${targetLesson}"`);
+          }
+
+          // A user-initiated switch (selectLesson) loads the lesson first and
+          // gotos when it settles — so while that load is in flight the URL
+          // still shows OUR (older) params. Loading or rewriting the URL now
+          // would fight the user's pick. Stand down; their goto re-triggers us.
+          if (isLoadingLesson && selectedLessonId && selectedLessonId !== targetLesson) {
+            console.log(
+              `[NAV] syncRoute standing down — switch to "${selectedLessonId}" already in flight (params still target "${targetLesson}")`
+            );
+            return;
+          }
+
+          let targetTab: PageTab = (resumeTarget && !resumeTarget.isCourseScope && !isUnitScopeId(resumeTarget.lessonId))
+            ? resumeTarget.tab
+            : (parseTabName(pTab) || parseTabName(qTab) || 'lesson');
+          if (targetTab === 'schedule' || targetTab === 'assignments' || targetTab === 'test') {
+            targetTab = 'lesson';
+          }
+
+          const scopeChanged = isCourseScope;
+          const lessonChanged = selectedLessonId !== targetLesson;
+          const tabChanged = activeTab !== targetTab;
+          console.log(
+            `[NAV] syncRoute lesson branch | target="${targetLesson}" targetTab=${targetTab} lessonChanged=${lessonChanged} scopeChanged=${scopeChanged}`
+          );
+
+          isCourseScope = false;
+          activeTab = targetTab;
+          if (scopeChanged || lessonChanged || tabChanged) {
+            showPromptCard = false;
+          }
+
+          if (scopeChanged || lessonChanged || !selectedLessonId) {
+            if (targetLesson) {
+              await loadLesson(targetLesson);
+              if (routeMovedOn()) throw ROUTE_MOVED_ON;
+            }
+          }
+
+          // A URL naming a custom tab the lesson doesn't have yet (schedule
+          // deep link, bookmark) creates the tab file so it can be used.
+          if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs?.[targetTab]) {
+            await createCustomTab(targetTab, customTabDisplayName(targetTab));
+            if (routeMovedOn()) throw ROUTE_MOVED_ON;
+          }
+
+          if (targetLesson) {
+            const tabSuffix = targetTab !== 'lesson' ? `/${targetTab}` : '';
+            const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}${tabSuffix}`;
+            if ($page.url.pathname !== canonical || $page.url.search) {
+              nav(canonical, { replace: true });
+            }
           }
         }
       }
@@ -1950,6 +2072,9 @@
   // Current lesson title
   let currentLessonTitle = $derived.by(() => {
     if (!course) return '';
+    if (isUnitScope && currentUnit) {
+      return `Unit ${currentUnit.number}: ${currentUnit.title}`;
+    }
     for (const u of course.units) {
       const found = u.lessons.find((l) => l.id === selectedLessonId);
       if (found) return found.title;
@@ -1981,8 +2106,14 @@
       if (isCourseScope && activeTab === 'schedule') {
         loadCourseDocument('schedule');
       }
+    } else if (isCourseScope) {
+      if (lId === 'course' && tab === activeTab) {
+        loadCourseDocument(activeTab);
+        quizRunnerKey++;
+      }
     } else if (!isCourseScope && lId === selectedLessonId) {
       loadLesson(selectedLessonId);
+      quizRunnerKey++;
     }
   }}
 />
@@ -2015,7 +2146,7 @@
           onSelectCourseMode={() => selectCourseMode()}
         />
 
-        {#if !isCourseScope}
+        {#if !isCourseScope && !isUnitScope}
           <div class="relative shrink-0">
             <button
               type="button"
@@ -2139,41 +2270,108 @@
         {/if}
       </div>
 
-      <!-- Middle: Study Tabs (Notes | Summary | Cheatsheet | Test) -->
+      <!-- Middle: Study Tabs (Course | Unit | Lesson) -->
       <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium">
-        <button
-          onclick={() => switchTab('lesson')}
-          class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-        >
-          <BookOpen class="w-3.5 h-3.5" />
-          <span>Lessons</span>
-        </button>
+        {#if isCourseScope}
+          <button
+            onclick={() => switchTab('lesson')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <BookOpen class="w-3.5 h-3.5" />
+            <span>Complete Lessons</span>
+          </button>
 
-        <button
-          onclick={() => switchTab('summary')}
-          class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'summary' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-        >
-          <Sparkles class="w-3.5 h-3.5" />
-          <span>Summary</span>
-        </button>
+          <button
+            onclick={() => switchTab('summary')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'summary' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <Sparkles class="w-3.5 h-3.5" />
+            <span>Summary</span>
+          </button>
 
-        <button
-          onclick={() => switchTab('cheatsheet')}
-          class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'cheatsheet' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-        >
-          <ListCollapse class="w-3.5 h-3.5" />
-          <span>Cheatsheet</span>
-        </button>
+          <button
+            onclick={() => switchTab('schedule')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'schedule' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <CalendarDays class="w-3.5 h-3.5" />
+            <span>Schedule</span>
+          </button>
 
-        <button
-          onclick={() => switchTab('test')}
-          class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'test' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-        >
-          <CheckCircle2 class="w-3.5 h-3.5" />
-          <span>Practice Test</span>
-        </button>
+          <button
+            onclick={() => switchTab('test')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'test' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <CheckCircle2 class="w-3.5 h-3.5" />
+            <span>Practice Test</span>
+          </button>
+        {:else if isUnitScope}
+          <button
+            onclick={() => switchTab('assignments')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'assignments' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <Bookmark class="w-3.5 h-3.5 text-purple-600 dark:text-purple-400" />
+            <span>Assignments</span>
+          </button>
 
-        {#if !isCourseScope}
+          <button
+            onclick={() => switchTab('test')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'test' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span>Unit Test</span>
+          </button>
+
+          {#each customTabs as slug (slug)}
+            <div class="relative group/tab">
+              <button
+                onclick={() => switchTab(slug)}
+                class="flex items-center px-3 py-1 rounded-md transition {activeTab === slug ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+                title="Custom tab — {selectedLessonId}.{slug}.md"
+              >
+                <span>{customTabDisplayName(slug)}</span>
+              </button>
+              <button
+                onclick={() => handleDeleteCustomTab(slug)}
+                class="absolute -top-1 -right-1 hidden group-hover/tab:flex items-center justify-center w-3.5 h-3.5 rounded-full bg-stone-300 dark:bg-stone-600 text-stone-700 dark:text-stone-200 hover:bg-red-400 dark:hover:bg-red-500 hover:text-white transition cursor-pointer"
+                title="Delete {customTabDisplayName(slug)} tab for this unit"
+              >
+                <X class="w-2 h-2" />
+              </button>
+            </div>
+          {/each}
+
+          <button
+            onclick={openNewTabModal}
+            class="flex items-center justify-center w-7 py-1 rounded-md text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 transition cursor-pointer"
+            title="Create a new tab for this unit"
+          >
+            <Plus class="w-3.5 h-3.5" />
+          </button>
+        {:else}
+          <button
+            onclick={() => switchTab('lesson')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <BookOpen class="w-3.5 h-3.5" />
+            <span>Lessons</span>
+          </button>
+
+          <button
+            onclick={() => switchTab('summary')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'summary' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <Sparkles class="w-3.5 h-3.5" />
+            <span>Summary</span>
+          </button>
+
+          <button
+            onclick={() => switchTab('cheatsheet')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'cheatsheet' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <ListCollapse class="w-3.5 h-3.5" />
+            <span>Cheatsheet</span>
+          </button>
+
           {#each customTabs as slug (slug)}
             <div class="relative group/tab">
               <button
@@ -2199,16 +2397,6 @@
             title="Create a new tab for this lesson (e.g. Assignment)"
           >
             <Plus class="w-3.5 h-3.5" />
-          </button>
-        {/if}
-
-        {#if isCourseScope}
-          <button
-            onclick={() => switchTab('schedule')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'schedule' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-          >
-            <CalendarDays class="w-3.5 h-3.5" />
-            <span>Schedule</span>
           </button>
         {/if}
       </div>
@@ -2408,15 +2596,6 @@
                 />
               </div>
             </div>
-          {:else if activeTab === 'test'}
-            <!-- Practice Test Interactive Runner -->
-            <div class="p-6 sm:p-10">
-              {#key `${quizRunnerKey}-${parsedActiveTab.body}`}
-                <QuizRunner
-                  testMarkdown={parsedActiveTab.body}
-                />
-              {/key}
-            </div>
           {:else if activeTab === 'schedule' && isCourseScope}
             <!-- Schedule: structured viewer or first-time intro -->
             <div class="p-6 sm:p-10">
@@ -2601,6 +2780,36 @@
                   <span>Enjoy the course and remember to use the powerful tools to make it easier to learn.</span>
                 </div>
               </div>
+            </div>
+          {:else if isUnitScope && activeTab === 'test'}
+            <!-- Unit Practice Test Interactive View -->
+            <div class="p-6 sm:p-10">
+              {#if !parsedActiveTab.body || parsedActiveTab.body.trim().length === 0}
+                <div class="max-w-md mx-auto py-12 text-center space-y-3">
+                  <div class="mx-auto w-fit p-3 rounded-2xl bg-stone-100 dark:bg-stone-800 text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 class="w-6 h-6" />
+                  </div>
+                  <h3 class="text-base font-semibold text-stone-900 dark:text-stone-100">
+                    Unit Practice Test
+                  </h3>
+                  <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
+                    This unit practice test has not been generated yet. Click "Prompt" above to generate a comprehensive practice test covering all lessons in this unit.
+                  </p>
+                </div>
+              {:else}
+                {#key `${quizRunnerKey}-${parsedActiveTab.body}`}
+                  <QuizRunner
+                    testMarkdown={parsedActiveTab.body}
+                    isUnitTest={true}
+                    lastAttemptDate={parsedActiveTab.frontmatter.lastAttemptDate}
+                    lastScore={typeof parsedActiveTab.frontmatter.score === 'number' ? parsedActiveTab.frontmatter.score : undefined}
+                    lastTotal={typeof parsedActiveTab.frontmatter.totalQuestions === 'number' ? parsedActiveTab.frontmatter.totalQuestions : undefined}
+                    lastPercentage={typeof parsedActiveTab.frontmatter.percentage === 'number' ? parsedActiveTab.frontmatter.percentage : undefined}
+                    supervisorMessage={unitTestSupervisorMessage}
+                    onSubmitUnitTest={handleSubmitUnitTest}
+                  />
+                {/key}
+              {/if}
             </div>
           {:else}
             <!-- Markdown Reader View -->

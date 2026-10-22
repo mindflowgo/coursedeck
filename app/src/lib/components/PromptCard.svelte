@@ -9,6 +9,7 @@
     X
   } from 'lucide-svelte';
   import { apiFetch } from '$lib/api';
+  import { isUnitScopeId } from '$lib/tabs';
 
   interface Props {
     prompt: string;
@@ -50,17 +51,18 @@
   let selectedAttachment = $state('');
   let attachmentChars = $state(0);
 
-  function resolveDefaultAttachment(tab: string, isLesson: boolean): string {
-    const scope = isLesson ? 'lesson' : 'course';
+  function resolveDefaultAttachment(tab: string, scopeId?: string): string {
+    if (scopeId && isUnitScopeId(scopeId)) return 'unit - lessons';
+    const scope = scopeId ? 'lesson' : 'course';
     const cleanTab = tab.toLowerCase().trim();
     if (cleanTab === 'cheatsheet') return `${scope} - cheatsheets`;
     if (cleanTab === 'summary') return `${scope} - summaries`;
-    if (cleanTab === 'test') return `${scope} - summaries`;
-    return isLesson ? 'lesson - lessons' : 'course - summaries';
+    if (cleanTab === 'test') return scope === 'course' ? 'course - summaries' : 'lesson - summaries';
+    return scope === 'lesson' ? 'lesson - lessons' : 'course - summaries';
   }
 
   $effect(() => {
-    selectedAttachment = initialAttachment || resolveDefaultAttachment(activeTab, Boolean(lessonId));
+    selectedAttachment = initialAttachment || resolveDefaultAttachment(activeTab, lessonId);
   });
 
   $effect(() => {
@@ -90,7 +92,9 @@
 
   let selectedScope = $derived.by(() => {
     const parts = (selectedAttachment || '').split(' - ');
-    return parts[0] || (lessonId ? 'lesson' : 'course');
+    if (parts[0]) return parts[0];
+    if (lessonId && isUnitScopeId(lessonId)) return 'unit';
+    return lessonId ? 'lesson' : 'course';
   });
 
   let selectedTab = $derived.by(() => {
@@ -100,9 +104,6 @@
 
   function handleScopeChange(newScope: string) {
     let newTab = selectedTab;
-    if (newScope === 'unit') {
-      newTab = 'lessons';
-    }
     selectedAttachment = `${newScope} - ${newTab}`;
   }
 
@@ -114,7 +115,7 @@
     const promptChanged = defaultPrompt
       ? localPrompt.trim() !== defaultPrompt.trim()
       : localPrompt.trim() !== initialPrompt.trim();
-    const defaultAtt = initialAttachment || resolveDefaultAttachment(activeTab, Boolean(lessonId));
+    const defaultAtt = initialAttachment || resolveDefaultAttachment(activeTab, lessonId);
     const attachmentChanged = selectedAttachment !== defaultAtt;
     return promptChanged || attachmentChanged;
   });
@@ -129,7 +130,7 @@
     const target = defaultPrompt || initialPrompt;
     localPrompt = target;
     onChangePrompt(target);
-    selectedAttachment = initialAttachment || resolveDefaultAttachment(activeTab, Boolean(lessonId));
+    selectedAttachment = initialAttachment || resolveDefaultAttachment(activeTab, lessonId);
     if (onResetPrompt) onResetPrompt();
   }
 
@@ -219,10 +220,8 @@
             class="px-1.5 py-0.5 rounded border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-950 text-[11px] font-medium text-stone-800 dark:text-stone-200 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100 transition cursor-pointer"
           >
             <option value="lessons">lesson(s)</option>
-            {#if selectedScope !== 'unit'}
-              <option value="summaries">summary(s)</option>
-              <option value="cheatsheets">cheatsheet(s)</option>
-            {/if}
+            <option value="summaries">summary(s)</option>
+            <option value="cheatsheets">cheatsheet(s)</option>
           </select>
         </div>
 

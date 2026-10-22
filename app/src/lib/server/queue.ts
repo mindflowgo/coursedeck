@@ -20,6 +20,7 @@ import {
   type ScheduleSkeleton
 } from '../scheduleGenerator';
 import { ScheduleParser } from '../parser/scheduleParser';
+import { isUnitScopeId } from '../tabs';
 
 export interface ScheduleDebugInfo {
   rruleTimeline: {
@@ -305,7 +306,7 @@ export class GenerationQueue {
    */
   enqueueCourseMissing(
     courseId: string,
-    tabs: Array<'summary' | 'cheatsheet' | 'test'> = ['summary', 'cheatsheet', 'test']
+    tabs: Array<string> = ['summary', 'cheatsheet']
   ): GenerationTask[] {
     const manifest = CourseService.getManifest(courseId);
     if (!manifest) return [];
@@ -314,7 +315,7 @@ export class GenerationQueue {
       courseId: string;
       lessonId: string;
       lessonTitle: string;
-      tab: 'summary' | 'cheatsheet' | 'test';
+      tab: string;
     }> = [];
 
     for (const unit of manifest.units) {
@@ -753,31 +754,33 @@ export class GenerationQueue {
           `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalWithFrontmatter.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}${warningsInfo}\n`
         );
       } else {
+        const isUnit = isUnitScopeId(nextTask.lessonId);
         const bundle = CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId);
-        if (!bundle || !bundle.lesson) {
+        if (!isUnit && (!bundle || !bundle.lesson)) {
           throw new Error(`Lesson file not found for ${nextTask.courseId} / ${nextTask.lessonId}`);
         }
 
         // Load prompt template
         let systemPrompt = nextTask.customPrompt;
         if (!systemPrompt) {
-          let promptKey = nextTask.tab;
-          let promptItem = PromptService.getPrompt(promptKey);
-          if (!promptItem && nextTask.tab === 'test') {
-            promptItem = PromptService.getPrompt('test_kica');
-          }
+          let promptKey = isUnit ? `unit_${nextTask.tab}` : nextTask.tab;
+          let promptItem = PromptService.getPrompt(promptKey) || PromptService.getPrompt(nextTask.tab);
 
           systemPrompt =
             promptItem?.content ||
             `You are an expert Ontario curriculum educator. Produce a high quality ${nextTask.tab} in Markdown format.`;
         }
 
-        const attachment = nextTask.contextAttachment || 'lesson - lessons';
+        const attachment = nextTask.contextAttachment || (isUnit ? 'unit - lessons' : 'lesson - lessons');
         const userPrompt =
           nextTask.customContent !== undefined
             ? nextTask.customContent
             : CourseService.getPromptContext(nextTask.courseId, attachment, nextTask.lessonId) ||
-              stripLessonMedia(parseFrontmatter(bundle.lesson).body).trim();
+              (bundle?.lesson ? stripLessonMedia(parseFrontmatter(bundle.lesson).body).trim() : '');
+
+        if (!userPrompt || userPrompt.trim().length === 0) {
+          throw new Error(`No content found to generate ${nextTask.tab} for ${nextTask.lessonId}.`);
+        }
 
         // Use the CURRENT active settings: clean model (blank if not specified) and session_id
         const effectiveConfig: LLMConfig = {

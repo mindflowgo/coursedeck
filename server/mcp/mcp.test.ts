@@ -287,6 +287,7 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
   });
 
   it('executes create_course and delete_course lifecycle', async () => {
+    // Default format is Markdown confirmation
     const createRes = await callMcp('tools/call', {
       name: 'create_course',
       arguments: {
@@ -295,9 +296,22 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
       }
     });
     expect(createRes.result).toBeDefined();
-    const created = JSON.parse(createRes.result.content[0].text);
-    expect(created.success).toBe(true);
-    expect(created.course.id).toBe('tst02');
+    expect(createRes.result.content[0].text).toContain('✓ Course **Second Test Course**');
+    expect(createRes.result.content[0].text).toContain('`tst02`');
+
+    // Optional format="json"
+    const jsonCreateRes = await callMcp('tools/call', {
+      name: 'create_course',
+      arguments: {
+        id: 'tst03',
+        title: 'Third Test Course',
+        format: 'json'
+      }
+    });
+    expect(jsonCreateRes.result).toBeDefined();
+    const createdJson = JSON.parse(jsonCreateRes.result.content[0].text);
+    expect(createdJson.success).toBe(true);
+    expect(createdJson.course.id).toBe('tst03');
 
     // Attempting to create duplicate should report error (Conflict 409)
     const dupRes = await callMcp('tools/call', {
@@ -309,7 +323,7 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     });
     expect(dupRes.result.isError).toBe(true);
 
-    // Delete course permanent
+    // Delete course default Markdown
     const deleteRes = await callMcp('tools/call', {
       name: 'delete_course',
       arguments: {
@@ -318,9 +332,21 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
       }
     });
     expect(deleteRes.result).toBeDefined();
-    const deleted = JSON.parse(deleteRes.result.content[0].text);
-    expect(deleted.success).toBe(true);
-    expect(deleted.action).toBe('deleted');
+    expect(deleteRes.result.content[0].text).toContain('✓ Course **TST02** permanently deleted');
+
+    // Delete course optional JSON
+    const deleteJsonRes = await callMcp('tools/call', {
+      name: 'delete_course',
+      arguments: {
+        id: 'tst03',
+        permanent: true,
+        format: 'json'
+      }
+    });
+    expect(deleteJsonRes.result).toBeDefined();
+    const deletedJson = JSON.parse(deleteJsonRes.result.content[0].text);
+    expect(deletedJson.success).toBe(true);
+    expect(deletedJson.action).toBe('deleted');
   });
 
   it('executes get_task_status tool for tracked jobs', async () => {
@@ -331,12 +357,22 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     });
     expect(job.id).toBeDefined();
 
+    // Default format is Markdown
     const res = await callMcp('tools/call', {
       name: 'get_task_status',
       arguments: { jobId: job.id }
     });
     expect(res.result).toBeDefined();
-    const jobStatus = JSON.parse(res.result.content[0].text);
+    expect(res.result.content[0].text).toContain('### Task Status:');
+    expect(res.result.content[0].text).toContain('RUNNING');
+
+    // Optional format="json"
+    const jsonRes = await callMcp('tools/call', {
+      name: 'get_task_status',
+      arguments: { jobId: job.id, format: 'json' }
+    });
+    expect(jsonRes.result).toBeDefined();
+    const jobStatus = JSON.parse(jsonRes.result.content[0].text);
     expect(jobStatus.id).toBe(job.id);
     expect(jobStatus.state).toBe('running');
     expect(jobStatus.courseId).toBe('tst01');
@@ -425,9 +461,8 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     });
 
     expect(res.result).toBeDefined();
-    const parsed = JSON.parse(res.result.content[0].text);
-    expect(parsed.success).toBe(true);
-    expect(parsed.injectedCount).toBe(1);
+    expect(res.result.content[0].text).toContain('✓ Successfully injected 1 lesson(s)');
+    expect(res.result.content[0].text).toContain('[01.02]');
 
     // Verify files were written
     expect(fs.existsSync(path.join(testCourseDir, '01.02.lesson.md'))).toBe(true);
@@ -530,6 +565,15 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     expect(listRes.result).toBeDefined();
     expect(listRes.result.content[0].text).toContain('| ID | Title |');
     expect(listRes.result.content[0].text).toContain('tst01');
+
+    // detail: 'full' with format: 'markdown' returns hierarchical syllabus outline
+    const fullMdRes = await callMcp('tools/call', {
+      name: 'list_courses',
+      arguments: { detail: 'full' }
+    });
+    expect(fullMdRes.result).toBeDefined();
+    expect(fullMdRes.result.content[0].text).toContain('# Test Course (TST01)');
+    expect(fullMdRes.result.content[0].text).toContain('Unit 1: Unit 1 Fundamentals');
 
     const lessonsRes = await callMcp('tools/call', {
       name: 'list_lessons',

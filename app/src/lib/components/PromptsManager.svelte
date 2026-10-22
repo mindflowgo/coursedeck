@@ -26,11 +26,13 @@
   import {
     classifyPrompt,
     COURSE_PROMPT_ORDER,
+    UNIT_PROMPT_ORDER,
     LESSON_PROMPT_ORDER,
     type PromptGroupKey
   } from '$lib/settingsTabs';
 
   const COURSE_ORDER = COURSE_PROMPT_ORDER as readonly string[];
+  const UNIT_ORDER = UNIT_PROMPT_ORDER as readonly string[];
   const LESSON_ORDER = LESSON_PROMPT_ORDER as readonly string[];
 
   let coursePrompts = $derived.by(() => {
@@ -41,6 +43,21 @@
         const idB = b.id.toLowerCase().replace(/\./g, '_');
         const idxA = COURSE_ORDER.indexOf(idA);
         const idxB = COURSE_ORDER.indexOf(idB);
+        if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+        if (idxA !== -1) return -1;
+        if (idxB !== -1) return 1;
+        return (a.title || a.id).localeCompare(b.title || b.id);
+      });
+  });
+
+  let unitPrompts = $derived.by(() => {
+    return prompts
+      .filter((p) => classifyPrompt(p) === 'unit')
+      .sort((a, b) => {
+        const idA = a.id.toLowerCase().replace(/\./g, '_');
+        const idB = b.id.toLowerCase().replace(/\./g, '_');
+        const idxA = UNIT_ORDER.indexOf(idA);
+        const idxB = UNIT_ORDER.indexOf(idB);
         if (idxA !== -1 && idxB !== -1) return idxA - idxB;
         if (idxA !== -1) return -1;
         if (idxB !== -1) return 1;
@@ -69,10 +86,16 @@
       .sort((a, b) => (a.title || a.id).localeCompare(b.title || b.id));
   });
 
+  function getPromptTitle(p: PromptItem): string {
+    if (p.id === 'mcp_prompt_instructions') return 'MCP Instructions';
+    return p.title || p.id;
+  }
+
   let selectedGroupLabel = $derived.by(() => {
     if (!selectedPrompt) return '';
     const group = classifyPrompt(selectedPrompt);
-    if (group === 'course') return 'Course Wide';
+    if (group === 'course') return 'Complete Course';
+    if (group === 'unit') return 'Unit';
     if (group === 'lessons') return 'Lessons';
     return 'Custom';
   });
@@ -204,16 +227,39 @@
         </div>
       {:else}
         <div class="flex-1 overflow-y-auto space-y-4 pr-1 -mr-1">
-          <!-- Course Wide -->
+          <!-- Complete Course -->
           <div class="space-y-1">
             <div class="px-2 py-1 text-[11px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-wider flex items-center justify-between">
-              <span>Course Wide</span>
+              <span>Complete Course</span>
               <span class="text-[10px] font-mono opacity-60">{coursePrompts.length}</span>
             </div>
             {#if coursePrompts.length === 0}
               <p class="px-2 py-1 text-xs text-stone-400 dark:text-stone-500 italic">No course prompts</p>
             {:else}
               {#each coursePrompts as p (p.id)}
+                {@const isSelected = p.id === selectedPromptId}
+                <button
+                  onclick={() => selectPrompt(p.id)}
+                  title="{p.title || p.id} ({p.filename})"
+                  class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-2 cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
+                >
+                  <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />
+                  <span class="truncate">{p.title || p.id}</span>
+                </button>
+              {/each}
+            {/if}
+          </div>
+
+          <!-- Unit -->
+          <div class="space-y-1">
+            <div class="px-2 py-1 text-[11px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-wider flex items-center justify-between">
+              <span>Unit</span>
+              <span class="text-[10px] font-mono opacity-60">{unitPrompts.length}</span>
+            </div>
+            {#if unitPrompts.length === 0}
+              <p class="px-2 py-1 text-xs text-stone-400 dark:text-stone-500 italic">No unit prompts</p>
+            {:else}
+              {#each unitPrompts as p (p.id)}
                 {@const isSelected = p.id === selectedPromptId}
                 <button
                   onclick={() => selectPrompt(p.id)}
@@ -245,9 +291,6 @@
                 >
                   <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />
                   <span class="truncate flex-1">{p.title || p.id}</span>
-                  {#if p.id === 'test_kica'}
-                    <span class="text-[10px] font-mono opacity-50 shrink-0">kica</span>
-                  {/if}
                 </button>
               {/each}
             {/if}
@@ -262,26 +305,29 @@
               </div>
               {#each customPrompts as p (p.id)}
                 {@const isSelected = p.id === selectedPromptId}
+                {@const promptTitle = getPromptTitle(p)}
                 <div class="group relative flex items-center">
                   <button
                     onclick={() => selectPrompt(p.id)}
-                    title="{p.title || p.id} ({p.filename})"
-                    class="w-full text-left pl-3 pr-8 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-2 cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
+                    title="{promptTitle} ({p.filename})"
+                    class="w-full text-left pl-3 {p.id === 'mcp_prompt_instructions' ? 'pr-3' : 'pr-8'} py-2 rounded-lg text-xs font-medium transition flex items-center space-x-2 cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
                   >
                     <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />
-                    <span class="truncate">{p.title || p.id}</span>
+                    <span class="truncate">{promptTitle}</span>
                   </button>
-                  <button
-                    type="button"
-                    onclick={(e) => {
-                      e.stopPropagation();
-                      deletePrompt(p);
-                    }}
-                    title="Delete prompt {p.title || p.id}"
-                    class="absolute right-1.5 p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-400 hover:text-red-500 dark:hover:text-red-400 transition cursor-pointer {isSelected ? 'opacity-90 text-stone-300 dark:text-stone-600 hover:text-red-400 dark:hover:text-red-400' : 'opacity-0 group-hover:opacity-100'}"
-                  >
-                    <X class="w-3.5 h-3.5" />
-                  </button>
+                  {#if p.id !== 'mcp_prompt_instructions'}
+                    <button
+                      type="button"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        deletePrompt(p);
+                      }}
+                      title="Delete prompt {promptTitle}"
+                      class="absolute right-1.5 p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-400 hover:text-red-500 dark:hover:text-red-400 transition cursor-pointer {isSelected ? 'opacity-90 text-stone-300 dark:text-stone-600 hover:text-red-400 dark:hover:text-red-400' : 'opacity-0 group-hover:opacity-100'}"
+                    >
+                      <X class="w-3.5 h-3.5" />
+                    </button>
+                  {/if}
                 </div>
               {/each}
             </div>
@@ -316,6 +362,9 @@
               {selectedGroupLabel}
             </span>
           {/if}
+          <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">
+            {selectedPrompt ? getPromptTitle(selectedPrompt) : ''}
+          </h2>
         </div>
         <p class="text-xs text-stone-400 dark:text-stone-500 font-mono mt-0.5">
           file: data/prompts/{selectedPrompt ? selectedPrompt.filename : ''}
@@ -323,7 +372,7 @@
       </div>
 
       <div class="flex items-center space-x-2">
-        {#if selectedPrompt && classifyPrompt(selectedPrompt) === 'custom'}
+        {#if selectedPrompt && classifyPrompt(selectedPrompt) === 'custom' && selectedPrompt.id !== 'mcp_prompt_instructions'}
           <button
             onclick={() => selectedPrompt && deletePrompt(selectedPrompt)}
             disabled={isDeleting}

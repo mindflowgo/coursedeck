@@ -1,4 +1,7 @@
 import katex from 'katex';
+import { Marked } from 'marked';
+
+const inlineMarked = new Marked({ gfm: true, breaks: true });
 
 export interface MathToken {
   id: string;
@@ -217,13 +220,25 @@ export function escapeHtml(text: string): string {
 }
 
 /**
- * Renders plain (non-markdown) text that contains LaTeX math — quiz questions,
- * answer options, explanations — into HTML that is safe to inject with {@html}:
- * math is extracted first, the remaining text is HTML-escaped, then the math
- * placeholders are restored as KaTeX HTML.
+ * Renders plain text or quiz questions/options/explanations that contain
+ * LaTeX math and inline markdown (**bold**, *italic*, `code`, tables)
+ * into HTML that is safe to inject with {@html}:
+ * math is extracted first, non-math text is HTML-escaped, markdown elements
+ * (such as **bold**) are parsed, and math placeholders are restored as KaTeX HTML.
  */
 export function renderTextWithMath(text: string): string {
   if (!text) return '';
   const { processedMarkdown, mathTokens } = extractMathFromMarkdown(text);
-  return restoreMathTokens(escapeHtml(processedMarkdown), mathTokens);
+  const escaped = escapeHtml(processedMarkdown);
+  let parsed = escaped;
+  try {
+    if (!text.includes('\n') && !text.includes('|')) {
+      parsed = inlineMarked.parseInline(escaped) as string;
+    } else {
+      parsed = inlineMarked.parse(escaped) as string;
+    }
+  } catch {
+    parsed = escaped;
+  }
+  return restoreMathTokens(parsed, mathTokens);
 }
