@@ -20,9 +20,9 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
    - **Inline CodeMirror Editor**: Toggle between rich reading view and live Markdown editing with instant auto-save to disk.
    - **Incremental Chapter Additions**: An `[+] Add Chapters` button in the workspace subheader allows uploading new lesson `.zip` archives directly to the active course. Existing customized notes and edits are strictly preserved while new chapters are parsed and indexed.
 3. **Settings (`/settings`) & Prompts Engine**:
-   - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, AI models, maintenance), `[Prompts]` (prompt template management), and `[SYNC & MCP]` (Google Calendar integration, OAuth configuration, and MCP server tokens).
-   - **Prompts Management**: Template editor for course-wide and lesson prompts (summaries, cheatsheets, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
-   - **AI Models**: A list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
+   - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, supervisor check-in, maintenance), `[LLM]` (AI models configuration & providers), `[Prompts]` (prompt template management), and `[Integrations]` (Google Calendar integration, OAuth configuration, and MCP server tokens).
+   - **AI Models (`/settings?tab=llm`)**: A list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
+   - **Prompts Management (`/settings?tab=prompts`)**: Template editor for course-wide and lesson prompts (summaries, cheatsheets, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
    - **Maintenance & Ingestion**: Manual re-index and image compression triggers.
 4. **Study Schedules & Calendar Sync (`/schedules`)**:
    - Adaptive study schedule planning with custom study days, pacing targets, off-days, and exam deadlines.
@@ -1028,11 +1028,11 @@ CourseDeck addresses this through a multi-tier resilience pipeline:
 
 1. **Schedule Modal (`SyncScheduleModal.svelte`)**:
    - Accessible via the `[Sync]` button on `/schedules` (placed directly to the left of `[Re-Schedule]`).
-   - Shows a subtle connected Google account indicator with a Settings Cog icon that links directly to `/settings?tab=sync_mcp`.
+   - Shows a subtle connected Google account indicator with a Settings Cog icon that links directly to `/settings?tab=integrations`.
    - **Collapsible Schedule Sync List**: Clickable toggle row with down/up chevron and total session count badge. Expands into a scrollable, date-grouped list with colored event badges (`study`, `review`, `assign`, `catchup`), lesson IDs, and duration.
    - **Real-Time Reconciliation Stats**: Displays created, updated, unchanged, deleted, and failed counts, including an expandable list of error details if failures occur.
 2. **Settings Tab (`SyncMcpSettings.svelte`)**:
-   - Dedicated `SYNC & MCP` tab under `/settings?tab=sync_mcp`.
+   - Dedicated `Integrations` tab under `/settings?tab=integrations` (with backwards-compatible aliases for `sync_mcp`).
    - Google Cloud Console direct link (`https://console.cloud.google.com`) for configuring OAuth consent screen and Desktop credentials.
    - Client ID & Secret configuration with inline connection status and single-click disconnect.
    - MCP Server token and client connection snippets (Claude Desktop, Cursor, Windsurf).
@@ -1057,7 +1057,7 @@ CourseDeck natively transforms course schedules into the expanded ARC Markdown G
   - Extensible hook for future variables (`%Duration%`, `%Type%`, `%Tags%`).
 
 #### 2. RESTful POST Transport
-- **Endpoint Dispatch**: If an ARC Endpoint URL is configured (e.g. `https://arc.internal/api/groups` in `Settings > SYNC & MCP`), CourseDeck executes an HTTP `POST` with `Authorization: Bearer <apiKey>` and JSON payload (`{ extId, groupId, markdown, itemCount }`).
+- **Endpoint Dispatch**: If an ARC Endpoint URL is configured (e.g. `https://arc.internal/api/groups` in `Settings > Integrations`), CourseDeck executes an HTTP `POST` with `Authorization: Bearer <apiKey>` and JSON payload (`{ extId, groupId, markdown, itemCount }`).
 - **Simulation Mode**: If no remote endpoint is configured, clicking **"Simulate Sync to ARC"** in the schedule modal generates the complete Markdown payload and outputs it directly to the server `console.log`.
 
 

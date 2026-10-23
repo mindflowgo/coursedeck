@@ -19,8 +19,23 @@ describe('resolveSettingsTab', () => {
     expect(resolveSettingsTab('random')).toBe('settings');
   });
 
+  it('resolves "llm" and aliases to llm tab', () => {
+    expect(resolveSettingsTab('llm')).toBe('llm');
+    expect(resolveSettingsTab('ai')).toBe('llm');
+    expect(resolveSettingsTab('models')).toBe('llm');
+  });
+
   it('resolves "prompts" to prompts tab', () => {
     expect(resolveSettingsTab('prompts')).toBe('prompts');
+  });
+
+  it('resolves "integrations" and legacy aliases to integrations tab', () => {
+    expect(resolveSettingsTab('integrations')).toBe('integrations');
+    expect(resolveSettingsTab('integration')).toBe('integrations');
+    expect(resolveSettingsTab('sync_mcp')).toBe('integrations');
+    expect(resolveSettingsTab('sync-mcp')).toBe('integrations');
+    expect(resolveSettingsTab('mcp')).toBe('integrations');
+    expect(resolveSettingsTab('sync')).toBe('integrations');
   });
 });
 

@@ -1,9 +1,23 @@
-export type SettingsTab = 'settings' | 'prompts' | 'sync_mcp';
+export type SettingsTab = 'settings' | 'llm' | 'prompts' | 'integrations' | 'sync_mcp';
 
 export function resolveSettingsTab(tabParam?: string | null): SettingsTab {
-  if (tabParam === 'prompts') return 'prompts';
-  if (tabParam === 'sync_mcp' || tabParam === 'sync-mcp' || tabParam === 'mcp' || tabParam === 'sync') {
-    return 'sync_mcp';
+  if (!tabParam) return 'settings';
+  const param = tabParam.toLowerCase().trim();
+  if (param === 'llm' || param === 'ai' || param === 'models') {
+    return 'llm';
+  }
+  if (param === 'prompts') {
+    return 'prompts';
+  }
+  if (
+    param === 'integrations' ||
+    param === 'integration' ||
+    param === 'sync_mcp' ||
+    param === 'sync-mcp' ||
+    param === 'mcp' ||
+    param === 'sync'
+  ) {
+    return 'integrations';
   }
   return 'settings';
 }

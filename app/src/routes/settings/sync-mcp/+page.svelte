@@ -6,8 +6,8 @@
   onMount(() => {
     const provider = $page.url.searchParams.get('provider');
     const target = provider
-      ? `/settings?tab=sync_mcp&provider=${encodeURIComponent(provider)}`
-      : '/settings?tab=sync_mcp';
+      ? `/settings?tab=integrations&provider=${encodeURIComponent(provider)}`
+      : '/settings?tab=integrations';
     goto(target, { replaceState: true });
   });
 </script>

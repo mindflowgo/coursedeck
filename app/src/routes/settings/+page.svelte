@@ -69,10 +69,12 @@
   function switchTab(tab: SettingsTab) {
     activeTab = tab;
     const url = new URL($page.url);
-    if (tab === 'prompts') {
+    if (tab === 'llm') {
+      url.searchParams.set('tab', 'llm');
+    } else if (tab === 'prompts') {
       url.searchParams.set('tab', 'prompts');
-    } else if (tab === 'sync_mcp') {
-      url.searchParams.set('tab', 'sync_mcp');
+    } else if (tab === 'integrations' || tab === 'sync_mcp') {
+      url.searchParams.set('tab', 'integrations');
     } else {
       url.searchParams.delete('tab');
     }
@@ -739,11 +741,20 @@
       <button
         type="button"
         role="tab"
-        aria-selected={activeTab === 'sync_mcp'}
-        onclick={() => switchTab('sync_mcp')}
-        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'sync_mcp' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
+        aria-selected={activeTab === 'llm'}
+        onclick={() => switchTab('llm')}
+        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'llm' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
       >
-        Sync &amp; MCP
+        LLM
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={activeTab === 'integrations' || activeTab === 'sync_mcp'}
+        onclick={() => switchTab('integrations')}
+        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'integrations' || activeTab === 'sync_mcp' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
+      >
+        Integrations
       </button>
     </div>
 
@@ -1042,262 +1053,8 @@
     </div>
   </section>
 
-  <!-- Panel 2: LLM Configuration & Maintenance -->
+  <!-- Panel 2: Ingestion & Maintenance -->
   <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs divide-y divide-stone-100 dark:divide-stone-800 text-xs">
-    <!-- LLM Provider Header & Inputs -->
-    <div class="p-3 space-y-3 relative">
-      <div class="flex items-center space-x-2 pr-64">
-        <Server class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
-        <span class="font-medium text-stone-900 dark:text-stone-100">AI Models</span>
-        <span class="text-[11px] text-stone-400 dark:text-stone-500 hidden sm:inline">Configure providers & models for generation</span>
-      </div>
-
-      <!-- Action buttons absolutely positioned on top-right of LLM card -->
-      <div class="absolute -top-1 right-3 flex items-center space-x-1.5">
-        {#if llmMessage}
-          <span class="text-[11px] px-2 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium">
-            {llmMessage}
-          </span>
-        {/if}
-
-        <button
-          type="button"
-          onclick={addModelCard}
-          class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer"
-          title="Add a new model provider"
-        >
-          <Plus class="w-3.5 h-3.5" />
-          <span>New</span>
-        </button>
-
-        {#if activeCard}
-          <button
-            type="button"
-            onclick={() => removeModelCard(activeCard.id)}
-            class="flex items-center space-x-1 px-2.5 py-1 rounded border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/40 hover:bg-rose-100/60 dark:hover:bg-rose-900/40 text-xs font-medium text-rose-700 dark:text-rose-300 transition cursor-pointer"
-            title="Delete this model"
-          >
-            <Trash2 class="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            type="button"
-            onclick={handleSaveModelsClick}
-            disabled={isSavingModels}
-            class="flex items-center space-x-1 px-3 py-1 rounded bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer disabled:opacity-50"
-          >
-            {#if isSavingModels}
-              <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              <span>Saving...</span>
-            {:else}
-              <Save class="w-3.5 h-3.5" />
-              <span>Save</span>
-            {/if}
-          </button>
-        {/if}
-      </div>
-
-      <!-- Active Model Selector Bar -->
-      <div class="flex items-center space-x-2 p-2 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950">
-        <label for="active-model-select" class="text-xs font-semibold text-stone-700 dark:text-stone-300 shrink-0">
-          Active Model:
-        </label>
-        {#if llmCards.length > 0}
-          <select
-            id="active-model-select"
-            value={llmActiveId}
-            onchange={(e) => selectActiveModel(e.currentTarget.value)}
-            class="flex-1 w-full px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-          >
-            {#each llmCards as card (card.id)}
-              <option value={card.id}>
-                {card.label || 'Untitled Model'} ({getProviderPreset(card.provider).label})
-              </option>
-            {/each}
-          </select>
-        {:else}
-          <span class="text-xs text-stone-500 italic">No models configured</span>
-        {/if}
-      </div>
-
-      <!-- ONLY show fields for the active model -->
-      {#if activeCard}
-        {@const card = activeCard}
-        {@const preset = getProviderPreset(card.provider)}
-        <div class="p-3 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 space-y-3">
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            <div>
-              <label for="model-label-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-                Model Label / Description
-              </label>
-              <input
-                id="model-label-{card.id}"
-                type="text"
-                bind:value={card.label}
-                placeholder="e.g. DeepSeek (Cloud), Local Qwen 2.5"
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              />
-            </div>
-
-            <div>
-              <label for="provider-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-                Provider Preset
-              </label>
-              <select
-                id="provider-select-{card.id}"
-                value={card.provider}
-                onchange={(e) => applyProviderPreset(card, e.currentTarget.value)}
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              >
-                {#each LLM_PROVIDER_PRESETS as p (p.id)}
-                  <option value={p.id}>{p.label}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            <div>
-              <label for="base-url-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-                Base URL <span class="text-rose-500">*</span>
-              </label>
-              <input
-                id="base-url-input-{card.id}"
-                type="text"
-                bind:value={card.baseUrl}
-                placeholder={preset.defaultBaseUrl}
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              />
-              <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">{preset.hint}</p>
-            </div>
-
-            <div>
-              <label for="model-id-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-                Model ID <span class="text-[10px] text-stone-400 dark:text-stone-500">(optional)</span>
-              </label>
-              <input
-                id="model-id-input-{card.id}"
-                type="text"
-                bind:value={card.model}
-                placeholder="e.g. gpt-4o-mini, deepseek-chat, qwen2.5-7b"
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              />
-            </div>
-          </div>
-
-          <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-            <div>
-              <label for="api-key-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-                API Key <span class="text-[10px] text-stone-400 dark:text-stone-500">{card.hasApiKey ? '(saved — blank keeps it)' : '(optional)'}</span>
-              </label>
-              <input
-                id="api-key-input-{card.id}"
-                type="password"
-                bind:value={card.apiKey}
-                placeholder={card.hasApiKey ? '••••••••' : 'sk-...'}
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              />
-            </div>
-
-            <div>
-              <label for="auth-type-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Auth Header</label>
-              <select
-                id="auth-type-select-{card.id}"
-                bind:value={card.authHeaderType}
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              >
-                <option value="bearer">Bearer &#123;key&#125; (Standard)</option>
-                <option value="api_key">api-key: &#123;key&#125; (Azure)</option>
-                <option value="both">Both (Bearer + api-key)</option>
-              </select>
-            </div>
-
-            <div>
-              <label for="timeout-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
-                Request Timeout <span class="text-[10px] text-stone-400 dark:text-stone-500">(per attempt)</span>
-              </label>
-              <select
-                id="timeout-select-{card.id}"
-                bind:value={card.timeoutSeconds}
-                class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
-              >
-                {#each REQUEST_TIMEOUT_STEPS as step (step)}
-                  <option value={step}>{step}s{step === 150 ? ' (default)' : ''}</option>
-                {/each}
-              </select>
-            </div>
-          </div>
-
-          <!-- Optional Send session_id checkbox -->
-          <div class="pt-0.5">
-            <label for="send-session-id-{card.id}" class="inline-flex items-center space-x-1.5 text-[11px] text-stone-600 dark:text-stone-400 select-none cursor-pointer">
-              <input
-                id="send-session-id-{card.id}"
-                type="checkbox"
-                bind:checked={card.sendSessionId}
-                class="rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:text-stone-100 focus:ring-stone-900 h-3.5 w-3.5 cursor-pointer"
-              />
-              <span>Send session ID (<code>session_id</code>)</span>
-            </label>
-            <p class="text-[10px] text-stone-400 dark:text-stone-500 pl-5">
-              Keep unchecked if your provider rejects extra inputs with HTTP 400.
-            </p>
-          </div>
-
-          {#if isPublicIpUrl(card.baseUrl)}
-            <p class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
-              Note: Direct IP access to cloud APIs (like DeepSeek, OpenAI, Groq) is blocked by Cloudflare (error 1003). Use the domain name (e.g. <code>https://api.deepseek.com</code>) instead of an IP.
-            </p>
-          {/if}
-
-          {#if card.apiKey && !card.hasApiKey}
-            <p class="text-[10px] text-stone-400 dark:text-stone-500">New API key will be stored when you press Save Models.</p>
-          {/if}
-
-          <!-- Test Connection & Status -->
-          <div class="flex items-center justify-between pt-1">
-            <button
-              type="button"
-              onclick={() => testModelCard(card)}
-              disabled={testingCardId === card.id || !card.baseUrl.trim()}
-              class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-[11px] font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer disabled:opacity-50"
-            >
-              {#if testingCardId === card.id}
-                <Loader2 class="w-3 h-3 animate-spin" />
-                <span>Testing Connection...</span>
-              {:else}
-                <span>Test Connection</span>
-              {/if}
-            </button>
-
-            {#if cardTestResults[card.id]}
-              <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {cardTestResults[card.id].success ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
-                {#if cardTestResults[card.id].success}
-                  <CheckCircle2 class="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                {:else}
-                  <AlertCircle class="w-3 h-3 shrink-0 text-rose-600 dark:text-rose-400" />
-                {/if}
-                <span>{cardTestResults[card.id].message}</span>
-              </div>
-            {/if}
-          </div>
-        </div>
-      {:else if !isLoadingModels}
-        <div class="p-6 text-center rounded-lg border border-dashed border-stone-300 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-950/50">
-          <p class="text-xs text-stone-500 dark:text-stone-400 mb-2">No AI model configured yet.</p>
-          <button
-            type="button"
-            onclick={addModelCard}
-            class="inline-flex items-center space-x-1 px-3 py-1.5 rounded-md bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer"
-          >
-            <Plus class="w-3.5 h-3.5" />
-            <span>Add a Model Provider</span>
-          </button>
-        </div>
-      {/if}
-    </div>
-
-    <!-- Maintenance Row -->
     <div class="p-3 space-y-2">
       <div class="flex items-center space-x-2">
         <FolderKanban class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
@@ -1545,13 +1302,272 @@
   </section>
   </main>
   
+  <!-- LLM Tab Content -->
+  <div class="flex-1 overflow-y-auto pt-4 pb-8 space-y-4 text-stone-900 dark:text-stone-100 {activeTab === 'llm' ? '' : 'hidden'}">
+    <!-- Panel: AI Models Configuration -->
+    <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs divide-y divide-stone-100 dark:divide-stone-800 text-xs">
+      <!-- LLM Provider Header & Inputs -->
+      <div class="p-3 space-y-3 relative">
+        <div class="flex items-center space-x-2 pr-64">
+          <Server class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
+          <span class="font-medium text-stone-900 dark:text-stone-100">AI Models</span>
+          <span class="text-[11px] text-stone-400 dark:text-stone-500 hidden sm:inline">Configure providers & models for generation</span>
+        </div>
+
+        <!-- Action buttons absolutely positioned on top-right of LLM card -->
+        <div class="absolute -top-1 right-3 flex items-center space-x-1.5">
+          {#if llmMessage}
+            <span class="text-[11px] px-2 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium">
+              {llmMessage}
+            </span>
+          {/if}
+
+          <button
+            type="button"
+            onclick={addModelCard}
+            class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer"
+            title="Add a new model provider"
+          >
+            <Plus class="w-3.5 h-3.5" />
+            <span>New</span>
+          </button>
+
+          {#if activeCard}
+            <button
+              type="button"
+              onclick={() => removeModelCard(activeCard.id)}
+              class="flex items-center space-x-1 px-2.5 py-1 rounded border border-rose-200 dark:border-rose-900/60 bg-rose-50/50 dark:bg-rose-950/40 hover:bg-rose-100/60 dark:hover:bg-rose-900/40 text-xs font-medium text-rose-700 dark:text-rose-300 transition cursor-pointer"
+              title="Delete this model"
+            >
+              <Trash2 class="w-3.5 h-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onclick={handleSaveModelsClick}
+              disabled={isSavingModels}
+              class="flex items-center space-x-1 px-3 py-1 rounded bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+            >
+              {#if isSavingModels}
+                <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                <span>Saving...</span>
+              {:else}
+                <Save class="w-3.5 h-3.5" />
+                <span>Save</span>
+              {/if}
+            </button>
+          {/if}
+        </div>
+
+        <!-- Active Model Selector Bar -->
+        <div class="flex items-center space-x-2 p-2 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950">
+          <label for="active-model-select" class="text-xs font-semibold text-stone-700 dark:text-stone-300 shrink-0">
+            Active Model:
+          </label>
+          {#if llmCards.length > 0}
+            <select
+              id="active-model-select"
+              value={llmActiveId}
+              onchange={(e) => selectActiveModel(e.currentTarget.value)}
+              class="flex-1 w-full px-2.5 py-1 rounded border border-stone-300 dark:border-stone-700 text-xs font-medium text-stone-900 dark:text-stone-100 bg-white dark:bg-stone-900 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+            >
+              {#each llmCards as card (card.id)}
+                <option value={card.id}>
+                  {card.label || 'Untitled Model'} ({getProviderPreset(card.provider).label})
+                </option>
+              {/each}
+            </select>
+          {:else}
+            <span class="text-xs text-stone-500 italic">No models configured</span>
+          {/if}
+        </div>
+
+        <!-- ONLY show fields for the active model -->
+        {#if activeCard}
+          {@const card = activeCard}
+          {@const preset = getProviderPreset(card.provider)}
+          <div class="p-3 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900/60 space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label for="model-label-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                  Model Label / Description
+                </label>
+                <input
+                  id="model-label-{card.id}"
+                  type="text"
+                  bind:value={card.label}
+                  placeholder="e.g. DeepSeek (Cloud), Local Qwen 2.5"
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                />
+              </div>
+
+              <div>
+                <label for="provider-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                  Provider Preset
+                </label>
+                <select
+                  id="provider-select-{card.id}"
+                  value={card.provider}
+                  onchange={(e) => applyProviderPreset(card, e.currentTarget.value)}
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                >
+                  {#each LLM_PROVIDER_PRESETS as p (p.id)}
+                    <option value={p.id}>{p.label}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <div>
+                <label for="base-url-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                  Base URL <span class="text-rose-500">*</span>
+                </label>
+                <input
+                  id="base-url-input-{card.id}"
+                  type="text"
+                  bind:value={card.baseUrl}
+                  placeholder={preset.defaultBaseUrl}
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                />
+                <p class="text-[10px] text-stone-400 dark:text-stone-500 mt-0.5">{preset.hint}</p>
+              </div>
+
+              <div>
+                <label for="model-id-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                  Model ID <span class="text-[10px] text-stone-400 dark:text-stone-500">(optional)</span>
+                </label>
+                <input
+                  id="model-id-input-{card.id}"
+                  type="text"
+                  bind:value={card.model}
+                  placeholder="e.g. gpt-4o-mini, deepseek-chat, qwen2.5-7b"
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                />
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div>
+                <label for="api-key-input-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                  API Key <span class="text-[10px] text-stone-400 dark:text-stone-500">{card.hasApiKey ? '(saved — blank keeps it)' : '(optional)'}</span>
+                </label>
+                <input
+                  id="api-key-input-{card.id}"
+                  type="password"
+                  bind:value={card.apiKey}
+                  placeholder={card.hasApiKey ? '••••••••' : 'sk-...'}
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs font-mono text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                />
+              </div>
+
+              <div>
+                <label for="auth-type-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">Auth Header</label>
+                <select
+                  id="auth-type-select-{card.id}"
+                  bind:value={card.authHeaderType}
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                >
+                  <option value="bearer">Bearer &#123;key&#125; (Standard)</option>
+                  <option value="api_key">api-key: &#123;key&#125; (Azure)</option>
+                  <option value="both">Both (Bearer + api-key)</option>
+                </select>
+              </div>
+
+              <div>
+                <label for="timeout-select-{card.id}" class="text-[11px] font-medium text-stone-600 dark:text-stone-400 block mb-0.5">
+                  Request Timeout <span class="text-[10px] text-stone-400 dark:text-stone-500">(per attempt)</span>
+                </label>
+                <select
+                  id="timeout-select-{card.id}"
+                  bind:value={card.timeoutSeconds}
+                  class="w-full px-2 py-1 rounded border border-stone-200 dark:border-stone-700 text-xs text-stone-900 dark:text-stone-100 bg-stone-50/50 dark:bg-stone-950 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100"
+                >
+                  {#each REQUEST_TIMEOUT_STEPS as step (step)}
+                    <option value={step}>{step}s{step === 150 ? ' (default)' : ''}</option>
+                  {/each}
+                </select>
+              </div>
+            </div>
+
+            <!-- Optional Send session_id checkbox -->
+            <div class="pt-0.5">
+              <label for="send-session-id-{card.id}" class="inline-flex items-center space-x-1.5 text-[11px] text-stone-600 dark:text-stone-400 select-none cursor-pointer">
+                <input
+                  id="send-session-id-{card.id}"
+                  type="checkbox"
+                  bind:checked={card.sendSessionId}
+                  class="rounded border-stone-300 dark:border-stone-700 text-stone-900 dark:text-stone-100 focus:ring-stone-900 h-3.5 w-3.5 cursor-pointer"
+                />
+                <span>Send session ID (<code>session_id</code>)</span>
+              </label>
+              <p class="text-[10px] text-stone-400 dark:text-stone-500 pl-5">
+                Keep unchecked if your provider rejects extra inputs with HTTP 400.
+              </p>
+            </div>
+
+            {#if isPublicIpUrl(card.baseUrl)}
+              <p class="text-[10px] text-amber-600 dark:text-amber-400 font-medium">
+                Note: Direct IP access to cloud APIs (like DeepSeek, OpenAI, Groq) is blocked by Cloudflare (error 1003). Use the domain name (e.g. <code>https://api.deepseek.com</code>) instead of an IP.
+              </p>
+            {/if}
+
+            {#if card.apiKey && !card.hasApiKey}
+              <p class="text-[10px] text-stone-400 dark:text-stone-500">New API key will be stored when you press Save Models.</p>
+            {/if}
+
+            <!-- Test Connection & Status -->
+            <div class="flex items-center justify-between pt-1">
+              <button
+                type="button"
+                onclick={() => testModelCard(card)}
+                disabled={testingCardId === card.id || !card.baseUrl.trim()}
+                class="flex items-center space-x-1 px-2.5 py-1 rounded border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-[11px] font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer disabled:opacity-50"
+              >
+                {#if testingCardId === card.id}
+                  <Loader2 class="w-3 h-3 animate-spin" />
+                  <span>Testing Connection...</span>
+                {:else}
+                  <span>Test Connection</span>
+                {/if}
+              </button>
+
+              {#if cardTestResults[card.id]}
+                <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {cardTestResults[card.id].success ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
+                  {#if cardTestResults[card.id].success}
+                    <CheckCircle2 class="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  {:else}
+                    <AlertCircle class="w-3 h-3 shrink-0 text-rose-600 dark:text-rose-400" />
+                  {/if}
+                  <span>{cardTestResults[card.id].message}</span>
+                </div>
+              {/if}
+            </div>
+          </div>
+        {:else if !isLoadingModels}
+          <div class="p-6 text-center rounded-lg border border-dashed border-stone-300 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-950/50">
+            <p class="text-xs text-stone-500 dark:text-stone-400 mb-2">No AI model configured yet.</p>
+            <button
+              type="button"
+              onclick={addModelCard}
+              class="inline-flex items-center space-x-1 px-3 py-1.5 rounded-md bg-stone-900 dark:bg-stone-100 hover:bg-stone-800 dark:hover:bg-stone-200 text-white dark:text-stone-900 text-xs font-medium transition cursor-pointer"
+            >
+              <Plus class="w-3.5 h-3.5" />
+              <span>Add a Model Provider</span>
+            </button>
+          </div>
+        {/if}
+      </div>
+    </section>
+  </div>
+  
   <!-- Prompts Tab Content -->
   <div class="flex-1 min-h-0 mt-4 flex overflow-hidden rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs {activeTab === 'prompts' ? '' : 'hidden'}">
     <PromptsManager />
   </div>
 
-  <!-- Sync & MCP Tab Content -->
-  <div class="flex-1 min-h-0 flex flex-col overflow-hidden {activeTab === 'sync_mcp' ? '' : 'hidden'}">
+  <!-- Integrations Tab Content -->
+  <div class="flex-1 min-h-0 flex flex-col overflow-hidden {activeTab === 'integrations' || activeTab === 'sync_mcp' ? '' : 'hidden'}">
     <SyncMcpSettings />
   </div>
   </div>
