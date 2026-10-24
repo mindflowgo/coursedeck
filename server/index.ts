@@ -29,7 +29,7 @@ function startHttpServer() {
   const APP_BUILD_DIR = path.resolve(import.meta.dir, '../app/build');
 
   const ALLOWED_ORIGIN_RE =
-    /^(https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?|https?:\/\/tauri\.localhost(:\d+)?|tauri:\/\/localhost)$/i;
+    /^(https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?|https?:\/\/tauri\.localhost(:\d+)?|tauri:\/\/localhost|https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?|https?:\/\/[\w.-]+\.local(:\d+)?)$/i;
 
   function corsHeaders(req: Request): Record<string, string> {
     const origin = req.headers.get('origin') || '';

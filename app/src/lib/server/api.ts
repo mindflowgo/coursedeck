@@ -23,6 +23,7 @@ import {
   getMcpServerInfo
 } from './paths';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
+import { repairMarkdownTables } from '../markdown/tableRepair';
 import { CourseIngest, type CourseDocType, type CourseManifest } from '../parser/courseIngest';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import type { SchedulePreferences } from '../schedule';
@@ -356,7 +357,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               systemPrompt as string,
               stripLessonMedia(userPrompt as string)
             );
-            return json({ success: true, completion: result.completion, usage: result.usage });
+            const repaired = repairMarkdownTables(result.completion);
+            return json({ success: true, completion: repaired, usage: result.usage });
           } catch (err) {
             console.error('[LLM] Generation failed:', err);
             return error(500, err instanceof Error ? err.message : 'LLM generation failed');
@@ -1050,7 +1052,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           { timeoutMs }
         );
 
-        const parsed = parseFrontmatter(result.completion.trim());
+        const repaired = repairMarkdownTables(result.completion.trim());
+        const parsed = parseFrontmatter(repaired);
         const content = serializeWithFrontmatter(
           {
             ...parsed.frontmatter,
@@ -1960,7 +1963,8 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
 
           const runGeneration = async () => {
             const result = await LLMService.generateResult(config, systemPrompt, stripLessonMedia(payload), { timeoutMs });
-            const parsed = parseFrontmatter(result.completion.trim());
+            const repaired = repairMarkdownTables(result.completion.trim());
+            const parsed = parseFrontmatter(repaired);
             const content = serializeWithFrontmatter(
               {
                 ...parsed.frontmatter,

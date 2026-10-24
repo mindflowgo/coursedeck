@@ -510,6 +510,23 @@
     tabContents[activeTab] !== originalContents[activeTab]
   );
 
+  // Character count for current document (lessons, summary, cheatsheet, etc.)
+  let pageCharCount = $derived.by(() => {
+    if (isCourseScope && activeTab === 'lesson') return 0;
+    if (activeTab === 'schedule') return 0;
+    if (isUnitScope && activeTab === 'test') return 0;
+    if (
+      activeTab !== 'lesson' &&
+      activeTab !== 'summary' &&
+      activeTab !== 'cheatsheet' &&
+      !isCustomTabSlug(activeTab)
+    ) {
+      return 0;
+    }
+    const body = parsedActiveTab.body || '';
+    return body.trim().length;
+  });
+
   async function loadPrompts() {
     try {
       const res = await apiFetch('/api/prompts');
@@ -1219,6 +1236,13 @@
       console.log(`- Model: ${activeModel.model || '(server default)'}`);
       console.log(`- System Prompt: "${activeSystemPrompt.slice(0, 120)}..."`);
 
+      const rawAttachment = opts?.contextAttachment || parsedActiveTab.frontmatter.contextAttachment;
+      const isLesson = selectedLessonId && !isUnitScopeId(selectedLessonId);
+      const effectiveAttachment =
+        isLesson && (!rawAttachment || rawAttachment === 'lesson - summaries' || rawAttachment === 'lesson - cheatsheets')
+          ? 'lesson - lessons'
+          : (rawAttachment || (isUnitScopeId(selectedLessonId) ? 'unit - lessons' : 'lesson - lessons'));
+
       const res = await apiFetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1230,7 +1254,7 @@
           tab: activeTab,
           customPrompt: activeSystemPrompt,
           customContent: opts?.customContent,
-          contextAttachment: opts?.contextAttachment || parsedActiveTab.frontmatter.contextAttachment
+          contextAttachment: effectiveAttachment
         })
       });
 
@@ -2443,6 +2467,15 @@
              header line instead of 16-32px down. -->
         <div class="sticky -top-[14px] sm:-top-[30px] z-10 flex justify-end px-8 sm:px-12 pt-0.5 mt-1 -mb-[30px] pointer-events-none">
           <div class="pointer-events-auto flex items-center space-x-2">
+            {#if pageCharCount > 0}
+              <span
+                class="text-xs font-mono text-stone-400 dark:text-stone-500 select-none mr-1.5 whitespace-nowrap"
+                title="Document length: ~{pageCharCount.toLocaleString()} characters"
+              >
+                ~ {pageCharCount.toLocaleString()} chars
+              </span>
+            {/if}
+
             {#if isEditing}
               <button
                 onclick={handleCancelEdit}

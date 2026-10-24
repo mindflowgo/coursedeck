@@ -110,7 +110,11 @@ export function starterPromptForTab(displayName: string): string {
     `You are an expert Ontario curriculum educator. Create a high-quality "${displayName}" ` +
     `document for this lesson in clean Markdown. Use clear headings and concise, ` +
     `student-friendly language, and organize the content to suit the purpose of a ` +
-    `"${displayName}" (e.g. planning, drafting, tracking work to submit).\n`
+    `"${displayName}" (e.g. planning, drafting, tracking work to submit).\n\n` +
+    `## Table Formatting Rules:\n` +
+    `- Keep every table row on a single line — never break a row across multiple lines.\n` +
+    `- Every single table row MUST contain the exact same number of columns as the header.\n` +
+    `- For empty or non-applicable cells, always write a visible placeholder like "—" or spaces (| — | or |   |) — never omit columns or leave bare empty pipes like "||".\n`
   );
 }
 

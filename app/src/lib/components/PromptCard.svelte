@@ -54,15 +54,25 @@
   function resolveDefaultAttachment(tab: string, scopeId?: string): string {
     if (scopeId && isUnitScopeId(scopeId)) return 'unit - lessons';
     const scope = scopeId ? 'lesson' : 'course';
+    if (scope === 'lesson') return 'lesson - lessons';
     const cleanTab = tab.toLowerCase().trim();
-    if (cleanTab === 'cheatsheet') return `${scope} - cheatsheets`;
-    if (cleanTab === 'summary') return `${scope} - summaries`;
-    if (cleanTab === 'test') return scope === 'course' ? 'course - summaries' : 'lesson - summaries';
-    return scope === 'lesson' ? 'lesson - lessons' : 'course - summaries';
+    if (cleanTab === 'cheatsheet') return 'course - cheatsheets';
+    return 'course - summaries';
+  }
+
+  function normalizeAttachment(attachment: string | undefined, tab: string, scopeId?: string): string {
+    const isLesson = scopeId && !isUnitScopeId(scopeId);
+    if (isLesson) {
+      if (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - cheatsheets') {
+        return 'lesson - lessons';
+      }
+      return attachment;
+    }
+    return attachment || resolveDefaultAttachment(tab, scopeId);
   }
 
   $effect(() => {
-    selectedAttachment = initialAttachment || resolveDefaultAttachment(activeTab, lessonId);
+    selectedAttachment = normalizeAttachment(initialAttachment, activeTab, lessonId);
   });
 
   $effect(() => {
@@ -115,8 +125,9 @@
     const promptChanged = defaultPrompt
       ? localPrompt.trim() !== defaultPrompt.trim()
       : localPrompt.trim() !== initialPrompt.trim();
-    const defaultAtt = initialAttachment || resolveDefaultAttachment(activeTab, lessonId);
-    const attachmentChanged = selectedAttachment !== defaultAtt;
+    const baselineAtt = normalizeAttachment(initialAttachment, activeTab, lessonId);
+    const defaultAtt = resolveDefaultAttachment(activeTab, lessonId);
+    const attachmentChanged = selectedAttachment !== baselineAtt && selectedAttachment !== defaultAtt;
     return promptChanged || attachmentChanged;
   });
 
@@ -130,7 +141,7 @@
     const target = defaultPrompt || initialPrompt;
     localPrompt = target;
     onChangePrompt(target);
-    selectedAttachment = initialAttachment || resolveDefaultAttachment(activeTab, lessonId);
+    selectedAttachment = resolveDefaultAttachment(activeTab, lessonId);
     if (onResetPrompt) onResetPrompt();
   }
 

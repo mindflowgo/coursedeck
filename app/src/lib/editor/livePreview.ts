@@ -12,6 +12,7 @@ import {
   PropertiesWidget,
   RuleWidget,
   type TableAlignment,
+  type TableCell,
   type TableRow,
   TableWidget,
   TaskWidget,
@@ -119,24 +120,112 @@ function parseAlignment(delimiterRow: string): TableAlignment[] {
     });
 }
 
+function extractRowCells(
+  state: EditorState,
+  rowNode: SyntaxNode,
+  origin: number,
+  expectedCols: number
+): TableCell[] {
+  const delimiters: { from: number; to: number }[] = [];
+  const tableCells: { from: number; to: number; text: string }[] = [];
+
+  for (let child = rowNode.firstChild; child; child = child.nextSibling) {
+    if (child.name === "TableDelimiter") {
+      delimiters.push({ from: child.from, to: child.to });
+    } else if (child.name === "TableCell") {
+      tableCells.push({
+        from: child.from,
+        to: child.to,
+        text: state.doc.sliceString(child.from, child.to),
+      });
+    }
+  }
+
+  // If no delimiters found, fall back to whatever TableCells exist
+  if (delimiters.length === 0) {
+    const fallback = tableCells.map((c) => ({ text: c.text, offset: c.from - origin }));
+    if (expectedCols > 0) {
+      while (fallback.length < expectedCols) {
+        fallback.push({ text: "", offset: rowNode.to - origin });
+      }
+      if (fallback.length > expectedCols) fallback.splice(expectedCols);
+    }
+    return fallback;
+  }
+
+  const cells: TableCell[] = [];
+
+  // 1. Content before first delimiter (e.g. `col1 | col2` without leading pipe)
+  const cellBeforeFirst = tableCells.find((c) => c.to <= delimiters[0].from);
+  if (cellBeforeFirst) {
+    cells.push({
+      text: cellBeforeFirst.text,
+      offset: cellBeforeFirst.from - origin,
+    });
+  }
+
+  // 2. Cells between consecutive delimiters (including empty cells like `||` or `|   |`)
+  for (let i = 0; i < delimiters.length - 1; i++) {
+    const start = delimiters[i].to;
+    const end = delimiters[i + 1].from;
+    const existing = tableCells.find((c) => c.from >= start && c.to <= end);
+
+    if (existing) {
+      cells.push({
+        text: existing.text,
+        offset: existing.from - origin,
+      });
+    } else {
+      const raw = state.doc.sliceString(start, end);
+      cells.push({
+        text: raw.trim(),
+        offset: start - origin,
+      });
+    }
+  }
+
+  // 3. Content after last delimiter (e.g. `col1 | col2` without trailing pipe)
+  const lastDelim = delimiters[delimiters.length - 1];
+  const cellAfterLast = tableCells.find((c) => c.from >= lastDelim.to);
+  if (cellAfterLast) {
+    cells.push({
+      text: cellAfterLast.text,
+      offset: cellAfterLast.from - origin,
+    });
+  }
+
+  // 4. Pad or trim to expected column count
+  if (expectedCols > 0) {
+    while (cells.length < expectedCols) {
+      const padOffset = (lastDelim ? lastDelim.from : rowNode.to) - origin;
+      cells.push({ text: "", offset: padOffset });
+    }
+    if (cells.length > expectedCols) {
+      cells.splice(expectedCols);
+    }
+  }
+
+  return cells;
+}
+
 function readTable(state: EditorState, table: SyntaxNode, origin: number) {
   if (hasAncestor(table, "Blockquote", "ListItem")) return null;
 
-  const rows: TableRow[] = [];
+  // Resolve alignment and expected column count upfront
   let alignment: TableAlignment[] = [];
+  const delimNode = findChild(table, "TableDelimiter");
+  if (delimNode) {
+    alignment = parseAlignment(state.doc.sliceString(delimNode.from, delimNode.to));
+  }
+
+  const rows: TableRow[] = [];
+  const expectedCols = alignment.length;
 
   for (let child = table.firstChild; child; child = child.nextSibling) {
-    if (child.name === "TableDelimiter") {
-      alignment = parseAlignment(state.doc.sliceString(child.from, child.to));
-      continue;
-    }
+    if (child.name === "TableDelimiter") continue;
     if (child.name !== "TableHeader" && child.name !== "TableRow") continue;
 
-    const cells = [];
-    for (let cell = child.firstChild; cell; cell = cell.nextSibling) {
-      if (cell.name !== "TableCell") continue;
-      cells.push({ text: state.doc.sliceString(cell.from, cell.to), offset: cell.from - origin });
-    }
+    const cells = extractRowCells(state, child, origin, expectedCols);
     rows.push({ cells, header: child.name === "TableHeader" });
   }
 

@@ -129,4 +129,32 @@ Amount |
     expect(html).toContain('<th>Criterion</th>');
     expect(html).toContain('<td>Accuracy</td>');
   });
+
+  test('preserves empty columns including || and pads short rows without swallowing lines', () => {
+    const input = `| Date | Account Title | P.R. | Debit | Credit |
+| --- | --- | --- | --- | --- |
+| Feb 1 | Cash | | $1,500 ||
+| Feb 2 ||| $200 | $200 |
+| Feb 3 | Accounts Payable | 101 | $500 |
+| Feb 4 | Equipment |
+| Feb 5 | Supplies | 102 | $300 | $300 |`;
+
+    const repaired = repairMarkdownTables(input);
+    const html = renderFullHtml(input);
+
+    expect(html).toContain('<table>');
+    // Ensure all 5 rows exist in output
+    expect(html).toContain('<td>Feb 1</td>');
+    expect(html).toContain('<td>Feb 2</td>');
+    expect(html).toContain('<td>Feb 3</td>');
+    expect(html).toContain('<td>Feb 4</td>');
+    expect(html).toContain('<td>Feb 5</td>');
+
+    // Check cells count in each row of repaired output
+    const lines = repaired.trim().split('\n');
+    for (let j = 2; j < lines.length; j++) {
+      const cells = splitTableCells(lines[j]);
+      expect(cells.length).toBe(5);
+    }
+  });
 });

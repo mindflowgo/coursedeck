@@ -239,6 +239,7 @@ const editorTheme = EditorView.theme({
   },
   ".cm-md-table": {
     borderCollapse: "collapse",
+    emptyCells: "show",
     width: "100%",
     fontSize: "0.92em",
     lineHeight: "1.5",
@@ -246,6 +247,7 @@ const editorTheme = EditorView.theme({
   ".cm-md-table th, .cm-md-table td": {
     border: `1px solid ${ink.hairline}`,
     padding: "0.45em 0.8em",
+    minWidth: "1.5em",
     textAlign: "left",
     verticalAlign: "top",
   },

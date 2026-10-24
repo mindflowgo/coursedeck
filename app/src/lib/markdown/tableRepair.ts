@@ -207,23 +207,33 @@ export function repairMarkdownTables(markdown: string): string {
           let rowPipes = (stripped.match(/\|/g) || []).length;
           let k = i + 1;
 
-          while (k < lines.length && rowPipes < colCount + 1) {
-            const nextLine = lines[k];
-            const nextStripped = nextLine.replace(/^\s*(?:>\s*)+/, '').trim();
-            if (
-              DELIM_REGEX.test(nextLine) ||
-              nextLine.includes('%%%TABLE_CODE_') ||
-              /^\s*#{1,6}\s/.test(nextLine) ||
-              /^\s*---\s*$/.test(nextLine)
-            ) {
-              break;
+          // Only accumulate nextLine if the current row is NOT already closed by a pipe,
+          // OR if next line is clearly a continuation (does not start with a pipe |).
+          const isRowClosed = stripped.startsWith('|') && stripped.endsWith('|') && !stripped.endsWith('\\|');
+
+          if (!isRowClosed || rowPipes < 2) {
+            while (k < lines.length && rowPipes < colCount + 1) {
+              const nextLine = lines[k];
+              const nextStripped = nextLine.replace(/^\s*(?:>\s*)+/, '').trim();
+              if (
+                DELIM_REGEX.test(nextLine) ||
+                nextLine.includes('%%%TABLE_CODE_') ||
+                /^\s*#{1,6}\s/.test(nextLine) ||
+                /^\s*---\s*$/.test(nextLine)
+              ) {
+                break;
+              }
+              // If next line starts with a pipe, it's a new row, not a continuation
+              if (nextStripped.startsWith('|')) {
+                break;
+              }
+              rowLines.push(nextLine);
+              rowPipes += (nextStripped.match(/\|/g) || []).length;
+              k++;
             }
-            rowLines.push(nextLine);
-            rowPipes += (nextStripped.match(/\|/g) || []).length;
-            k++;
           }
 
-          if (rowPipes >= colCount) {
+          if (rowPipes >= 1) {
             const rawRow = rowLines.map((l) => l.replace(/^\s*(?:>\s*)+/, '').trim()).join('\n');
             const rawCells = splitTableCells(rawRow);
             if (rawCells.length >= 1) {

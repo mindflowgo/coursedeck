@@ -4,6 +4,7 @@ import { CourseService, type SchedulePayloadStats } from './courses';
 import { JobService } from './services/job.service';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
 import { stripLessonMedia } from '../markdown/stripMedia';
+import { repairMarkdownTables } from '../markdown/tableRepair';
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import {
   defaultSchedulePreferences,
@@ -771,7 +772,12 @@ export class GenerationQueue {
             `You are an expert Ontario curriculum educator. Produce a high quality ${nextTask.tab} in Markdown format.`;
         }
 
-        const attachment = nextTask.contextAttachment || (isUnit ? 'unit - lessons' : 'lesson - lessons');
+        let attachment = nextTask.contextAttachment;
+        if (!isUnit && (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - cheatsheets')) {
+          attachment = 'lesson - lessons';
+        } else if (!attachment) {
+          attachment = isUnit ? 'unit - lessons' : 'course - summaries';
+        }
         const userPrompt =
           nextTask.customContent !== undefined
             ? nextTask.customContent
@@ -809,7 +815,8 @@ export class GenerationQueue {
         const result = await LLMService.generateResult(effectiveConfig, systemPrompt, userPrompt, {
           onLog: (level, message) => this.addLog(level, message)
         });
-        const parsed = parseFrontmatter(result.completion.trim());
+        const repairedCompletion = repairMarkdownTables(result.completion.trim());
+        const parsed = parseFrontmatter(repairedCompletion);
         const frontmatter = {
           ...parsed.frontmatter,
           type: nextTask.tab,
