@@ -3,7 +3,13 @@
 	<head>
 		<meta charset="utf-8" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="manifest" href="%sveltekit.assets%/manifest.json" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="CourseDeck" />
+		<link rel="apple-touch-icon" href="%sveltekit.assets%/icons/apple-touch-icon.png" />
 		<link rel="stylesheet" href="%sveltekit.assets%/fonts/fonts.css" />
 		<link rel="stylesheet" href="%sveltekit.assets%/vendor/katex/katex.min.css" />
 		<script>
@@ -37,5 +43,12 @@
 	</head>
 	<body data-sveltekit-preload-data="hover" class="h-full overflow-hidden bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans selection:bg-stone-200 dark:selection:bg-stone-800 selection:text-stone-900 dark:selection:text-stone-100">
 		<div style="display: contents">%sveltekit.body%</div>
+		<script>
+			if ('serviceWorker' in navigator) {
+				window.addEventListener('load', () => {
+					navigator.serviceWorker.register('%sveltekit.assets%/sw.js').catch(() => {});
+				});
+			}
+		</script>
 	</body>
 </html>

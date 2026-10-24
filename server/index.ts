@@ -24,9 +24,69 @@ if (process.argv.includes('--mcp-stdio')) {
   startHttpServer();
 }
 
+function resolveAppBuildDir(): string | null {
+  // 1. Explicit environment variable
+  if (process.env.APP_BUILD_DIR) {
+    const candidate = path.resolve(process.env.APP_BUILD_DIR);
+    if (fs.existsSync(candidate) && fs.existsSync(path.join(candidate, 'index.html'))) {
+      return candidate;
+    }
+  }
+
+  // 2. Embedded inside compiled Bun binary via --asset=app/build
+  try {
+    const bunfsBuild = path.join(import.meta.dir, 'build');
+    if (fs.existsSync(bunfsBuild) && fs.existsSync(path.join(bunfsBuild, 'index.html'))) {
+      return bunfsBuild;
+    }
+  } catch {}
+
+  // 3. Relative to process.cwd() (works whether run from repo root or tauri/ subdirectory)
+  const cwd = process.cwd();
+  const cwdCandidates = [
+    path.resolve(cwd, 'app/build'),
+    path.resolve(cwd, '../app/build'),
+    path.resolve(cwd, 'build')
+  ];
+  for (const c of cwdCandidates) {
+    try {
+      if (fs.existsSync(c) && fs.existsSync(path.join(c, 'index.html'))) {
+        return c;
+      }
+    } catch {}
+  }
+
+  // 4. Relative to process.execPath (for packaged desktop app / sidecars)
+  try {
+    const exeDir = path.dirname(process.execPath);
+    const exeCandidates = [
+      path.resolve(exeDir, 'app/build'),
+      path.resolve(exeDir, '../app/build'),
+      path.resolve(exeDir, 'build'),
+      path.resolve(exeDir, '../Resources/app/build'),
+      path.resolve(exeDir, 'Resources/app/build')
+    ];
+    for (const c of exeCandidates) {
+      if (fs.existsSync(c) && fs.existsSync(path.join(c, 'index.html'))) {
+        return c;
+      }
+    }
+  } catch {}
+
+  // 5. Relative to import.meta.dir (when running via `bun run server/index.ts`)
+  try {
+    const importMetaCandidate = path.resolve(import.meta.dir, '../app/build');
+    if (fs.existsSync(importMetaCandidate) && fs.existsSync(path.join(importMetaCandidate, 'index.html'))) {
+      return importMetaCandidate;
+    }
+  } catch {}
+
+  return null;
+}
+
 function startHttpServer() {
   const PORT = parseInt(process.env.PORT || '3182', 10);
-  const APP_BUILD_DIR = path.resolve(import.meta.dir, '../app/build');
+  const APP_BUILD_DIR = resolveAppBuildDir();
 
   const ALLOWED_ORIGIN_RE =
     /^(https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?|https?:\/\/tauri\.localhost(:\d+)?|tauri:\/\/localhost|https?:\/\/(192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?|https?:\/\/[\w.-]+\.local(:\d+)?)$/i;
@@ -59,8 +119,10 @@ function startHttpServer() {
   const STATIC_MIME: Record<string, string> = {
     '.html': 'text/html; charset=utf-8',
     '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
     '.css': 'text/css; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
+    '.webmanifest': 'application/manifest+json; charset=utf-8',
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
@@ -77,7 +139,7 @@ function startHttpServer() {
 
   try {
     server = Bun.serve({
-      hostname: '127.0.0.1',
+      hostname: process.env.HOST || '0.0.0.0',
       port: PORT,
       // Backups embed the original _backup/*.zip packages and can be several
       // hundred MB; Bun's 128MB default body limit would 413 them.
@@ -138,31 +200,58 @@ function startHttpServer() {
           return withCors(await handleApiRequest(req, url), req);
         }
 
-        // Static frontend SPA serving (only meaningful when run from the repo checkout)
-        if (fs.existsSync(APP_BUILD_DIR)) {
+        // ── Static frontend SPA & PWA serving ──────────────────────────────
+        const appBuildDir = APP_BUILD_DIR;
+        if (appBuildDir) {
           let reqPath = url.pathname === '/' ? '/index.html' : url.pathname;
-          const safePath = path.normalize(path.join(APP_BUILD_DIR, reqPath));
+          try {
+            reqPath = decodeURIComponent(reqPath);
+          } catch {}
+
+          const safePath = path.normalize(path.join(appBuildDir, reqPath));
           if (
-            safePath.startsWith(APP_BUILD_DIR) &&
+            safePath.startsWith(appBuildDir) &&
             fs.existsSync(safePath) &&
             fs.statSync(safePath).isFile()
           ) {
             const ext = path.extname(safePath).toLowerCase();
-            return new Response(Bun.file(safePath), {
-              headers: { 'Content-Type': STATIC_MIME[ext] || 'application/octet-stream' }
-            });
+            const headers: Record<string, string> = {
+              'Content-Type': STATIC_MIME[ext] || 'application/octet-stream'
+            };
+
+            if (reqPath === '/sw.js') {
+              headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+              headers['Service-Worker-Allowed'] = '/';
+            } else if (ext === '.html' || reqPath === '/manifest.json') {
+              headers['Cache-Control'] = 'no-cache';
+            } else {
+              headers['Cache-Control'] = 'public, max-age=31536000, immutable';
+            }
+
+            return withCors(new Response(Bun.file(safePath), { headers }), req);
           }
-          const indexPath = path.join(APP_BUILD_DIR, 'index.html');
+
+          // SPA fallback: any non-file client-side route falls back to index.html
+          const indexPath = path.join(appBuildDir, 'index.html');
           if (fs.existsSync(indexPath)) {
-            return new Response(Bun.file(indexPath), {
-              headers: { 'Content-Type': 'text/html; charset=utf-8' }
-            });
+            return withCors(
+              new Response(Bun.file(indexPath), {
+                headers: {
+                  'Content-Type': 'text/html; charset=utf-8',
+                  'Cache-Control': 'no-cache'
+                }
+              }),
+              req
+            );
           }
         }
 
-        return new Response('CourseDeck Backend running', {
-          headers: { 'Content-Type': 'text/plain' }
-        });
+        return withCors(
+          new Response('CourseDeck Backend running', {
+            headers: { 'Content-Type': 'text/plain' }
+          }),
+          req
+        );
       }
     });
   } catch (err) {

@@ -374,6 +374,21 @@ fn start_backend_process(app: &tauri::App) -> Option<std::process::Child> {
         command.env("PORT", BACKEND_PORT.to_string());
         command.env("DATA_DIR", &data_dir);
 
+        if let Ok(cwd) = std::env::current_dir() {
+            if cwd.join("app").join("build").exists() {
+                command.env("APP_BUILD_DIR", cwd.join("app").join("build"));
+            } else if cwd.join("..").join("app").join("build").exists() {
+                command.env("APP_BUILD_DIR", cwd.join("..").join("app").join("build"));
+            }
+        }
+        if let Ok(res_dir) = app.path().resource_dir() {
+            if res_dir.join("app").join("build").exists() {
+                command.env("APP_BUILD_DIR", res_dir.join("app").join("build"));
+            } else if res_dir.join("build").exists() {
+                command.env("APP_BUILD_DIR", res_dir.join("build"));
+            }
+        }
+
         let log_file = backend_log_file(&data_dir);
         match log_file {
             Some(file) => {

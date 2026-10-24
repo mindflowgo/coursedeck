@@ -8,10 +8,14 @@
     ChevronLeft,
     ChevronRight,
     CalendarDays,
-    FlagTriangleRight
+    FlagTriangleRight,
+    Tablet
   } from 'lucide-svelte';
   import AIQueuePopover from './AIQueuePopover.svelte';
+  import SyncStatusPill from './SyncStatusPill.svelte';
+  import { openConnectIpadModal } from '$lib/modalState.svelte';
   import { goBackOrHome } from '$lib/navHistory';
+  import { isTauriEnvironment } from '$lib/api';
 
   interface Props {
     courseId?: string;
@@ -44,6 +48,8 @@
     }
     return '';
   });
+
+  const isTauri = isTauriEnvironment();
 
   function handleBack() {
     goBackOrHome();
@@ -129,6 +135,20 @@
     </button>
 
     <AIQueuePopover {courseId} {onLessonUpdated} />
+
+    <SyncStatusPill />
+
+    {#if isTauri}
+      <button
+        type="button"
+        onclick={openConnectIpadModal}
+        aria-label="Connect iPad"
+        title="Connect iPad"
+        class="flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
+      >
+        <Tablet class="w-4 h-4" />
+      </button>
+    {/if}
 
     <button
       type="button"

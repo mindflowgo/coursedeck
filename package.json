@@ -10,7 +10,7 @@
     "parse": "bun --cwd app parse",
     "tauri": "bun --cwd tauri dev",
     "server": "bun run server/index.ts",
-    "server:compile": "bun build --compile --outfile tauri/server server/index.ts",
+    "server:compile": "bun build --compile --asset=app/build --outfile tauri/server server/index.ts",
     "tauri:dev": "bun --cwd app build && bun --cwd tauri dev",
     "tauri:build": "bun --cwd app build && bun run server:compile && bun --cwd tauri build",
     "tauri:build:mac": "bun --cwd app build && bun run server:compile && bun --cwd tauri build:mac",

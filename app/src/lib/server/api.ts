@@ -384,6 +384,161 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       }
     }
 
+    // ---- /api/pairing/info ----
+    if (pathname === '/api/pairing/info' && method === 'GET') {
+      const ifaces = os.networkInterfaces();
+      const rawIps: string[] = [];
+      for (const name of Object.keys(ifaces)) {
+        for (const iface of ifaces[name] || []) {
+          if (iface.family === 'IPv4' && !iface.internal) {
+            rawIps.push(iface.address);
+          }
+        }
+      }
+
+      // Exclude 169.254.* (APIPA link-local) and 127.* (loopback)
+      // Accept RFC 1918 private subnets: 192.168.*, 10.*, 172.16-31.*
+      function isPrivateLan(ip: string): boolean {
+        if (!ip || ip.startsWith('169.254.') || ip.startsWith('127.')) return false;
+        if (ip.startsWith('192.168.') || ip.startsWith('10.')) return true;
+        const match = ip.match(/^172\.(\d{1,3})\./);
+        if (match) {
+          const octet = parseInt(match[1], 10);
+          return octet >= 16 && octet <= 31;
+        }
+        return false;
+      }
+
+      const privateIps = rawIps.filter(isPrivateLan);
+
+      // Prioritize 192.168.* (most common home Wi-Fi), then 10.*, then 172.*
+      privateIps.sort((a, b) => {
+        const score = (ip: string) => (ip.startsWith('192.168.') ? 1 : ip.startsWith('10.') ? 2 : 3);
+        return score(a) - score(b);
+      });
+
+      // Strict fallback: never show 169.254.*
+      const lanIps = privateIps.length > 0
+        ? privateIps
+        : rawIps.filter((ip) => !ip.startsWith('169.254.') && !ip.startsWith('127.'));
+
+      const hostname = os.hostname();
+      const port = 3182;
+      const primaryIp = lanIps[0] || '';
+      return json({
+        port,
+        lanIps,
+        hostname,
+        primaryIp,
+        primaryUrl: primaryIp ? `http://${primaryIp}:${port}` : `http://${hostname}:${port}`,
+        bonjourUrl: `http://${hostname}:${port}`
+      });
+    }
+
+    // ---- /api/sync/bundle (iPad offline sync) ----
+    if (pathname === '/api/sync/bundle' && method === 'GET') {
+      const courseIdsParam = url.searchParams.get('courseIds');
+      const requestedIds = courseIdsParam
+        ? courseIdsParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+        : null;
+
+      const allCourses = CourseService.listCourses();
+      const courses = requestedIds
+        ? allCourses.filter((c) => requestedIds.includes(c.id.toLowerCase()))
+        : allCourses;
+
+      const bundleCourses = courses.map((manifest) => {
+        const courseId = manifest.id.toLowerCase();
+        const courseDir = safeJoin(getCoursesDir(), courseId);
+
+        const files: Record<string, string> = {};
+        if (fs.existsSync(courseDir)) {
+          const entries = fs.readdirSync(courseDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isFile() && entry.name.endsWith('.md')) {
+              try {
+                files[entry.name] = fs.readFileSync(safeJoin(courseDir, entry.name), 'utf8');
+              } catch {
+                // skip unreadable files
+              }
+            }
+          }
+        }
+
+        const checkpoints = CourseService.getCheckpoints(courseId);
+        return { manifest, files, checkpoints };
+      });
+
+      const prompts = PromptService.listPrompts();
+      const includeLlmKeys = url.searchParams.get('includeLlmKeys') === 'true';
+      const llmStore = LLMService.loadStore();
+      const llmConfig = {
+        version: llmStore.version,
+        activeId: llmStore.activeId,
+        cards: llmStore.cards.map((card) => ({
+          ...card,
+          apiKey: includeLlmKeys ? card.apiKey : undefined
+        }))
+      };
+
+      return json({
+        version: 1,
+        generatedAt: new Date().toISOString(),
+        courses: bundleCourses,
+        prompts,
+        llmConfig
+      });
+    }
+
+    // ---- /api/sync/push (iPad -> Desktop manual sync) ----
+    if (pathname === '/api/sync/push' && method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as {
+        checkpoints?: Record<string, any[]>;
+      };
+
+      if (!body || typeof body !== 'object') {
+        return error(400, 'Invalid push payload');
+      }
+
+      const results: Record<string, { merged: number; errors: string[] }> = {};
+
+      if (body.checkpoints && typeof body.checkpoints === 'object') {
+        for (const [rawCourseId, ipadCheckpoints] of Object.entries(body.checkpoints)) {
+          let courseId: string;
+          try {
+            courseId = assertCourseId(rawCourseId).toLowerCase();
+          } catch {
+            continue;
+          }
+
+          if (!Array.isArray(ipadCheckpoints)) continue;
+
+          const errors: string[] = [];
+          let merged = 0;
+          try {
+            const existing = CourseService.getCheckpoints(courseId);
+            const existingById = new Map(existing.map((c) => [c.id, c]));
+
+            for (const cp of ipadCheckpoints) {
+              if (!cp.id || !cp.file || typeof cp.verticalPosition !== 'number') continue;
+              const desktopCp = existingById.get(cp.id);
+              if (!desktopCp || new Date(cp.date) > new Date(desktopCp.date)) {
+                existingById.set(cp.id, { ...cp, courseId: undefined });
+                merged++;
+              }
+            }
+
+            CourseService.saveCheckpoints(courseId, Array.from(existingById.values()));
+          } catch (e) {
+            errors.push(e instanceof Error ? e.message : String(e));
+          }
+          results[courseId] = { merged, errors };
+        }
+      }
+
+      return json({ success: true, results, pushedAt: new Date().toISOString() });
+    }
+
     // ---- /api/sync ----
     if (pathname === '/api/sync/status') {
       if (method === 'GET') {

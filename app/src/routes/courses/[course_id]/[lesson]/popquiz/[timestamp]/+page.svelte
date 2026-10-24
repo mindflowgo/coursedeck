@@ -88,7 +88,7 @@
     try {
       await loadLessonMeta();
 
-      const res = await apiFetch('/api/pop-quiz/generate', {
+      let res = await apiFetch('/api/pop-quiz/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -98,6 +98,57 @@
           forceRegenerate
         })
       });
+
+      if (!res.ok && res.status === 503) {
+        // Offline generation fallback
+        const { getDocument, listPrompts } = await import('$lib/storage/clientStore');
+        const cachedDoc = await getDocument(courseId, `${lessonId}.popquiz.${timestamp}.md`);
+        if (cachedDoc && !forceRegenerate) {
+          testMarkdown = cachedDoc;
+          quizRunnerKey++;
+          return;
+        }
+
+        const lessonMd = await getDocument(courseId, `${lessonId}.lesson.md`);
+        if (!lessonMd || lessonMd.trim().length < 50) {
+          throw new Error('Lesson content is not cached in local storage for offline quiz generation.');
+        }
+
+        const prompts = await listPrompts();
+        const popquizPrompt = prompts.find((p) => p.id === 'popquiz')?.content;
+        if (!popquizPrompt) {
+          throw new Error('Pop quiz prompt template is not available offline.');
+        }
+
+        const { getActiveLlmConfig, generateDirect } = await import('$lib/llmClient');
+        const activeCard = await getActiveLlmConfig();
+        if (!activeCard || !activeCard.baseUrl) {
+          throw new Error('No AI model configured. Sync with API keys included from desktop first.');
+        }
+
+        const { repairMarkdownTables } = await import('$lib/markdown/tableRepair');
+        const { parseFrontmatter, serializeWithFrontmatter } = await import('$lib/parser/frontmatter');
+        const { stripLessonMedia } = await import('$lib/markdown/stripMedia');
+
+        const result = await generateDirect(activeCard, popquizPrompt, stripLessonMedia(lessonMd));
+        const repaired = repairMarkdownTables(result.completion.trim());
+        const parsed = parseFrontmatter(repaired);
+        const finalMarkdown = serializeWithFrontmatter(
+          {
+            ...parsed.frontmatter,
+            type: 'popquiz',
+            course: courseId.toUpperCase(),
+            lesson: lessonId,
+            timestamp,
+            createdAt: new Date().toISOString()
+          },
+          parsed.body.trim()
+        );
+
+        testMarkdown = finalMarkdown;
+        quizRunnerKey++;
+        return;
+      }
 
       const data = await res.json();
       if (!res.ok || !data.success) {
@@ -131,6 +182,11 @@
           timedOut
         })
       });
+
+      if (!res.ok && res.status === 503) {
+        supervisorMessage = 'Quiz completed in offline mode. Results will sync when reconnected.';
+        return;
+      }
 
       const data = await res.json();
       if (res.ok && data.success) {

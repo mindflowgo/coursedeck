@@ -34,8 +34,10 @@
     Send,
     Eye,
     EyeOff,
-    Info
+    Info,
+    Tablet
   } from 'lucide-svelte';
+  import { openConnectIpadModal } from '$lib/modalState.svelte';
   import { theme } from '$lib/theme.svelte';
   import { zoom } from '$lib/zoom.svelte';
   import { ZOOM_STEPS } from '$lib/zoomLevels';
@@ -850,6 +852,30 @@
         ></span>
       </button>
     </div>
+
+    <!-- Connect iPad Row (Desktop app only) -->
+    {#if isTauri}
+      <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div class="flex items-start sm:items-center space-x-2">
+          <Tablet class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0 mt-0.5 sm:mt-0" />
+          <div>
+            <span class="font-medium text-stone-900 dark:text-stone-100">Connect iPad</span>
+            <p class="text-[11px] text-stone-400 dark:text-stone-500 mt-0.5">
+              Sync courses and study offline on your iPad over local Wi-Fi.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onclick={openConnectIpadModal}
+          class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-900 dark:text-stone-100 font-medium text-xs transition cursor-pointer self-start sm:self-auto"
+        >
+          <Tablet class="w-3.5 h-3.5" />
+          <span>Show Addresses</span>
+        </button>
+      </div>
+    {/if}
 
     <!-- Course Data Storage Row -->
     <div class="p-3 space-y-2">
