@@ -11,9 +11,11 @@ data
 data.old
 app/data
 tauri/target/
+tauripad/target/
 tauri/server
 tauri/server.exe
 tauri/server-*.exe
 tauri/gen/schemas
+tauripad/gen/schemas
 *.data.zip
 data/**/*.zip

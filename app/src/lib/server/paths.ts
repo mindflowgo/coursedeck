@@ -78,14 +78,14 @@ export function getAppSettingsPath(): string {
   }
   const home = process.env.HOME || process.env.USERPROFILE || '';
   if (process.platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'com.ilc.studytool', 'settings.json');
+    return path.join(home, 'Library', 'Application Support', 'com.rezox.coursedeck', 'settings.json');
   }
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-    return path.join(appData, 'com.ilc.studytool', 'settings.json');
+    return path.join(appData, 'com.rezox.coursedeck', 'settings.json');
   }
   const configHome = process.env.XDG_CONFIG_HOME || path.join(home, '.config');
-  return path.join(configHome, 'app-study-tool', 'settings.json');
+  return path.join(configHome, 'com.rezox.coursedeck', 'settings.json');
 }
 
 export function loadAppSettings(): AppSettings {
@@ -126,14 +126,14 @@ export function getDefaultDataDir(): string {
   // OS standard app data directory
   const home = process.env.HOME || process.env.USERPROFILE || '';
   if (process.platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'com.ilc.studytool', 'data');
+    return path.join(home, 'Library', 'Application Support', 'com.rezox.coursedeck', 'data');
   }
   if (process.platform === 'win32') {
     const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
-    return path.join(appData, 'com.ilc.studytool', 'data');
+    return path.join(appData, 'com.rezox.coursedeck', 'data');
   }
   const configHome = process.env.XDG_DATA_HOME || path.join(home, '.local', 'share');
-  return path.join(configHome, 'app-study-tool', 'data');
+  return path.join(configHome, 'com.rezox.coursedeck', 'data');
 }
 
 /**

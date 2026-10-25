@@ -28,32 +28,19 @@ CourseDeck follows a **Hub & Satellite** architecture:
 
 ---
 
-## 2. First-Time Setup
+## 2. First-Time Setup (2 Steps)
 
-### Step 1: Start CourseDeck on your Computer
+### Step 1: Open the PWA on your iPad
+1. On your computer CourseDeck app, click the **Tablet icon** in the top header (or navigate to **Settings → General → Connect iPad**).
+2. Point your iPad camera at the **QR Code** (or navigate to `https://mindflowgo.github.io/coursedeck/` in Safari).
+3. In iPad Safari, tap the **Share** button &rarr; **Add to Home Screen**.
+4. Launch **CourseDeck** from your iPad Home Screen.
 
-Make sure CourseDeck is running on your Mac or PC:
-- **Packaged App:** Launch CourseDeck normally.
-- **Development/CLI:** Run `bun run dev` or `bun run server`.
-
-### Step 2: Open the Pairing Window
-
-On your computer:
-1. Click the **Tablet** icon in the top header (or navigate to **Settings → General → Connect iPad**).
-2. A pairing modal will appear with:
-   - **QR Code:** Point your iPad camera directly at the screen to open the app instantly.
-   - **Local IP Address:** `http://192.168.x.x:3182` (strictly detects private LAN IP, never link-local `169.254.x.x`).
-   - **Apple Bonjour Address:** `http://<your-mac-name>.local:3182` *(optional toggle for Apple devices)*
-
-> **Note:** Your iPad and computer must be connected to the **same Wi-Fi network**.
-
-### Step 3: Open in iPad Safari & Download Content
-
-1. On your iPad, either **scan the QR code** with your Camera app or open **Safari** and type the address shown on your desktop screen.
-2. The **Welcome to CourseDeck** initial download dialog will appear.
-3. Make sure **"Include AI settings & keys"** is checked if you want to run AI prompts or pop quizzes while away from your computer.
-4. Tap **Download Courses for Offline Use**.
-5. Once complete, tap **Start Studying**.
+### Step 2: Download & AirDrop Your Study Bundle
+1. In the Mac app's Tablet modal, click **Download Study Bundle (.json)**.
+2. Right-click the downloaded `coursedeck-bundle.json` and select **Share → AirDrop → your iPad** (or save to iCloud Drive).
+3. On your iPad, tap **Import Study Bundle (.json)** and select the file.
+4. All your courses, lessons, cheatsheets, and prompts are loaded into local iPad storage (`IndexedDB`) and work 100% offline.
 
 ---
 

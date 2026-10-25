@@ -11,14 +11,59 @@ export function isTauriEnvironment(): boolean {
   );
 }
 
+export function isMobileDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return (
+    /iPad|iPhone|iPod|Android/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
+
+export function isTauriDesktop(): boolean {
+  return isTauriEnvironment() && !isMobileDevice();
+}
+
+export function isTauriMobile(): boolean {
+  return isTauriEnvironment() && isMobileDevice();
+}
+
+/**
+ * Universal fetch that routes through Tauri's native Rust HTTP client
+ * when running in Tauri (bypassing all WebKit/Safari CORS & mixed-content restrictions),
+ * and standard window.fetch in standard browser environments.
+ */
+export async function smartFetch(url: string, init?: RequestInit): Promise<Response> {
+  if (isTauriEnvironment()) {
+    try {
+      const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
+      return await tauriFetch(url, init);
+    } catch (e) {
+      console.warn('[smartFetch] tauri-plugin-http fetch error:', e);
+      try {
+        return await fetch(url, init);
+      } catch (windowErr) {
+        throw new Error(
+          `Connection failed. Native: ${e instanceof Error ? e.message : e} | Web: ${windowErr instanceof Error ? windowErr.message : windowErr}`
+        );
+      }
+    }
+  }
+  return fetch(url, init);
+}
+
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') return '';
-  // In dev (localhost:5173), Vite/SvelteKit handles /api itself
-  if (window.location.port === '5173') return '';
-  // In packaged desktop Tauri app, point to local Bun backend sidecar
-  if (isTauriEnvironment()) {
+  // In desktop Tauri app (Mac/Windows/Linux), point to local Bun backend sidecar
+  if (isTauriDesktop()) {
     return `http://127.0.0.1:${BACKEND_PORT}`;
   }
+  // In iPad Tauri or mobile client, use saved desktop URL
+  const custom = localStorage.getItem('desktop_url');
+  if (custom) return custom.replace(/\/+$/, '');
+
+  // In desktop browser dev (localhost:5173), Vite/SvelteKit handles /api itself
+  if (window.location.port === '5173') return '';
+
   return '';
 }
 
@@ -28,8 +73,14 @@ let _lastReachabilityCheck = 0;
 
 export async function isServerReachable(forceCheck = false): Promise<boolean> {
   if (typeof window === 'undefined') return true;
-  if (isTauriEnvironment()) return true;
+  if (isTauriDesktop()) return true;
   if (!navigator.onLine) {
+    _serverReachable = false;
+    return false;
+  }
+
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) {
     _serverReachable = false;
     return false;
   }
@@ -41,8 +92,8 @@ export async function isServerReachable(forceCheck = false): Promise<boolean> {
 
   try {
     const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 2000);
-    const res = await fetch(`${getApiBaseUrl()}/health`, { signal: ctrl.signal });
+    const timeout = setTimeout(() => ctrl.abort(), 2500);
+    const res = await smartFetch(`${baseUrl}/health`, { signal: ctrl.signal });
     clearTimeout(timeout);
     _serverReachable = res.ok;
     _lastReachabilityCheck = now;
@@ -66,43 +117,91 @@ if (typeof window !== 'undefined') {
 /**
  * Typed fetch for the backend API.
  *
- * In Tauri or dev: normal fetch against the backend.
- * On iPad / Web client:
- *   - If desktop server is reachable: fetches normally.
+ * In desktop Tauri or dev: normal fetch against the local backend.
+ * On iPad Tauri / Web client:
+ *   - If desktop server is reachable: fetches directly via smartFetch.
  *   - If offline or server unreachable: falls back to IndexedDB for reads
  *     and queues local changes (checkpoints) for later push.
  */
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method || 'GET').toUpperCase();
+  const [pathname] = path.split('?');
 
-  // In Tauri desktop or SSR, bypass offline layer
-  if (isTauriEnvironment() || typeof window === 'undefined') {
-    return fetch(`${getApiBaseUrl()}${path}`, init);
+  // Direct file routes: courses, lessons, tabs, schedules, checkpoints, prompts, theme
+  const isDirectFileRoute =
+    pathname === '/api/courses' ||
+    pathname === '/api/schedules' ||
+    pathname === '/api/checkpoints' ||
+    pathname === '/api/prompts' ||
+    pathname === '/api/settings/theme' ||
+    (pathname.startsWith('/api/courses/') &&
+      !pathname.endsWith('/open') &&
+      !pathname.includes('/unit-test/') &&
+      !pathname.endsWith('/export-pdf'));
+
+  // On Tauri (both Desktop and Mobile), ALWAYS perform direct file fetches from the filesystem natively!
+  if (isTauriEnvironment() && isDirectFileRoute) {
+    return offlineFetch(path, method, init);
   }
 
-  const reachable = await isServerReachable();
+  // If the mobile device is explicitly offline (Airplane mode / disconnected), use local store
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    console.log(`[OfflineFetch] Device offline (navigator.onLine=false), serving ${method} ${path} from native filesystem`);
+    return offlineFetch(path, method, init);
+  }
 
-  if (reachable) {
+  // For mobile: fast-fail if the desktop server is known unreachable within the last 15s
+  const now = Date.now();
+  if (isTauriMobile() && _serverReachable === false && now - _lastReachabilityCheck < 15000) {
+    console.log(`[OfflineFetch] Desktop server unreachable, serving ${method} ${path} from native filesystem`);
+    return offlineFetch(path, method, init);
+  }
+
+  // Non-file endpoints (e.g. AI queue, LLM proxy, sync bundle, folder opener):
+  // Fetch via smartFetch to the backend server
+  const baseUrl = getApiBaseUrl();
+  if (baseUrl || isTauriDesktop()) {
     try {
-      const res = await fetch(`${getApiBaseUrl()}${path}`, init);
-      // If server returned a 502/503/504 or dropped connection, re-evaluate
-      if (!res.ok && res.status >= 502 && method === 'GET') {
+      let res: Response;
+      if (isTauriMobile() && !init?.signal) {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 3500);
+        try {
+          res = await smartFetch(`${baseUrl}${path}`, { ...init, signal: ctrl.signal });
+        } finally {
+          clearTimeout(timeout);
+        }
+      } else {
+        res = await smartFetch(`${baseUrl}${path}`, init);
+      }
+
+      if (isTauriMobile()) {
+        _serverReachable = true;
+        _lastReachabilityCheck = now;
+      }
+
+      return res;
+    } catch (netErr) {
+      if (isTauriMobile()) {
+        console.warn(`[OfflineFetch] Mobile network fetch to ${baseUrl}${path} failed (${netErr}), serving from native filesystem`);
         _serverReachable = false;
+        _lastReachabilityCheck = now;
         return offlineFetch(path, method, init);
       }
-      return res;
-    } catch {
-      _serverReachable = false;
+      // On desktop, report error directly without poisoning file routes
+      throw netErr;
     }
   }
 
   return offlineFetch(path, method, init);
 }
 
-// ── Offline IndexedDB Interception ──────────────────────────────────────────
+// ── Offline Local Storage Interception ───────────────────────────────────────
 
 async function offlineFetch(path: string, method: string, init?: RequestInit): Promise<Response> {
   const store = await import('./storage/clientStore');
+  const [pathname, search] = path.split('?');
+  const searchParams = new URLSearchParams(search || '');
 
   function jsonRes(data: unknown, status = 200): Response {
     return new Response(JSON.stringify(data), {
@@ -112,70 +211,116 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   }
 
   // GET /api/courses
-  if (method === 'GET' && (path === '/api/courses' || path.startsWith('/api/courses?'))) {
+  if (method === 'GET' && pathname === '/api/courses') {
     const courses = await store.listCachedCourses();
     return jsonRes({ courses });
   }
 
+  // GET /api/checkpoints
+  if (method === 'GET' && pathname === '/api/checkpoints') {
+    const checkpoints = await store.listAllCheckpointsLocally();
+    return jsonRes({ checkpoints });
+  }
+
+  // GET /api/schedules
+  if (method === 'GET' && pathname === '/api/schedules') {
+    const courses = await store.listCachedCourses();
+    const schedules: any[] = [];
+    for (const c of courses) {
+      const md = await store.getDocument(c.id, 'course.schedule.md');
+      if (md) {
+        schedules.push({
+          courseId: c.id,
+          courseTitle: c.title,
+          markdown: md
+        });
+      }
+    }
+    return jsonRes({ schedules });
+  }
+
+  const reservedSubpaths = ['course-docs', 'checkpoints', 'open', 'meta', 'unit-test', 'export-pdf'];
+
   // GET /api/courses/:id
-  const courseGetMatch = path.match(/^\/api\/courses\/([^/?]+)$/);
+  const courseGetMatch = pathname.match(/^\/api\/courses\/([^/]+)$/);
   if (method === 'GET' && courseGetMatch) {
-    const course = await store.getCachedCourse(courseGetMatch[1]);
+    const courseId = decodeURIComponent(courseGetMatch[1]);
+    const course = await store.getCachedCourse(courseId);
     if (!course) return jsonRes({ message: 'Course not found in offline storage' }, 404);
     return jsonRes({ course });
   }
 
-  // GET /api/courses/:id/:lessonId (lesson bundle)
-  const lessonGetMatch = path.match(/^\/api\/courses\/([^/]+)\/([^/?]+)$/);
-  if (method === 'GET' && lessonGetMatch) {
-    const [, courseId, lessonId] = lessonGetMatch;
-    const lessonMd = (await store.getDocument(courseId, `${lessonId}.lesson.md`)) ?? '';
-
-    // Collect standard and known tabs from IndexedDB
-    const tabs: Record<string, string> = {};
-    const candidateTabs = [
-      'summary',
-      'cheatsheet',
-      'test',
-      'notes',
-      'schedule',
-      'assignments',
-      'quiz',
-      'popquiz'
-    ];
-    for (const tab of candidateTabs) {
-      const md = await store.getDocument(courseId, `${lessonId}.${tab}.md`);
-      if (md) tabs[tab] = md;
+  // GET|PUT /api/courses/:id/meta
+  const courseMetaMatch = pathname.match(/^\/api\/courses\/([^/]+)\/meta$/);
+  if (courseMetaMatch) {
+    const courseId = decodeURIComponent(courseMetaMatch[1]);
+    const course = await store.getCachedCourse(courseId);
+    if (!course) return jsonRes({ message: 'Course not found in offline storage' }, 404);
+    if (method === 'GET') {
+      return jsonRes({ course });
     }
+    if (method === 'PUT') {
+      const body = JSON.parse((init?.body as string) || '{}');
+      if (typeof body.title === 'string') course.title = body.title;
+      if (typeof body.description === 'string') course.description = body.description;
+      if (typeof body.archived === 'boolean') course.archived = body.archived;
+      await store.saveCourseManifestLocally(courseId, course);
+      return jsonRes({ success: true, course });
+    }
+  }
 
-    return jsonRes({ courseId, lessonId, lesson: lessonMd, tabs });
+  // GET /api/courses/:id/:lessonId (lesson bundle)
+  const lessonGetMatch = pathname.match(/^\/api\/courses\/([^/]+)\/([^/]+)$/);
+  if (method === 'GET' && lessonGetMatch && !reservedSubpaths.includes(lessonGetMatch[2])) {
+    const courseId = decodeURIComponent(lessonGetMatch[1]);
+    const lessonId = decodeURIComponent(lessonGetMatch[2]);
+    console.log(`[OfflineFetch] GET lesson bundle for ${courseId}/${lessonId}`);
+    const { lesson, tabs } = await store.getLessonBundleLocally(courseId, lessonId);
+    return jsonRes({ courseId, lessonId, lesson, tabs });
+  }
+
+  // PUT /api/courses/:id/:lessonId (save tab offline)
+  if (method === 'PUT' && lessonGetMatch && !reservedSubpaths.includes(lessonGetMatch[2])) {
+    const courseId = decodeURIComponent(lessonGetMatch[1]);
+    const lessonId = decodeURIComponent(lessonGetMatch[2]);
+    const body = JSON.parse((init?.body as string) || '{}');
+    const tab = body.tab || searchParams.get('tab') || 'lesson';
+    const content = body.content || '';
+    const filename = tab === 'lesson' ? `${lessonId}.lesson.md` : `${lessonId}.${tab}.md`;
+    await store.saveDocumentLocally(courseId, filename, content);
+    return jsonRes({ success: true });
   }
 
   // GET /api/courses/:id/course-docs?type=xxx
-  const courseDocMatch = path.match(/^\/api\/courses\/([^/]+)\/course-docs/);
+  const courseDocMatch = pathname.match(/^\/api\/courses\/([^/]+)\/course-docs$/);
   if (method === 'GET' && courseDocMatch) {
-    const courseId = courseDocMatch[1];
-    let type = 'summary';
-    try {
-      const url = new URL(path, 'http://localhost');
-      type = url.searchParams.get('type') || 'summary';
-    } catch {}
+    const courseId = decodeURIComponent(courseDocMatch[1]);
+    const type = searchParams.get('type') || 'summary';
     const md = await store.getDocument(courseId, `course.${type}.md`);
     return jsonRes({ exists: Boolean(md), markdown: md || '' });
   }
 
+  // PUT /api/courses/:id/course-docs
+  if (method === 'PUT' && courseDocMatch) {
+    const courseId = decodeURIComponent(courseDocMatch[1]);
+    const body = JSON.parse((init?.body as string) || '{}');
+    const tab = body.tab || 'schedule';
+    const content = body.content || '';
+    await store.saveDocumentLocally(courseId, `course.${tab}.md`, content);
+    return jsonRes({ success: true });
+  }
+
   // GET /api/courses/:id/checkpoints
-  const cpGetMatch = path.match(/^\/api\/courses\/([^/]+)\/checkpoints$/);
+  const cpGetMatch = pathname.match(/^\/api\/courses\/([^/]+)\/checkpoints$/);
   if (method === 'GET' && cpGetMatch) {
     const checkpoints = await store.getCachedCheckpoints(cpGetMatch[1]);
     return jsonRes({ checkpoints });
   }
 
   // POST /api/courses/:id/checkpoints (create or update note)
-  const cpPostMatch = path.match(/^\/api\/courses\/([^/]+)\/checkpoints$/);
-  if (method === 'POST' && cpPostMatch) {
+  if (method === 'POST' && cpGetMatch) {
     const body = JSON.parse((init?.body as string) || '{}');
-    const courseId = cpPostMatch[1];
+    const courseId = cpGetMatch[1];
     const cp: Checkpoint = {
       id: body.id || `cp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       file: body.file,
@@ -190,7 +335,7 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   }
 
   // POST /api/courses/:id/checkpoints/position (reading position)
-  const posPostMatch = path.match(/^\/api\/courses\/([^/]+)\/checkpoints\/position$/);
+  const posPostMatch = pathname.match(/^\/api\/courses\/([^/]+)\/checkpoints\/position$/);
   if (method === 'POST' && posPostMatch) {
     const body = JSON.parse((init?.body as string) || '{}');
     const courseId = posPostMatch[1];
@@ -206,20 +351,49 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   }
 
   // DELETE /api/courses/:id/checkpoints/:cpId
-  const cpDelMatch = path.match(/^\/api\/courses\/([^/]+)\/checkpoints\/([^/]+)$/);
+  const cpDelMatch = pathname.match(/^\/api\/courses\/([^/]+)\/checkpoints\/([^/]+)$/);
   if (method === 'DELETE' && cpDelMatch) {
     await store.deleteCheckpointLocally(cpDelMatch[1], cpDelMatch[2]);
     return jsonRes({ success: true });
   }
 
   // GET /api/prompts
-  if (method === 'GET' && path === '/api/prompts') {
+  if (method === 'GET' && pathname === '/api/prompts') {
     const prompts = await store.listPrompts();
     return jsonRes({ prompts });
   }
 
+  // GET /api/settings/theme
+  if (pathname === '/api/settings/theme' && method === 'GET') {
+    if (isTauriEnvironment()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const theme = await invoke<string | null>('get_setting', { key: 'theme' });
+        if (theme) return jsonRes({ success: true, theme });
+      } catch {}
+    }
+    const theme = typeof localStorage !== 'undefined' ? localStorage.getItem('app_theme') || 'system' : 'system';
+    return jsonRes({ success: true, theme });
+  }
+
+  // POST /api/settings/theme
+  if (pathname === '/api/settings/theme' && method === 'POST') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const theme = body.theme || 'system';
+    if (isTauriEnvironment()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('set_setting', { key: 'theme', value: theme });
+      } catch {}
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('app_theme', theme);
+    }
+    return jsonRes({ success: true, theme });
+  }
+
   // GET /api/llm
-  if (method === 'GET' && path === '/api/llm') {
+  if (method === 'GET' && pathname === '/api/llm') {
     const llmStore = await store.getLlmStore();
     if (!llmStore) {
       return jsonRes({ hasConfig: false, activeId: null, cards: [], config: null });

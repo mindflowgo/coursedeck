@@ -1,0 +1,117 @@
+name: coursedeck-ipad
+options:
+  bundleIdPrefix: com.rezox
+  deploymentTarget:
+    iOS: 15.0
+fileGroups: [../../src]
+configs:
+  debug: debug
+  release: release
+schemes:
+  coursedeck-ipad_iOS:
+    build:
+      targets:
+        coursedeck-ipad_iOS: all
+    run:
+      config: release
+    archive:
+      config: release
+    profile:
+      config: release
+    analyze:
+      config: release
+settingGroups:
+  app:
+    base:
+      PRODUCT_NAME: CourseDeck
+      PRODUCT_BUNDLE_IDENTIFIER: com.rezox.coursedeck
+      DEVELOPMENT_TEAM: U5492M2JQ5
+targetTemplates:
+  app:
+    type: application
+    sources:
+      - path: Sources
+    settings:
+      groups: [app]
+targets:
+  coursedeck-ipad_iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Assets.xcassets
+      # Exclude built static libs: regenerating with xcodegen after a build
+      # otherwise turns the per-configuration libapp.a copies into colliding
+      # resources ("Multiple commands produce …/libapp.a"). They are linked
+      # via LIBRARY_SEARCH_PATHS, never bundled as resources.
+      - path: Externals
+        excludes: ["**/*.a"]
+      - path: coursedeck-ipad_iOS
+      - path: assets
+        buildPhase: resources
+        type: folder
+      - path: LaunchScreen.storyboard
+    info:
+      path: coursedeck-ipad_iOS/Info.plist
+      properties:
+        NSCameraUsageDescription: CourseDeck needs camera access to scan the desktop sync QR code.
+        NSLocalNetworkUsageDescription: CourseDeck connects to your computer on the local network to download and synchronize your courses and notes.
+        NSBonjourServices:
+          - _http._tcp
+          - _bonjour._tcp
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        LSRequiresIPhoneOS: true
+        UILaunchStoryboardName: LaunchScreen
+        UIRequiredDeviceCapabilities: [arm64, metal]
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleShortVersionString: 0.1.0
+        CFBundleVersion: "0.1.0"
+    entitlements:
+      path: coursedeck-ipad_iOS/coursedeck-ipad_iOS.entitlements
+    settings:
+      base:
+        ENABLE_BITCODE: false
+        ARCHS: [arm64, x86_64]
+        VALID_ARCHS: arm64  x86_64 
+        LIBRARY_SEARCH_PATHS[arch=x86_64]: $(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        LIBRARY_SEARCH_PATHS[arch=arm64]: $(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES: true
+        EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
+      groups: [app]
+    dependencies:
+      - framework: libapp.a
+        embed: false
+      - sdk: AVFoundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: QuartzCore.framework
+      - sdk: Security.framework
+      - sdk: UIKit.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - script: |
+          mkdir -p "${SRCROOT}/Externals/arm64/${CONFIGURATION}"
+          mkdir -p "${SRCROOT}/Externals/x86_64/${CONFIGURATION}"
+          if [ -f "${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a" ]; then
+            echo "Using existing libapp.a"
+          else
+            PATH="$HOME/.cargo/bin:$PATH" cargo build --manifest-path "${PROJECT_DIR}/../../../tauripad/Cargo.toml" --target aarch64-apple-ios --release
+            cp "${PROJECT_DIR}/../../../tauripad/target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a" "${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a"
+          fi
+          [ -f "${SRCROOT}/Externals/x86_64/${CONFIGURATION}/libapp.a" ] || cp "${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a" "${SRCROOT}/Externals/x86_64/${CONFIGURATION}/libapp.a" 2>/dev/null || true
+        name: Build Rust Code
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
+          - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a

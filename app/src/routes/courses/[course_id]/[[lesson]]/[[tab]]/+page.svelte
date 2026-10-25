@@ -4,7 +4,7 @@
   import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
   import { page } from '$app/stores';
-  import { goto, replaceState } from '$app/navigation';
+  import { goto, replaceState, pushState } from '$app/navigation';
   import Header from '$lib/components/Header.svelte';
   import LessonSelector from '$lib/components/LessonSelector.svelte';
   import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
@@ -965,7 +965,7 @@
         originalContents = { ...tabContents };
         quizRunnerKey++;
         void loadCourseSchedule();
-        console.log(`[NAV] loadLesson "${lessonId}" ✓ tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}]`);
+        console.log(`[NAV] loadLesson "${lessonId}" ✓ lessonLen=${(data.lesson || '').length}, tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}], activeTab="${activeTab}", activeTabLen=${(tabContents[activeTab] || '').length}`);
       } else {
         console.warn(`[NAV] loadLesson "${lessonId}" failed: HTTP ${res.status}`);
       }

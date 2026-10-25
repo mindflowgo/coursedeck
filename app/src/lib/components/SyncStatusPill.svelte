@@ -1,11 +1,11 @@
 <!-- app/src/lib/components/SyncStatusPill.svelte -->
 <script lang="ts">
   import { syncState, syncFromDesktop, pushToDesktop } from '$lib/syncState.svelte';
-  import { isTauriEnvironment } from '$lib/api';
+  import { isTauriDesktop } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
-  import { ArrowDownToLine, ArrowUpToLine, RefreshCw, Check, AlertCircle } from 'lucide-svelte';
+  import { ArrowDownToLine, ArrowUpToLine, RefreshCw, Check } from 'lucide-svelte';
 
-  const isWeb = !isTauriEnvironment();
+  const isClient = !isTauriDesktop();
   let syncSuccessFlash = $state(false);
   let pushSuccessFlash = $state(false);
 
@@ -13,7 +13,7 @@
     if (syncState.isSyncing) return;
     if (syncState.pendingPushCount > 0) {
       const proceed = await confirmDialog(
-        `You have ${syncState.pendingPushCount} note or checkpoint change(s) that haven't been pushed to your Mac yet.\n\nSyncing now will replace local data with the Mac's current copy. Would you like to push your changes first?`,
+        `You have ${syncState.pendingPushCount} note or checkpoint change(s) that haven't been pushed to your computer yet.\n\nSyncing now will replace local data with the computer's current copy. Would you like to push your changes first?`,
         'Sync Warning'
       );
       if (proceed) {
@@ -46,7 +46,7 @@
   }
 </script>
 
-{#if isWeb}
+{#if isClient}
   <div class="flex items-center space-x-1.5 text-xs font-medium">
     <!-- Status Indicator -->
     <div
@@ -59,7 +59,7 @@
         class="w-1.5 h-1.5 rounded-full {syncState.serverReachable ? 'bg-emerald-500 animate-pulse' : 'bg-stone-400'}"
       ></span>
       <span class="text-[11px] hidden md:inline">
-        {syncState.serverReachable ? 'Mac Connected' : 'Offline'}
+        {syncState.serverReachable ? 'Connected' : 'Offline'}
       </span>
     </div>
 
@@ -69,7 +69,7 @@
         type="button"
         onclick={handleManualSync}
         disabled={syncState.isSyncing}
-        title="Sync latest courses from your Mac"
+        title="Sync latest courses from your computer"
         class="flex items-center space-x-1 px-2 py-1 rounded-lg border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-[11px] transition cursor-pointer disabled:opacity-50"
       >
         {#if syncState.isSyncing}
@@ -90,7 +90,7 @@
           type="button"
           onclick={handleManualPush}
           disabled={syncState.isPushing}
-          title="Push {syncState.pendingPushCount} local note/checkpoint change(s) to your Mac"
+          title="Push {syncState.pendingPushCount} local note/checkpoint change(s) to your computer"
           class="flex items-center space-x-1 px-2 py-1 rounded-lg border border-amber-400/60 dark:border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[11px] font-semibold transition cursor-pointer disabled:opacity-50"
         >
           {#if syncState.isPushing}
@@ -105,14 +105,16 @@
           {/if}
         </button>
       {/if}
-    {:else if syncState.pendingPushCount > 0}
-      <!-- Offline pending indicator -->
-      <div
-        class="flex items-center space-x-1 px-2 py-1 rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-400 text-[11px] border border-amber-500/20"
-        title="{syncState.pendingPushCount} change(s) saved locally. They will be pushed when you reconnect to your Mac."
-      >
-        <span>{syncState.pendingPushCount} pending push</span>
-      </div>
+    {:else}
+      {#if syncState.pendingPushCount > 0}
+        <!-- Offline pending indicator -->
+        <div
+          class="flex items-center space-x-1 px-2 py-1 rounded-lg bg-amber-500/10 text-amber-700 dark:text-amber-400 text-[11px] border border-amber-500/20"
+          title="{syncState.pendingPushCount} change(s) saved locally. They will be pushed when you reconnect to your computer."
+        >
+          <span>{syncState.pendingPushCount} pending push</span>
+        </div>
+      {/if}
     {/if}
   </div>
 {/if}

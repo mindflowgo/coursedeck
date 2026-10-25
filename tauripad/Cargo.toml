@@ -1,0 +1,21 @@
+[package]
+name = "coursedeck-ipad"
+version = "0.1.0"
+description = "CourseDeck for iPad"
+authors = ["Study Team"]
+edition = "2021"
+
+[lib]
+name = "coursedeck_ipad_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["custom-protocol"] }
+tauri-plugin-http = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-barcode-scanner = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

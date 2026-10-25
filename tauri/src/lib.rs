@@ -7,6 +7,7 @@ use tauri::Manager;
 
 mod settings;
 mod window_state;
+mod courses_fs;
 
 /// Writes a base64-encoded file (e.g. an exported PDF) to a user-chosen path
 /// coming from the save dialog. Runs with extension and destination validation.
@@ -131,7 +132,7 @@ fn find_course_dir(app: &tauri::AppHandle, course_id: &str) -> Option<PathBuf> {
         }
     }
 
-    // 3. App data directory
+    // 3. App data directory (Tauri app_data_dir for com.rezox.coursedeck)
     if let Ok(app_data) = app.path().app_data_dir() {
         let candidates = [
             app_data.join("data").join("courses").join(&lower_id),
@@ -141,6 +142,22 @@ fn find_course_dir(app: &tauri::AppHandle, course_id: &str) -> Option<PathBuf> {
             if c.exists() {
                 return Some(c);
             }
+        }
+    }
+
+    // 3b. macOS and Windows direct Application Support / AppData paths
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(&home).join("Library/Application Support/com.rezox.coursedeck/data/courses").join(&lower_id);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let win_appdata = std::env::var("APPDATA")
+        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}\\AppData\\Roaming")));
+    if let Ok(appdata_str) = win_appdata {
+        let p = PathBuf::from(appdata_str).join("com.rezox.coursedeck").join("data").join("courses").join(&lower_id);
+        if p.exists() {
+            return Some(p);
         }
     }
 
@@ -458,11 +475,22 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
             settings::get_setting,
             settings::set_setting,
             save_pdf_file,
-            open_course_folder
+            open_course_folder,
+            courses_fs::save_course_files,
+            courses_fs::get_lesson_bundle,
+            courses_fs::read_course_doc,
+            courses_fs::save_course_doc,
+            courses_fs::list_cached_courses,
+            courses_fs::get_cached_course,
+            courses_fs::get_cached_checkpoints,
+            courses_fs::save_checkpoint,
+            courses_fs::delete_checkpoint,
+            courses_fs::list_prompts,
         ]);
 
     builder

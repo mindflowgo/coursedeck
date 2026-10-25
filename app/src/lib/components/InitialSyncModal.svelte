@@ -1,79 +1,208 @@
 <!-- app/src/lib/components/InitialSyncModal.svelte -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { syncFromDesktop } from '$lib/syncState.svelte';
-  import { Download, CheckCircle2, AlertCircle, Loader2, Sparkles } from 'lucide-svelte';
+  import { isTauriMobile } from '$lib/api';
+  import { CheckCircle2, AlertCircle, Loader2, Sparkles, QrCode, Camera, Download } from 'lucide-svelte';
 
-  let { onDone }: { onDone: () => void } = $props();
+  let { onDone, onSkip }: { onDone: () => void; onSkip?: () => void } = $props();
 
-  let progress = $state<'idle' | 'syncing' | 'done' | 'error'>('idle');
+  function handleSkip() {
+    if (onSkip) {
+      onSkip();
+    } else {
+      onDone();
+    }
+  }
+
+  let progress = $state<'scan' | 'syncing' | 'done' | 'error'>('scan');
   let errorMessage = $state('');
-  let includeLlmKeys = $state(true);
+  let isScanning = $state(false);
+  let showManual = $state(false);
+  let manualUrl = $state('');
+  let manualError = $state('');
 
-  async function startSync() {
+  // Only the native iPad app has the barcode scanner plugin; browsers pair
+  // same-origin and get a plain download button instead of a failing import.
+  const nativeScan = isTauriMobile();
+
+  async function startScan() {
+    isScanning = true;
+    errorMessage = '';
+
+    try {
+      const { scan, Format, checkPermissions, requestPermissions } = await import('@tauri-apps/plugin-barcode-scanner');
+      let perm = await checkPermissions();
+      if (perm !== 'granted') {
+        perm = await requestPermissions();
+      }
+
+      if (perm !== 'granted') {
+        throw new Error('Camera permission denied. Please allow camera access in Settings.');
+      }
+
+      const res = await scan({
+        cameraDirection: 'back',
+        formats: [Format.QRCode]
+      });
+
+      if (res?.content) {
+        await handleScannedUrl(res.content);
+      }
+    } catch (e: any) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('cancelled') || msg.includes('canceled')) {
+        isScanning = false;
+        return;
+      }
+      console.error('[Native Barcode Scan Error]', e);
+      errorMessage = msg || 'Failed to scan QR code.';
+      progress = 'error';
+    } finally {
+      isScanning = false;
+    }
+  }
+
+  async function handleScannedUrl(scannedUrl: string) {
     progress = 'syncing';
     errorMessage = '';
+
     try {
-      await syncFromDesktop({ includeLlmKeys });
+      let cleanUrl = scannedUrl.trim();
+      let keysOpt = true;
+
+      try {
+        if (!/^https?:\/\//i.test(cleanUrl)) {
+          cleanUrl = `http://${cleanUrl}`;
+        }
+        const u = new URL(cleanUrl);
+        if (u.searchParams.has('includeLlmKeys')) {
+          keysOpt = u.searchParams.get('includeLlmKeys') === 'true';
+        }
+        cleanUrl = `${u.protocol}//${u.host}`;
+      } catch {}
+
+      await syncFromDesktop({ includeLlmKeys: keysOpt, customUrl: cleanUrl });
       progress = 'done';
-    } catch (e) {
+    } catch (e: any) {
+      console.error('[Initial Sync Error]', e);
       errorMessage = e instanceof Error ? e.message : 'Failed to download courses from desktop';
       progress = 'error';
     }
   }
+
+  async function connectManual() {
+    let url = manualUrl.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+    try {
+      const u = new URL(url);
+      if (!u.hostname) throw new Error('missing host');
+    } catch {
+      manualError = 'Enter a valid desktop address, e.g. http://192.168.1.50:3182';
+      return;
+    }
+    manualError = '';
+    await handleScannedUrl(url);
+  }
+
+  // Browser (LAN Safari) path: sync from the origin the page was loaded from.
+  async function startDownload() {
+    await handleScannedUrl(window.location.origin);
+  }
+
+  function retry() {
+    if (nativeScan) startScan();
+    else startDownload();
+  }
+
+  onMount(() => {
+    if (nativeScan) startScan();
+  });
 </script>
 
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
-  <div class="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-2xl p-6 sm:p-8 max-w-md w-full shadow-2xl space-y-5 animate-in fade-in duration-200">
-    <div class="flex items-center space-x-3">
-      <div class="w-10 h-10 rounded-xl bg-amber-400/10 dark:bg-amber-400/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
-        <Download class="w-5 h-5" />
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4 overflow-y-auto">
+  <div class="my-auto bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-3xl p-6 sm:p-7 max-w-sm w-full shadow-2xl space-y-4 animate-in fade-in duration-200 text-stone-900 dark:text-stone-100">
+    <!-- Header -->
+    <div class="flex items-center space-x-3 pb-2 border-b border-stone-100 dark:border-stone-800">
+      <div class="w-9 h-9 rounded-xl bg-amber-400/10 dark:bg-amber-400/20 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+        <QrCode class="w-5 h-5" />
       </div>
       <div>
-        <h2 class="text-base font-semibold text-stone-900 dark:text-stone-100">Welcome to CourseDeck</h2>
-        <p class="text-xs text-stone-500 dark:text-stone-400">Set up offline study on this iPad</p>
+        <h2 class="text-sm font-semibold">Welcome to CourseDeck</h2>
+        <p class="text-[11px] text-stone-500 dark:text-stone-400">Scan QR-code on your desktop to download</p>
       </div>
     </div>
 
-    {#if progress === 'idle'}
-      <p class="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
-        Your Mac is connected on your local network! Download all your courses, lessons, and prompts now so you can study completely offline anytime.
-      </p>
+    {#if progress === 'scan'}
+      {#if nativeScan}
+        <div class="py-6 flex flex-col items-center justify-center space-y-4 text-center">
+          <div class="w-16 h-16 rounded-2xl bg-amber-400/10 dark:bg-amber-400/20 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+            <Camera class="w-8 h-8" />
+          </div>
 
-      <div class="rounded-xl bg-stone-50 dark:bg-stone-800/60 p-3.5 border border-stone-200/80 dark:border-stone-700/80">
-        <label class="flex items-start space-x-3 cursor-pointer">
-          <input
-            type="checkbox"
-            bind:checked={includeLlmKeys}
-            class="mt-0.5 rounded border-stone-300 dark:border-stone-600 text-stone-900 dark:text-stone-100 focus:ring-0"
-          />
-          <div class="space-y-0.5">
-            <span class="text-xs font-medium text-stone-900 dark:text-stone-100 flex items-center gap-1.5">
-              <Sparkles class="w-3.5 h-3.5 text-amber-500" />
-              Include AI settings & keys
-            </span>
-            <p class="text-[11px] text-stone-500 dark:text-stone-400">
-              Needed if you want to generate summaries or ask AI questions while away from your computer.
+          <div class="space-y-1">
+            <p class="text-sm font-semibold text-stone-900 dark:text-stone-100">
+              Scan Desktop QR-Code
+            </p>
+            <p class="text-xs text-stone-500 dark:text-stone-400 max-w-xs leading-relaxed">
+              Click the iPad icon on your Mac to show the QR code, then tap below to scan with your iPad camera.
             </p>
           </div>
-        </label>
-      </div>
 
-      <div class="pt-2">
-        <button
-          onclick={startSync}
-          class="w-full py-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center space-x-2"
-        >
-          <Download class="w-4 h-4" />
-          <span>Download Courses for Offline Use</span>
-        </button>
-      </div>
+          <button
+            type="button"
+            onclick={startScan}
+            disabled={isScanning}
+            class="w-full py-3 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center space-x-2"
+          >
+            <QrCode class="w-4 h-4" />
+            <span>{isScanning ? 'Scanner Active...' : 'Open Camera to Scan'}</span>
+          </button>
+
+          <button
+            type="button"
+            onclick={handleSkip}
+            class="text-xs text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition cursor-pointer"
+          >
+            Skip for now (browse offline)
+          </button>
+        </div>
+      {:else}
+        <div class="py-6 flex flex-col items-center justify-center space-y-4 text-center">
+          <div class="w-16 h-16 rounded-2xl bg-amber-400/10 dark:bg-amber-400/20 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+            <Download class="w-8 h-8" />
+          </div>
+
+          <div class="space-y-1">
+            <p class="text-sm font-semibold text-stone-900 dark:text-stone-100">
+              Download Courses for Offline Use
+            </p>
+            <p class="text-xs text-stone-500 dark:text-stone-400 max-w-xs leading-relaxed">
+              Your desktop app is reachable on this network. Download all courses to this device so you can study offline.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onclick={startDownload}
+            class="w-full py-3 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center space-x-2"
+          >
+            <Download class="w-4 h-4" />
+            <span>Download for Offline Use</span>
+          </button>
+        </div>
+      {/if}
 
     {:else if progress === 'syncing'}
-      <div class="py-6 flex flex-col items-center justify-center space-y-4">
-        <Loader2 class="w-8 h-8 animate-spin text-stone-900 dark:text-stone-100" />
+      <div class="py-8 flex flex-col items-center justify-center space-y-4">
+        <div class="relative">
+          <Loader2 class="w-10 h-10 animate-spin text-stone-900 dark:text-stone-100" />
+          <Sparkles class="w-4 h-4 text-amber-500 absolute -top-1 -right-1 animate-pulse" />
+        </div>
         <div class="text-center space-y-1">
-          <p class="text-xs font-medium text-stone-900 dark:text-stone-100">Downloading courses from your Mac...</p>
-          <p class="text-[11px] text-stone-500 dark:text-stone-400">Packaging manifests, lesson texts, and notes into local storage</p>
+          <p class="text-xs font-semibold text-stone-900 dark:text-stone-100">Downloading courses from your desktop...</p>
+          <p class="text-[11px] text-stone-500 dark:text-stone-400">Packaging manifests, lessons, and formulas into offline storage</p>
         </div>
       </div>
 
@@ -85,10 +214,11 @@
         <div class="space-y-1">
           <p class="text-sm font-semibold text-stone-900 dark:text-stone-100">Ready for Offline Study!</p>
           <p class="text-xs text-stone-500 dark:text-stone-400 max-w-xs mx-auto">
-            All your courses are now stored locally. You can close this or add this page to your Home Screen.
+            All your courses and lesson notes are downloaded and stored locally on this iPad.
           </p>
         </div>
         <button
+          type="button"
           onclick={onDone}
           class="w-full py-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 text-xs font-semibold shadow-xs transition cursor-pointer"
         >
@@ -104,18 +234,63 @@
         </div>
         <div class="flex items-center space-x-3">
           <button
-            onclick={onDone}
+            type="button"
+            onclick={handleSkip}
             class="flex-1 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
           >
             Skip for Now
           </button>
           <button
-            onclick={startSync}
+            type="button"
+            onclick={retry}
             class="flex-1 py-2 rounded-xl bg-stone-900 hover:bg-stone-800 dark:bg-stone-100 dark:hover:bg-white text-white dark:text-stone-900 text-xs font-semibold transition cursor-pointer"
           >
             Try Again
           </button>
         </div>
+      </div>
+    {/if}
+
+    {#if nativeScan && (progress === 'scan' || progress === 'error')}
+      <div class="pt-1 space-y-2">
+        {#if showManual}
+          <div class="flex items-center gap-2 text-[10px] uppercase tracking-wide text-stone-400 dark:text-stone-600">
+            <span class="flex-1 border-t border-stone-100 dark:border-stone-800"></span>
+            or connect by address
+            <span class="flex-1 border-t border-stone-100 dark:border-stone-800"></span>
+          </div>
+          <input
+            type="url"
+            bind:value={manualUrl}
+            placeholder="http://192.168.1.50:3182"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+            enterkeyhint="go"
+            onkeydown={(e) => {
+              if (e.key === 'Enter') connectManual();
+            }}
+            class="w-full px-3 py-2 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/60 text-xs text-stone-900 dark:text-stone-100 placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-1 focus:ring-stone-900 dark:focus:ring-stone-100 transition"
+          />
+          {#if manualError}
+            <p class="text-[11px] text-red-600 dark:text-red-400">{manualError}</p>
+          {/if}
+          <button
+            type="button"
+            onclick={connectManual}
+            class="w-full py-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-xs font-semibold text-stone-700 dark:text-stone-300 transition cursor-pointer"
+          >
+            Connect
+          </button>
+        {:else}
+          <button
+            type="button"
+            onclick={() => (showManual = true)}
+            class="w-full text-[11px] text-stone-500 dark:text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 underline underline-offset-2 transition cursor-pointer"
+          >
+            Scan not working? Enter the desktop address manually
+          </button>
+        {/if}
       </div>
     {/if}
   </div>

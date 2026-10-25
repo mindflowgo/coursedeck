@@ -5,7 +5,7 @@
   import PromptsManager from '$lib/components/PromptsManager.svelte';
   import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
   import { onMount } from 'svelte';
-  import { apiFetch, isTauriEnvironment } from '$lib/api';
+  import { apiFetch, isTauriEnvironment, isTauriDesktop } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import {
     Server,
@@ -35,9 +35,10 @@
     Eye,
     EyeOff,
     Info,
-    Tablet
+    Tablet,
+    Camera
   } from 'lucide-svelte';
-  import { openConnectIpadModal } from '$lib/modalState.svelte';
+  import { openConnectIpadModal, openScanDesktopModal } from '$lib/modalState.svelte';
   import { theme } from '$lib/theme.svelte';
   import { zoom } from '$lib/zoom.svelte';
   import { ZOOM_STEPS } from '$lib/zoomLevels';
@@ -710,8 +711,10 @@
   onMount(() => {
     resumeLastPosition = getResumeLastPosition();
     loadModelCards();
-    loadStorageInfo();
-    loadTeacherCheckin();
+    if (isTauriDesktop()) {
+      loadStorageInfo();
+      loadTeacherCheckin();
+    }
   });
 </script>
 
@@ -853,8 +856,8 @@
       </button>
     </div>
 
-    <!-- Connect iPad Row (Desktop app only) -->
-    {#if isTauri}
+    <!-- Connect iPad Row (Desktop app) or Sync with Desktop (iPad app) -->
+    {#if isTauriDesktop()}
       <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div class="flex items-start sm:items-center space-x-2">
           <Tablet class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0 mt-0.5 sm:mt-0" />
@@ -872,11 +875,33 @@
           class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-900 dark:text-stone-100 font-medium text-xs transition cursor-pointer self-start sm:self-auto"
         >
           <Tablet class="w-3.5 h-3.5" />
-          <span>Show Addresses</span>
+          <span>Show QR Code</span>
+        </button>
+      </div>
+    {:else}
+      <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div class="flex items-start sm:items-center space-x-2">
+          <Monitor class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0 mt-0.5 sm:mt-0" />
+          <div>
+            <span class="font-medium text-stone-900 dark:text-stone-100">Sync with Desktop</span>
+            <p class="text-[11px] text-stone-400 dark:text-stone-500 mt-0.5">
+              Scan your desktop app QR-code to re-download courses.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onclick={openScanDesktopModal}
+          class="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-900 dark:text-stone-100 font-medium text-xs transition cursor-pointer self-start sm:self-auto"
+        >
+          <Camera class="w-3.5 h-3.5" />
+          <span>Scan Desktop QR-Code</span>
         </button>
       </div>
     {/if}
 
+    {#if isTauriDesktop()}
     <!-- Course Data Storage Row -->
     <div class="p-3 space-y-2">
       <div class="flex flex-wrap items-center justify-between gap-1.5">
@@ -1077,8 +1102,10 @@
         </div>
       {/if}
     </div>
+    {/if}
   </section>
 
+  {#if isTauriDesktop()}
   <!-- Panel 2: Ingestion & Maintenance -->
   <section class="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs divide-y divide-stone-100 dark:divide-stone-800 text-xs">
     <div class="p-3 space-y-2">
@@ -1326,6 +1353,7 @@
       {/if}
     </div>
   </section>
+  {/if}
   </main>
   
   <!-- LLM Tab Content -->

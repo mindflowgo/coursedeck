@@ -19,13 +19,17 @@
     MoreVertical,
     Pencil,
     Archive,
-    ArchiveRestore
+    ArchiveRestore,
+    Upload,
+    QrCode
   } from 'lucide-svelte';
   import RenameCourseModal from '$lib/components/RenameCourseModal.svelte';
-  import { apiFetch, isTauriEnvironment } from '$lib/api';
+  import { apiFetch, isTauriDesktop, isTauriEnvironment } from '$lib/api';
+  import { openScanDesktopModal } from '$lib/modalState.svelte';
   import { stripCourseCodePrefix } from '$lib/courses';
   import { confirmDialog } from '$lib/dialog';
 
+  const isTauri = isTauriEnvironment();
   let courses: CourseManifest[] = $state([]);
   let isLoading = $state(true);
   let searchQuery = $state('');
@@ -209,6 +213,35 @@
           <div class="w-full h-12 bg-stone-100 dark:bg-stone-800 rounded"></div>
         </div>
       {/each}
+    </div>
+  {:else if filteredCourses.length === 0}
+    <div class="p-12 text-center rounded-2xl border border-dashed border-stone-300 dark:border-stone-800 bg-white/50 dark:bg-stone-900/50 space-y-4">
+      <div class="w-12 h-12 rounded-2xl bg-stone-100 dark:bg-stone-800 text-stone-400 flex items-center justify-center mx-auto">
+        <BookOpen class="w-6 h-6" />
+      </div>
+      <div class="space-y-1">
+        <h3 class="text-sm font-semibold text-stone-900 dark:text-stone-100">No courses available</h3>
+        <p class="text-xs text-stone-500 dark:text-stone-400 max-w-sm mx-auto">
+          {#if searchQuery}
+            No courses matched "{searchQuery}".
+          {:else}
+            Scan your desktop app QR-code to download courses and start studying offline.
+          {/if}
+        </p>
+      </div>
+
+      {#if !isTauriDesktop() && !searchQuery}
+        <div class="pt-2">
+          <button
+            type="button"
+            onclick={openScanDesktopModal}
+            class="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold shadow-xs hover:bg-stone-800 dark:hover:bg-white transition cursor-pointer"
+          >
+            <QrCode class="w-4 h-4" />
+            <span>Scan Desktop QR-Code</span>
+          </button>
+        </div>
+      {/if}
     </div>
   {:else}
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

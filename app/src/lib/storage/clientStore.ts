@@ -1,6 +1,5 @@
 // app/src/lib/storage/clientStore.ts
-// IndexedDB adapter for CourseDeck iPad offline storage.
-// Runs only in browser context.
+// Native Filesystem + IndexedDB fallback store for CourseDeck iPad offline mode.
 
 import type { CourseManifest } from '$lib/parser/courseIngest';
 import type { Checkpoint } from '$lib/checkpoint';
@@ -34,6 +33,15 @@ export interface SyncBundle {
   }>;
   prompts: Array<{ id: string; content: string }>;
   llmConfig?: ClientLlmStore;
+}
+
+export function isTauri(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (
+    '__TAURI_INTERNALS__' in window ||
+    window.location.protocol === 'tauri:' ||
+    window.location.hostname === 'tauri.localhost'
+  );
 }
 
 const DB_NAME = 'coursedeck_v1';
@@ -99,25 +107,32 @@ async function getAll<T>(store: typeof STORES[number]): Promise<{ key: string; v
   return new Promise((resolve, reject) => {
     const tx = db.transaction(store, 'readonly');
     const os = tx.objectStore(store);
-    const keys: string[] = [];
-    const values: T[] = [];
-    os.openKeyCursor().onsuccess = (e) => {
-      const cursor = (e.target as IDBRequest<IDBCursor>).result;
-      if (cursor) {
-        keys.push(cursor.key as string);
-        cursor.continue();
-      }
-    };
+    const results: { key: string; value: T }[] = [];
     os.openCursor().onsuccess = (e) => {
       const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result;
       if (cursor) {
-        values.push(cursor.value);
+        results.push({ key: String(cursor.key), value: cursor.value as T });
         cursor.continue();
       } else {
-        resolve(keys.map((k, i) => ({ key: k, value: values[i] })));
+        resolve(results);
       }
     };
     tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function putMany(store: typeof STORES[number], entries: [string, unknown][]): Promise<void> {
+  if (entries.length === 0) return;
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    const os = tx.objectStore(store);
+    for (const [key, value] of entries) {
+      os.put(value, key);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 }
 
@@ -142,19 +157,176 @@ export async function getDesktopUrl(): Promise<string | undefined> {
 // ── Course & Content Readers ───────────────────────────────────────────────────
 
 export async function listCachedCourses(): Promise<CourseManifest[]> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const courses = await invoke<CourseManifest[]>('list_cached_courses');
+      if (courses && courses.length > 0) {
+        console.log(`[NativeStore] listCachedCourses: retrieved ${courses.length} courses from filesystem`);
+        return courses;
+      }
+    } catch (err) {
+      console.warn('[NativeStore] list_cached_courses failed, falling back to IDB:', err);
+    }
+  }
+
   const rows = await getAll<CourseManifest>('courses');
   return rows.map((r) => r.value);
 }
 
 export async function getCachedCourse(courseId: string): Promise<CourseManifest | undefined> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const course = await invoke<CourseManifest | null>('get_cached_course', { courseId });
+      if (course) {
+        console.log(`[NativeStore] getCachedCourse: retrieved manifest for "${courseId}" from filesystem`);
+        return course;
+      }
+    } catch (err) {
+      console.warn('[NativeStore] get_cached_course failed, falling back to IDB:', err);
+    }
+  }
+
   return get<CourseManifest>('courses', courseId.toLowerCase());
 }
 
+export async function saveCourseManifestLocally(courseId: string, manifest: CourseManifest): Promise<void> {
+  const json = JSON.stringify(manifest, null, 2);
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('save_course_doc', { courseId, filename: 'meta.json', content: json });
+      await invoke('save_course_doc', { courseId, filename: 'manifest.json', content: json });
+      console.log(`[NativeStore] saveCourseManifestLocally: wrote manifest for "${courseId}" directly to filesystem`);
+    } catch (err) {
+      console.warn('[NativeStore] saveCourseManifestLocally failed:', err);
+    }
+  }
+  await put('courses', courseId.toLowerCase(), manifest);
+}
+
 export async function getDocument(courseId: string, filename: string): Promise<string | undefined> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const doc = await invoke<string | null>('read_course_doc', { courseId, filename });
+      if (doc !== null && doc !== undefined) {
+        console.log(`[NativeStore] getDocument: read "${filename}" for "${courseId}" from filesystem (${doc.length} chars)`);
+        return doc;
+      }
+    } catch (err) {
+      console.warn('[NativeStore] read_course_doc failed, falling back to IDB:', err);
+    }
+  }
+
   return get<string>('documents', `${courseId.toLowerCase()}:${filename}`);
 }
 
+export async function saveDocumentLocally(courseId: string, filename: string, content: string): Promise<void> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('save_course_doc', { courseId, filename, content });
+      console.log(`[NativeStore] saveDocumentLocally: wrote "${filename}" for "${courseId}" directly to filesystem`);
+    } catch (err) {
+      console.warn('[NativeStore] save_course_doc failed:', err);
+    }
+  }
+
+  return put('documents', `${courseId.toLowerCase()}:${filename}`, content);
+}
+
+export async function listAllCheckpointsLocally(): Promise<Checkpoint[]> {
+  const courses = await listCachedCourses();
+  const all: Checkpoint[] = [];
+  for (const c of courses) {
+    const cps = await getCachedCheckpoints(c.id);
+    all.push(...cps);
+  }
+  return all.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+}
+
+export async function getLessonBundleLocally(
+  courseId: string,
+  lessonId: string
+): Promise<{ lesson: string; tabs: Record<string, string> }> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      console.log(`[NativeStore] getLessonBundleLocally: reading "${courseId}/${lessonId}" from native filesystem...`);
+      const res = await invoke<{
+        course_id: string;
+        lesson_id: string;
+        lesson: string;
+        tabs: Record<string, string>;
+      }>('get_lesson_bundle', { courseId, lessonId });
+
+      console.log(
+        `[NativeStore] getLessonBundleLocally from filesystem: hasLesson=${Boolean(res.lesson)}, lessonLen=${res.lesson?.length || 0}, tabs=[${Object.keys(res.tabs || {}).join(', ')}]`
+      );
+
+      if (res.lesson || Object.keys(res.tabs || {}).length > 0) {
+        return { lesson: res.lesson || '', tabs: res.tabs || {} };
+      }
+    } catch (err) {
+      console.warn('[NativeStore] Native get_lesson_bundle failed, falling back to IDB:', err);
+    }
+  }
+
+  // Fallback: IndexedDB search
+  const cid = courseId.toLowerCase();
+  const allDocs = await getAll<string>('documents');
+  const prefix = `${cid}:`;
+
+  const norm = (s: string) => {
+    const m = s.toLowerCase().match(/^(\d+)\.(\d+)(.*)$/);
+    return m ? `${m[1].padStart(2, '0')}.${m[2].padStart(2, '0')}${m[3]}` : s.toLowerCase();
+  };
+  const targetNorm = norm(lessonId);
+  const targetRaw = lessonId.toLowerCase();
+
+  let lessonMd = '';
+  const tabs: Record<string, string> = {};
+  const matchedFiles: string[] = [];
+
+  for (const { key, value } of allDocs) {
+    if (!key.startsWith(prefix)) continue;
+    const filename = key.slice(prefix.length);
+    const m = filename.match(/^(.+)\.([^.]+)\.md$/i);
+    if (!m) continue;
+    const [, fileLessonId, fileTab] = m;
+    const fileNorm = norm(fileLessonId);
+    const fileRaw = fileLessonId.toLowerCase();
+
+    if (fileNorm === targetNorm || fileRaw === targetRaw) {
+      matchedFiles.push(filename);
+      if (fileTab === 'lesson') {
+        lessonMd = value;
+      } else {
+        tabs[fileTab] = value;
+      }
+    }
+  }
+
+  console.log(
+    `[ClientStore] IDB fallback for "${courseId}/${lessonId}" (norm="${targetNorm}") -> matched ${matchedFiles.length} file(s) [${matchedFiles.join(', ')}], hasLesson=${Boolean(lessonMd)}, tabs=[${Object.keys(tabs).join(', ')}]`
+  );
+
+  return { lesson: lessonMd, tabs };
+}
+
 export async function getCachedCheckpoints(courseId: string): Promise<Checkpoint[]> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const list = await invoke<Checkpoint[]>('get_cached_checkpoints', { courseId });
+      if (list && list.length > 0) return list;
+    } catch (err) {
+      console.warn('[NativeStore] get_cached_checkpoints failed:', err);
+    }
+  }
+
   return (await get<Checkpoint[]>('checkpoints', courseId.toLowerCase())) ?? [];
 }
 
@@ -163,6 +335,19 @@ export async function getLlmStore(): Promise<ClientLlmStore | undefined> {
 }
 
 export async function listPrompts(): Promise<{ id: string; content: string }[]> {
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const list = await invoke<{ id: string; title: string; filename: string; content: string }[]>('list_prompts');
+      if (list && list.length > 0) {
+        console.log(`[NativeStore] listPrompts: read ${list.length} prompts from filesystem`);
+        return list;
+      }
+    } catch (err) {
+      console.warn('[NativeStore] list_prompts native call failed, falling back to IDB:', err);
+    }
+  }
+
   const rows = await getAll<{ id: string; content: string }>('prompts');
   return rows.map((r) => r.value);
 }
@@ -176,16 +361,41 @@ export async function hasCachedData(): Promise<boolean> {
   }
 }
 
-// ── Bundle Import ──────────────────────────────────────────────────────────────
+// ── Bundle Import (Direct to Native Filesystem) ──────────────────────────────
 
 export async function importBundle(bundle: SyncBundle, desktopUrl: string): Promise<void> {
+  console.log(`[NativeStore] importBundle: starting import of ${bundle.courses.length} courses from ${desktopUrl}`);
+
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      for (const course of bundle.courses) {
+        const courseId = course.manifest.id.toLowerCase();
+        const fileCount = Object.keys(course.files).length;
+        console.log(`[NativeStore] Writing course "${courseId}" (${fileCount} markdown files) directly to filesystem...`);
+        await invoke('save_course_files', {
+          courseId,
+          manifestJson: JSON.stringify(course.manifest),
+          files: course.files,
+          checkpointsJson: course.checkpoints ? JSON.stringify(course.checkpoints) : null
+        });
+        console.log(`[NativeStore] Course "${courseId}" files successfully written to filesystem`);
+      }
+    } catch (err) {
+      console.error('[NativeStore] Error writing courses to filesystem:', err);
+    }
+  }
+
+  // Mirror into IndexedDB so both native and web readers stay in sync
   for (const course of bundle.courses) {
     const courseId = course.manifest.id.toLowerCase();
     await put('courses', courseId, course.manifest);
 
-    for (const [filename, markdown] of Object.entries(course.files)) {
-      await put('documents', `${courseId}:${filename}`, markdown);
-    }
+    const docEntries = Object.entries(course.files).map(([filename, markdown]) => [
+      `${courseId}:${filename}`,
+      markdown
+    ] as [string, unknown]);
+    await putMany('documents', docEntries);
 
     if (Array.isArray(course.checkpoints)) {
       await put('checkpoints', courseId, course.checkpoints);
@@ -193,9 +403,14 @@ export async function importBundle(bundle: SyncBundle, desktopUrl: string): Prom
   }
 
   if (Array.isArray(bundle.prompts)) {
-    for (const prompt of bundle.prompts) {
-      await put('prompts', prompt.id, prompt);
+    if (isTauri()) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('save_prompts', { prompts: bundle.prompts });
+      } catch {}
     }
+    const promptEntries = bundle.prompts.map((p) => [p.id, p] as [string, unknown]);
+    await putMany('prompts', promptEntries);
   }
 
   if (bundle.llmConfig) {
@@ -204,12 +419,31 @@ export async function importBundle(bundle: SyncBundle, desktopUrl: string): Prom
 
   await setMeta('last_synced_at', bundle.generatedAt);
   await setMeta('desktop_url', desktopUrl);
+
+  try {
+    if (typeof localStorage !== 'undefined' && desktopUrl) {
+      localStorage.setItem('desktop_url', desktopUrl.replace(/\/+$/, ''));
+    }
+  } catch {}
+
+  console.log(`[NativeStore] importBundle: completed import at ${bundle.generatedAt}`);
 }
 
 // ── Checkpoint writes (iPad-local, queued for push) ──────────────────────────
 
 export async function saveCheckpointLocally(courseId: string, checkpoint: Checkpoint): Promise<void> {
   const id = courseId.toLowerCase();
+
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('save_checkpoint', { courseId: id, checkpoint });
+      console.log(`[NativeStore] saveCheckpointLocally: saved checkpoint ${checkpoint.id} to filesystem`);
+    } catch (err) {
+      console.warn('[NativeStore] Native save_checkpoint failed:', err);
+    }
+  }
+
   const existing = await getCachedCheckpoints(id);
   const idx = existing.findIndex((c) => c.id === checkpoint.id);
   if (idx !== -1) {
@@ -232,6 +466,16 @@ export async function saveCheckpointLocally(courseId: string, checkpoint: Checkp
 
 export async function deleteCheckpointLocally(courseId: string, checkpointId: string): Promise<void> {
   const id = courseId.toLowerCase();
+
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_checkpoint', { courseId: id, checkpointId });
+    } catch (err) {
+      console.warn('[NativeStore] Native delete_checkpoint failed:', err);
+    }
+  }
+
   const existing = await getCachedCheckpoints(id);
   await put('checkpoints', id, existing.filter((c) => c.id !== checkpointId));
 

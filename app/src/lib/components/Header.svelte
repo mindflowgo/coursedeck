@@ -9,13 +9,14 @@
     ChevronRight,
     CalendarDays,
     FlagTriangleRight,
-    Tablet
+    Tablet,
+    Monitor
   } from 'lucide-svelte';
   import AIQueuePopover from './AIQueuePopover.svelte';
   import SyncStatusPill from './SyncStatusPill.svelte';
-  import { openConnectIpadModal } from '$lib/modalState.svelte';
+  import { openConnectIpadModal, openScanDesktopModal } from '$lib/modalState.svelte';
   import { goBackOrHome } from '$lib/navHistory';
-  import { isTauriEnvironment } from '$lib/api';
+  import { isTauriDesktop } from '$lib/api';
 
   interface Props {
     courseId?: string;
@@ -48,8 +49,6 @@
     }
     return '';
   });
-
-  const isTauri = isTauriEnvironment();
 
   function handleBack() {
     goBackOrHome();
@@ -138,7 +137,7 @@
 
     <SyncStatusPill />
 
-    {#if isTauri}
+    {#if isTauriDesktop()}
       <button
         type="button"
         onclick={openConnectIpadModal}
@@ -147,6 +146,16 @@
         class="flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
       >
         <Tablet class="w-4 h-4" />
+      </button>
+    {:else}
+      <button
+        type="button"
+        onclick={openScanDesktopModal}
+        aria-label="Sync with Desktop"
+        title="Scan your desktop app QR-code to re-download courses"
+        class="flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer"
+      >
+        <Monitor class="w-4 h-4" />
       </button>
     {/if}
 

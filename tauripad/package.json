@@ -1,0 +1,18 @@
+{
+  "name": "coursedeck-ipad",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri ios dev",
+    "build": "tauri ios build",
+    "ios:init": "tauri ios init",
+    "ios:dev": "tauri ios dev",
+    "ios:open": "tauri ios dev --open --host",
+    "ios:build": "tauri ios build",
+    "cargo:check": "cargo check"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1"
+  }
+}

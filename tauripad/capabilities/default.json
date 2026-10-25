@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for CourseDeck iPad",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "http:default",
+      "allow": [
+        { "url": "http://*:*/*" },
+        { "url": "https://*:*/*" },
+        { "url": "http://*:*" },
+        { "url": "https://*:*" },
+        { "url": "http://*/*" },
+        { "url": "https://*/*" },
+        { "url": "http://*" },
+        { "url": "https://*" }
+      ]
+    },
+    "dialog:default",
+    "dialog:allow-confirm",
+    "dialog:allow-ask",
+    "barcode-scanner:default"
+  ]
+}

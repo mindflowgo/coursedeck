@@ -1,0 +1,6 @@
+target/
+gen/apple/Pods/
+gen/apple/build/
+gen/apple/*.xcodeproj/xcuserdata/
+gen/apple/*.xcodeproj/project.xcworkspace/xcuserdata/
+node_modules/

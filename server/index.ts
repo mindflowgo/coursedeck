@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { handleApiRequest } from '../app/src/lib/server/api';
 import { getDataDir, loadAppSettings } from '../app/src/lib/server/paths';
 import { handleMcpHttpRequest } from './mcp/server';
@@ -165,6 +166,31 @@ function startHttpServer() {
                 datasetId,
                 uptime: process.uptime()
               }),
+              {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' }
+              }
+            ),
+            req
+          );
+        }
+
+        // ── /api/network-ip (Local LAN IP for iPad pairing) ─────────────────
+        if (url.pathname === '/api/network-ip') {
+          const interfaces = os.networkInterfaces();
+          let localIp = '127.0.0.1';
+          for (const name of Object.keys(interfaces)) {
+            for (const iface of interfaces[name] || []) {
+              if (iface.family === 'IPv4' && !iface.internal) {
+                localIp = iface.address;
+                break;
+              }
+            }
+            if (localIp !== '127.0.0.1') break;
+          }
+          return withCors(
+            new Response(
+              JSON.stringify({ ip: localIp, port: PORT }),
               {
                 status: 200,
                 headers: { 'Content-Type': 'application/json' }
