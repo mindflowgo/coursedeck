@@ -1,0 +1,133 @@
+{
+  "blocks": [
+    {
+      "id": "b-505b9e1ecc6a2081",
+      "kind": "code",
+      "language": "swift",
+      "text": "| not | a | table |\n| --- | --- | --- |",
+      "fenced": true
+    },
+    {
+      "id": "b-505b9b1ecc6a1b68",
+      "kind": "code",
+      "language": null,
+      "text": "indented code | pipe",
+      "fenced": false
+    },
+    {
+      "id": "b-505b9c1ecc6a1d1b",
+      "kind": "code",
+      "language": null,
+      "text": "| pre | table |\n| --- | --- |",
+      "fenced": true
+    },
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "Header",
+        "Value"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "Note",
+          "inline | code and more"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "code",
+              "text"
+            ],
+            "math": [],
+            "codes": [
+              "inline | code"
+            ],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [],
+      "headerCellCount": 2,
+      "rowCellCounts": [
+        2
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 2,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": [
+        1
+      ]
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

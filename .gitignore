@@ -4,6 +4,9 @@
 .zcode
 .zcodeignore
 .env
+.env.*
+*.env
+!.env.example
 node_modules/
 .svelte-kit/
 app/build/
@@ -17,3 +20,22 @@ tauri/server-*.exe
 tauri/gen/schemas
 *.data.zip
 data/**/*.zip
+
+# Credentials and key material — never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa*
+id_ed25519*
+.npmrc
+.netrc
+.aws/
+credentials.json
+secrets.json
+*.credentials.json
+*_credentials.json
+.mcp-token
+llm_config.json

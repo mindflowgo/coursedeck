@@ -1,0 +1,125 @@
+{
+  "blocks": [
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "A",
+        "B"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "1",
+          "2"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [],
+      "headerCellCount": 2,
+      "rowCellCounts": [
+        2
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 2,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": [
+        1
+      ]
+    },
+    {
+      "id": "b-eff04377a823e446",
+      "kind": "paragraph",
+      "text": "Prose after the table.",
+      "inline": {
+        "kinds": [
+          "text"
+        ],
+        "math": [],
+        "codes": [],
+        "links": [],
+        "images": [],
+        "lineBreaks": 0,
+        "htmlStyles": []
+      }
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

@@ -1,0 +1,4 @@
+Item | Amount
+--- | ---
+Rent | 1200
+Food | 300

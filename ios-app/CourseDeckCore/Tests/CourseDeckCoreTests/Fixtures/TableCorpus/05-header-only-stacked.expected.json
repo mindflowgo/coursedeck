@@ -1,0 +1,270 @@
+{
+  "blocks": [
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "Only Header",
+        "Second"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [],
+      "rowsInline": [],
+      "rowSpans": [],
+      "warnings": [],
+      "headerCellCount": 2,
+      "rowCellCounts": [],
+      "surplusCells": 0,
+      "declaredColumns": 2,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": []
+    },
+    {
+      "id": "b-6cd6824f5bff470d",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "Same",
+        "Columns"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "one",
+          "two"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [],
+      "headerCellCount": 2,
+      "rowCellCounts": [
+        2
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 2,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": [
+        1
+      ]
+    },
+    {
+      "id": "b-6cd6814f5bff455a",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "Same",
+        "Columns"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "three",
+          "four"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [],
+      "headerCellCount": 2,
+      "rowCellCounts": [
+        2
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 2,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": [
+        1
+      ]
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

@@ -1,0 +1,153 @@
+{
+  "blocks": [
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": true,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "Formatting",
+        "Span"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "bold em code link\nnext",
+          "span"
+        ],
+        [
+          "plain",
+          ""
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "strong",
+              "text",
+              "text",
+              "emphasis",
+              "text",
+              "text",
+              "code",
+              "text",
+              "link",
+              "text",
+              "lineBreak",
+              "text"
+            ],
+            "math": [],
+            "codes": [
+              "code"
+            ],
+            "links": [
+              {
+                "destination": "https://example.com",
+                "title": null
+              }
+            ],
+            "images": [],
+            "lineBreaks": 1,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ],
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            2
+          ]
+        ],
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": []
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

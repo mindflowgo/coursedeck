@@ -1,0 +1,29 @@
+{
+  "blocks": [
+    {
+      "id": "b-eff04377a823e446",
+      "kind": "paragraph",
+      "text": "Some prose.",
+      "inline": {
+        "kinds": [
+          "text"
+        ],
+        "math": [],
+        "codes": [],
+        "links": [],
+        "images": [],
+        "lineBreaks": 0,
+        "htmlStyles": []
+      }
+    },
+    {
+      "id": "b-505b9e1ecc6a2081",
+      "kind": "code",
+      "language": null,
+      "text": "| A | B |\n| --- | --- |\n| 1 | 2 |",
+      "fenced": false
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

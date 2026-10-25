@@ -1,0 +1,252 @@
+{
+  "blocks": [
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 3,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none",
+        "none"
+      ],
+      "header": [
+        "A",
+        "B",
+        "C"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "1",
+          "2",
+          ""
+        ],
+        [
+          "3",
+          "4",
+          ""
+        ],
+        [
+          "5",
+          "6",
+          "7"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ],
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ],
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ],
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ],
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [
+        "shortRowsPadded"
+      ],
+      "headerCellCount": 3,
+      "rowCellCounts": [
+        2,
+        2,
+        3
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 3,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": [
+        1,
+        1,
+        1
+      ]
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

@@ -295,6 +295,34 @@ export class CourseIngest {
       newLessonsAdded.push(lessonId);
     }
 
+    // Desktop compatibility patch (PLAN §4.11): a default CourseDeck backup
+    // excludes `_backup/`, and a course may be re-parsed after only one new
+    // chapter package was added. Without this merge the rebuilt manifest would
+    // contain only the newly parsed lesson and every existing lesson would
+    // disappear from navigation. Existing manifest lessons that still have at
+    // least one content file are preserved; lessons without any content file
+    // are kept but flagged as missing so units never shrink.
+    if (existingManifest?.units) {
+      for (const unit of existingManifest.units) {
+        for (const lesson of unit.lessons ?? []) {
+          if (lessonsMap.has(lesson.id)) continue;
+          const lessonFiles = [
+            `${lesson.id}.lesson.md`,
+            `${lesson.id}.summary.md`,
+            `${lesson.id}.cheatsheet.md`,
+            `${lesson.id}.test.md`
+          ];
+          lessonsMap.set(lesson.id, {
+            ...lesson,
+            hasFull: fs.existsSync(path.join(courseDir, lessonFiles[0])),
+            hasSummary: fs.existsSync(path.join(courseDir, lessonFiles[1])),
+            hasCheatsheet: fs.existsSync(path.join(courseDir, lessonFiles[2])),
+            hasTest: fs.existsSync(path.join(courseDir, lessonFiles[3]))
+          });
+        }
+      }
+    }
+
     // Group lessons by units
     const unitsMap: Map<number, CourseManifestLesson[]> = new Map();
     for (const lesson of lessonsMap.values()) {
@@ -304,27 +332,58 @@ export class CourseIngest {
       unitsMap.get(lesson.unitNumber)!.push(lesson);
     }
 
+    const existingUnitsByNumber = new Map<number, CourseManifestUnit>();
+    for (const existingUnit of existingManifest?.units ?? []) {
+      existingUnitsByNumber.set(existingUnit.number, existingUnit);
+    }
+
+    // Rebuild each existing unit from its loaded object so unknown unit
+    // fields survive. Nullish fallbacks keep intentional empty strings
+    // (for example an iOS-created course with no grade/level) empty.
     const units: CourseManifestUnit[] = Array.from(unitsMap.entries())
       .sort(([a], [b]) => a - b)
-      .map(([num, lessons]) => ({
-        number: num,
-        title: unitTitles[num] || `Unit ${num}`,
-        lessons: lessons.sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
-      }));
+      .map(([num, lessons]) => {
+        const existingUnit = existingUnitsByNumber.get(num);
+        return {
+          ...(existingUnit ?? {}),
+          number: num,
+          title: existingUnit?.title ?? unitTitles[num] ?? `Unit ${num}`,
+          lessons: lessons.sort((a, b) =>
+            a.id.localeCompare(b.id, undefined, { numeric: true })
+          )
+        };
+      });
+
+    // Units never shrink: keep an existing unit even if no package currently
+    // produces a lesson for it (for example, `_backup/` was excluded from a
+    // default backup).
+    for (const existingUnit of existingManifest?.units ?? []) {
+      if (!units.some((unit) => unit.number === existingUnit.number)) {
+        units.push({
+          ...existingUnit,
+          number: existingUnit.number,
+          title: existingUnit.title ?? `Unit ${existingUnit.number}`,
+          lessons: []
+        });
+      }
+    }
+    units.sort((a, b) => a.number - b.number);
 
     const defaultTitle = `${courseId.toUpperCase()}: Course Study Guide`;
 
+    // Spread the loaded meta first so unknown root fields survive. Nullish
+    // fallbacks preserve empty iOS-created values instead of replacing them.
     const manifest: CourseManifest = {
+      ...(existingManifest ?? {}),
       id: courseId,
-      title: existingManifest?.title || defaultTitle,
-      grade: existingManifest?.grade || 'Grade 11',
-      level: existingManifest?.level || 'University/College Preparation',
+      title: existingManifest?.title ?? defaultTitle,
+      grade: existingManifest?.grade ?? 'Grade 11',
+      level: existingManifest?.level ?? 'University/College Preparation',
       description:
-        existingManifest?.description ||
+        existingManifest?.description ??
         'Comprehensive ILC course study notes, summaries, cheatsheets, and interactive practice questions.',
       units,
-      updatedAt: new Date().toISOString(),
-      archived: existingManifest?.archived
+      updatedAt: new Date().toISOString()
     };
 
     fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');

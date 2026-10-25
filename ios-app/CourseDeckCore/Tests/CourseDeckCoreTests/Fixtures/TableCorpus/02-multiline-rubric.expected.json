@@ -1,0 +1,191 @@
+{
+  "blocks": [
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 4,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none",
+        "none",
+        "none"
+      ],
+      "header": [
+        "Level 4\n(80 – 100%)",
+        "Level 3\n(70 - 79%)",
+        "Level 2\n(60 – 69%)",
+        "Level 1\n(50 – 59%)"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text",
+            "lineBreak",
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 1,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text",
+            "lineBreak",
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 1,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text",
+            "lineBreak",
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 1,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text",
+            "lineBreak",
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 1,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "Student demonstrates thorough understanding of the education and designation/\ncertification required in accounting and types of business ownership",
+          "Student demonstrates considerable understanding of the education and designation/\ncertification required in accounting and types of business ownership",
+          "Student demonstrates some understanding of the education and designation/\ncertification required in accounting and types of business ownership",
+          "Student demonstrates limited understanding of the education and designation/\ncertification required in accounting and types of business ownership"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text",
+              "lineBreak",
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 1,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text",
+              "lineBreak",
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 1,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text",
+              "lineBreak",
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 1,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text",
+              "lineBreak",
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 1,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [],
+      "headerCellCount": 4,
+      "rowCellCounts": [
+        4
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 4,
+      "mergedHeaderLines": 5,
+      "mergedRowLines": [
+        5
+      ]
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

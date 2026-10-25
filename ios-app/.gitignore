@@ -1,0 +1,22 @@
+# XcodeGen output
+CourseDeck.xcodeproj/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+xcuserdata/
+DerivedData/
+build/
+*.xcarchive
+*.dSYM
+*.ipa
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# Prompts copied from the desktop data directory at build time.
+# Keep a README/template if the folder must exist in a fresh checkout.
+CourseDeck/Resources/Prompts/*.md
+!CourseDeck/Resources/Prompts/README.md
+CourseDeck/Resources/Prompts/prompt-manifest.json
+
+# macOS / editor noise
+.DS_Store

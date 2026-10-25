@@ -1,0 +1,150 @@
+{
+  "blocks": [
+    {
+      "id": "b-147ecbaa3e0d585c",
+      "kind": "list",
+      "ordered": false,
+      "start": 1,
+      "items": [
+        {
+          "text": "Journal entry:",
+          "inline": {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          "checked": null,
+          "blocks": [
+            {
+              "id": "b-147ecbaa3e0d585c/b-6cd67f4f5bff41f4",
+              "kind": "table",
+              "columns": 2,
+              "isHTML": false,
+              "alignments": [
+                "none",
+                "none"
+              ],
+              "header": [
+                "Date",
+                "Memo"
+              ],
+              "headerInline": [
+                {
+                  "kinds": [
+                    "text"
+                  ],
+                  "math": [],
+                  "codes": [],
+                  "links": [],
+                  "images": [],
+                  "lineBreaks": 0,
+                  "htmlStyles": []
+                },
+                {
+                  "kinds": [
+                    "text"
+                  ],
+                  "math": [],
+                  "codes": [],
+                  "links": [],
+                  "images": [],
+                  "lineBreaks": 0,
+                  "htmlStyles": []
+                }
+              ],
+              "headerSpans": [
+                [
+                  1,
+                  1
+                ],
+                [
+                  1,
+                  1
+                ]
+              ],
+              "rows": [
+                [
+                  "Mar 1",
+                  "Cash"
+                ]
+              ],
+              "rowsInline": [
+                [
+                  {
+                    "kinds": [
+                      "text"
+                    ],
+                    "math": [],
+                    "codes": [],
+                    "links": [],
+                    "images": [],
+                    "lineBreaks": 0,
+                    "htmlStyles": []
+                  },
+                  {
+                    "kinds": [
+                      "text"
+                    ],
+                    "math": [],
+                    "codes": [],
+                    "links": [],
+                    "images": [],
+                    "lineBreaks": 0,
+                    "htmlStyles": []
+                  }
+                ]
+              ],
+              "rowSpans": [
+                [
+                  [
+                    1,
+                    1
+                  ],
+                  [
+                    1,
+                    1
+                  ]
+                ]
+              ],
+              "warnings": [],
+              "headerCellCount": 2,
+              "rowCellCounts": [
+                2
+              ],
+              "surplusCells": 0,
+              "declaredColumns": 2,
+              "mergedHeaderLines": 1,
+              "mergedRowLines": [
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "text": "Next item",
+          "inline": {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          "checked": null,
+          "blocks": []
+        }
+      ]
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

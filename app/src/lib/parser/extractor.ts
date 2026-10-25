@@ -349,12 +349,17 @@ export class ArchiveExtractor {
     fs.mkdirSync(path.join(assetsOutputDir, 'icons'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'locker_docs'), { recursive: true });
 
-    // Look for companion folder: e.g. "Lesson 1.1_files" or "Lesson 1.1.files"
+    // Look for companion folder: e.g. "Lesson 1.1_files" or "Lesson 1.1.files".
+    // iOS ingestion archives a sibling `assets` folder as `<archivedStem>assets`
+    // so it cannot collide with another package; accept that name here too so
+    // the desktop can re-parse the archived package with the course assets
+    // removed.
     const dir = path.dirname(htmlPath);
     const stem = htmlBasename.replace(/\.(html|htm)$/i, '');
     const companionDirs = [
       path.join(dir, `${stem}_files`),
       path.join(dir, `${stem}.files`),
+      path.join(dir, `${stem}assets`),
       path.join(dir, 'assets')
     ];
 

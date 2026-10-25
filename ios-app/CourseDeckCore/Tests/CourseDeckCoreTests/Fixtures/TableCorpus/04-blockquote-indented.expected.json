@@ -1,0 +1,258 @@
+{
+  "blocks": [
+    {
+      "id": "b-ad1a6d822098eb84",
+      "kind": "blockquote",
+      "blocks": [
+        {
+          "id": "b-ad1a6d822098eb84/b-6cd67f4f5bff41f4",
+          "kind": "table",
+          "columns": 2,
+          "isHTML": false,
+          "alignments": [
+            "none",
+            "none"
+          ],
+          "header": [
+            "Criterion",
+            "Weight"
+          ],
+          "headerInline": [
+            {
+              "kinds": [
+                "text"
+              ],
+              "math": [],
+              "codes": [],
+              "links": [],
+              "images": [],
+              "lineBreaks": 0,
+              "htmlStyles": []
+            },
+            {
+              "kinds": [
+                "text"
+              ],
+              "math": [],
+              "codes": [],
+              "links": [],
+              "images": [],
+              "lineBreaks": 0,
+              "htmlStyles": []
+            }
+          ],
+          "headerSpans": [
+            [
+              1,
+              1
+            ],
+            [
+              1,
+              1
+            ]
+          ],
+          "rows": [
+            [
+              "Accuracy",
+              "50%"
+            ],
+            [
+              "Clarity",
+              "50%"
+            ]
+          ],
+          "rowsInline": [
+            [
+              {
+                "kinds": [
+                  "text"
+                ],
+                "math": [],
+                "codes": [],
+                "links": [],
+                "images": [],
+                "lineBreaks": 0,
+                "htmlStyles": []
+              },
+              {
+                "kinds": [
+                  "text"
+                ],
+                "math": [],
+                "codes": [],
+                "links": [],
+                "images": [],
+                "lineBreaks": 0,
+                "htmlStyles": []
+              }
+            ],
+            [
+              {
+                "kinds": [
+                  "text"
+                ],
+                "math": [],
+                "codes": [],
+                "links": [],
+                "images": [],
+                "lineBreaks": 0,
+                "htmlStyles": []
+              },
+              {
+                "kinds": [
+                  "text"
+                ],
+                "math": [],
+                "codes": [],
+                "links": [],
+                "images": [],
+                "lineBreaks": 0,
+                "htmlStyles": []
+              }
+            ]
+          ],
+          "rowSpans": [
+            [
+              [
+                1,
+                1
+              ],
+              [
+                1,
+                1
+              ]
+            ],
+            [
+              [
+                1,
+                1
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          ],
+          "warnings": [],
+          "headerCellCount": 2,
+          "rowCellCounts": [
+            2,
+            2
+          ],
+          "surplusCells": 0,
+          "declaredColumns": 2,
+          "mergedHeaderLines": 1,
+          "mergedRowLines": [
+            1,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b-6cd67f4f5bff41f4",
+      "kind": "table",
+      "columns": 2,
+      "isHTML": false,
+      "alignments": [
+        "none",
+        "none"
+      ],
+      "header": [
+        "Indented",
+        "Table"
+      ],
+      "headerInline": [
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        },
+        {
+          "kinds": [
+            "text"
+          ],
+          "math": [],
+          "codes": [],
+          "links": [],
+          "images": [],
+          "lineBreaks": 0,
+          "htmlStyles": []
+        }
+      ],
+      "headerSpans": [
+        [
+          1,
+          1
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "rows": [
+        [
+          "one",
+          "two"
+        ]
+      ],
+      "rowsInline": [
+        [
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          },
+          {
+            "kinds": [
+              "text"
+            ],
+            "math": [],
+            "codes": [],
+            "links": [],
+            "images": [],
+            "lineBreaks": 0,
+            "htmlStyles": []
+          }
+        ]
+      ],
+      "rowSpans": [
+        [
+          [
+            1,
+            1
+          ],
+          [
+            1,
+            1
+          ]
+        ]
+      ],
+      "warnings": [],
+      "headerCellCount": 2,
+      "rowCellCounts": [
+        2
+      ],
+      "surplusCells": 0,
+      "declaredColumns": 2,
+      "mergedHeaderLines": 1,
+      "mergedRowLines": [
+        1
+      ]
+    }
+  ],
+  "warnings": [],
+  "hadFrontmatter": false
+}

@@ -1,0 +1,36 @@
+{
+  "configurations" : [
+    {
+      "id" : "B6F0A1C2-4D3E-4F5A-8B9C-0D1E2F3A4B5C",
+      "name" : "Default",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:CourseDeck.xcodeproj",
+      "identifier" : "A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D",
+      "name" : "CourseDeck"
+    }
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:CourseDeck.xcodeproj",
+        "identifier" : "C2D3E4F5-A6B7-4C8D-9E0F-1A2B3C4D5E6F",
+        "name" : "CourseDeckTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:CourseDeck.xcodeproj",
+        "identifier" : "D3E4F5A6-B7C8-4D9E-0F1A-2B3C4D5E6F7A",
+        "name" : "CourseDeckUITests"
+      }
+    }
+  ],
+  "version" : 1
+}
