@@ -238,7 +238,7 @@
 
         {#if attachmentChars > 0}
           <span class="text-[10px] text-stone-400 dark:text-stone-500 font-mono">
-            ~{attachmentChars.toLocaleString()} chars
+            {attachmentChars}-chars
           </span>
         {/if}
       </div>

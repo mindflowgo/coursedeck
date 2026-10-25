@@ -287,7 +287,7 @@ export class GenerationQueue {
 
       try {
         JobService.createJob(
-          task.tab === 'schedule' ? 'generate_course_doc' : 'generate_lesson_doc',
+          task.tab === 'schedule' || task.lessonId === 'course' ? 'generate_course_doc' : 'generate_lesson_doc',
           task.courseId,
           {
             id: task.id,
@@ -755,16 +755,21 @@ export class GenerationQueue {
           `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalWithFrontmatter.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}${warningsInfo}\n`
         );
       } else {
+        const isCourse = nextTask.lessonId === 'course';
         const isUnit = isUnitScopeId(nextTask.lessonId);
-        const bundle = CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId);
-        if (!isUnit && (!bundle || !bundle.lesson)) {
+        const bundle = !isCourse ? CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId) : null;
+        if (!isUnit && !isCourse && (!bundle || !bundle.lesson)) {
           throw new Error(`Lesson file not found for ${nextTask.courseId} / ${nextTask.lessonId}`);
         }
 
         // Load prompt template
         let systemPrompt = nextTask.customPrompt;
         if (!systemPrompt) {
-          let promptKey = isUnit ? `unit_${nextTask.tab}` : nextTask.tab;
+          let promptKey = isCourse
+            ? `course_${nextTask.tab}`
+            : isUnit
+              ? `unit_${nextTask.tab}`
+              : nextTask.tab;
           let promptItem = PromptService.getPrompt(promptKey) || PromptService.getPrompt(nextTask.tab);
 
           systemPrompt =
@@ -773,15 +778,23 @@ export class GenerationQueue {
         }
 
         let attachment = nextTask.contextAttachment;
-        if (!isUnit && (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - cheatsheets')) {
+        if (!attachment) {
+          if (isCourse) {
+            attachment = nextTask.tab === 'summary' ? 'course - summaries' : nextTask.tab === 'cheatsheet' ? 'course - cheatsheets' : 'course - lessons';
+          } else if (isUnit) {
+            attachment = 'unit - lessons';
+          } else {
+            attachment = 'lesson - lessons';
+          }
+        } else if (!isUnit && !isCourse && (attachment === 'lesson - summaries' || attachment === 'lesson - cheatsheets')) {
           attachment = 'lesson - lessons';
-        } else if (!attachment) {
-          attachment = isUnit ? 'unit - lessons' : 'course - summaries';
         }
+
         const userPrompt =
           nextTask.customContent !== undefined
             ? nextTask.customContent
             : CourseService.getPromptContext(nextTask.courseId, attachment, nextTask.lessonId) ||
+              (isCourse ? CourseService.buildAggregatedPayload(nextTask.courseId, nextTask.tab as any) : '') ||
               (bundle?.lesson ? stripLessonMedia(parseFrontmatter(bundle.lesson).body).trim() : '');
 
         if (!userPrompt || userPrompt.trim().length === 0) {
@@ -819,7 +832,7 @@ export class GenerationQueue {
         const parsed = parseFrontmatter(repairedCompletion);
         const frontmatter = {
           ...parsed.frontmatter,
-          type: nextTask.tab,
+          type: isCourse ? `course_${nextTask.tab}` : nextTask.tab,
           updatedAt: new Date().toISOString().split('T')[0],
           prompt: systemPrompt,
           contextAttachment: attachment
@@ -828,7 +841,11 @@ export class GenerationQueue {
         const finalMarkdown = serializeWithFrontmatter(frontmatter, parsed.body.trim());
 
         // Save to disk
-        CourseService.saveLessonTab(nextTask.courseId, nextTask.lessonId, nextTask.tab, finalMarkdown);
+        if (isCourse) {
+          CourseService.saveCourseDocument(nextTask.courseId, nextTask.tab, finalMarkdown);
+        } else {
+          CourseService.saveLessonTab(nextTask.courseId, nextTask.lessonId, nextTask.tab, finalMarkdown);
+        }
 
         nextTask.status = 'completed';
         nextTask.completedAt = new Date().toISOString();

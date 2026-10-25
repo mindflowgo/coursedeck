@@ -4,6 +4,7 @@
   import Header from '$lib/components/Header.svelte';
   import PromptsManager from '$lib/components/PromptsManager.svelte';
   import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
+  import ReparsePromptsModal from '$lib/components/ReparsePromptsModal.svelte';
   import { onMount } from 'svelte';
   import { apiFetch, isTauriEnvironment, isTauriDesktop } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
@@ -36,7 +37,8 @@
     EyeOff,
     Info,
     Tablet,
-    Camera
+    Camera,
+    Sparkles
   } from 'lucide-svelte';
   import { openConnectIpadModal, openScanDesktopModal } from '$lib/modalState.svelte';
   import { theme } from '$lib/theme.svelte';
@@ -149,6 +151,18 @@
 
   let isCompressingImages = $state(false);
   let compressImagesResult: string = $state('');
+
+  let isReparsePromptsModalOpen = $state(false);
+  let reparsePromptsResult: string = $state('');
+
+  function handleReparsePromptsSuccess(result: { enqueuedCount: number; coursesCount: number }) {
+    reparsePromptsResult = `Successfully enqueued ${result.enqueuedCount} sheet(s) across ${result.coursesCount} course(s) into the AI generation queue with updated prompts!`;
+    setTimeout(() => {
+      if (reparsePromptsResult.includes('Successfully enqueued')) {
+        reparsePromptsResult = '';
+      }
+    }, 8000);
+  }
 
   function flashLlmMessage(text: string) {
     llmMessage = text;
@@ -1115,7 +1129,7 @@
         <span class="text-[11px] text-stone-400 dark:text-stone-500">Only needed if files were damaged</span>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-0.5">
         <div class="flex items-center justify-between p-2 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 gap-2">
           <div class="text-[11px] text-stone-600 dark:text-stone-400 leading-tight">
             Re-parse all raw HTML in <code class="text-[10px]">_backup/</code>
@@ -1132,6 +1146,19 @@
               <RotateCw class="w-3 h-3" />
               <span>Re-parse All</span>
             {/if}
+          </button>
+        </div>
+
+        <div class="flex items-center justify-between p-2 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 gap-2">
+          <div class="text-[11px] text-stone-600 dark:text-stone-400 leading-tight">
+            Reparse with updated prompts
+          </div>
+          <button
+            onclick={() => (isReparsePromptsModalOpen = true)}
+            class="flex items-center space-x-1 px-2 py-1 rounded border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-[11px] font-medium text-stone-700 dark:text-stone-300 transition shrink-0 cursor-pointer"
+          >
+            <Sparkles class="w-3 h-3 text-stone-600 dark:text-stone-400" />
+            <span>Reparse Prompts...</span>
           </button>
         </div>
 
@@ -1154,6 +1181,12 @@
           </button>
         </div>
       </div>
+
+      {#if reparsePromptsResult}
+        <div class="text-[11px] px-2 py-1.5 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
+          {reparsePromptsResult}
+        </div>
+      {/if}
 
       {#if reparseResult}
         <div class="text-[11px] px-2 py-1 rounded bg-stone-50 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-stone-700 dark:text-stone-300">
@@ -1626,4 +1659,10 @@
   </div>
   </div>
 </div>
+
+<ReparsePromptsModal
+  isOpen={isReparsePromptsModalOpen}
+  onClose={() => (isReparsePromptsModalOpen = false)}
+  onSuccess={handleReparsePromptsSuccess}
+/>
 

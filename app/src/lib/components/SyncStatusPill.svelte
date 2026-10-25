@@ -47,24 +47,10 @@
 </script>
 
 {#if isClient}
-  <div class="flex items-center space-x-1.5 text-xs font-medium">
-    <!-- Status Indicator -->
-    <div
-      class="flex items-center space-x-1.5 px-2.5 py-1 rounded-full border transition-colors {syncState.serverReachable
-        ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400'
-        : 'bg-stone-100 dark:bg-stone-800 border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400'}"
-      title={syncState.serverReachable ? 'Connected to desktop computer' : 'Offline Mode (using local cache)'}
-    >
-      <span
-        class="w-1.5 h-1.5 rounded-full {syncState.serverReachable ? 'bg-emerald-500 animate-pulse' : 'bg-stone-400'}"
-      ></span>
-      <span class="text-[11px] hidden md:inline">
-        {syncState.serverReachable ? 'Connected' : 'Offline'}
-      </span>
-    </div>
-
-    <!-- Re-sync button (when desktop is reachable) -->
-    {#if syncState.serverReachable}
+  {#if syncState.serverReachable || syncState.pendingPushCount > 0}
+    <div class="flex items-center space-x-1.5 text-xs font-medium shrink-0">
+      <!-- Re-sync button (when desktop is reachable) -->
+      {#if syncState.serverReachable}
       <button
         type="button"
         onclick={handleManualSync}
@@ -117,4 +103,5 @@
       {/if}
     {/if}
   </div>
+  {/if}
 {/if}

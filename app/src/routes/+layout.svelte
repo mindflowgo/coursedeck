@@ -65,7 +65,7 @@
   onClose={closeScanDesktopModal}
 />
 
-<div class="h-full flex flex-col bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans transition-colors duration-150">
+<div class="h-full flex flex-col bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans transition-colors duration-150 w-full max-w-full min-w-0 overflow-x-hidden">
   {@render children()}
   <ZoomIndicator />
 </div>

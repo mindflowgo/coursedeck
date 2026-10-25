@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiFetch } from '$lib/api';
+  import { apiFetch, isMobileDevice } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
@@ -69,6 +69,7 @@
     FileDown,
     MoreHorizontal,
     ChevronRight,
+    ChevronDown,
     ThumbsUp
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
@@ -101,6 +102,25 @@
   let isLoadingCourseDoc: boolean = $state(false);
   let isGeneratingCourseDoc: boolean = $state(false);
   let quizRunnerKey: number = $state(0);
+  let isMobile: boolean = $state(typeof window !== 'undefined' ? isMobileDevice() : false);
+  let isMobileTabDropdownOpen: boolean = $state(false);
+
+  let activeTabLabel = $derived.by(() => {
+    if (isCourseScope) {
+      if (activeTab === 'lesson') return 'Lessons';
+      if (activeTab === 'summary') return 'Summary';
+      if (activeTab === 'schedule') return 'Schedule';
+      if (activeTab === 'test') return 'Practice Test';
+    } else if (isUnitScope) {
+      if (activeTab === 'assignments') return 'Assignments';
+      if (activeTab === 'test') return 'Unit Test';
+    } else {
+      if (activeTab === 'lesson') return 'Lessons';
+      if (activeTab === 'summary') return 'Summary';
+      if (activeTab === 'cheatsheet') return 'Cheatsheet';
+    }
+    return customTabDisplayName(activeTab);
+  });
 
   // Unit scope states
   let isUnitScope: boolean = $derived(
@@ -834,6 +854,7 @@
   }
 
   function switchTab(tab: PageTab) {
+    isMobileTabDropdownOpen = false;
     console.log(`[NAV] switchTab "${tab}" | scope=${isCourseScope} unit=${isUnitScope} lesson=${selectedLessonId}`);
     if (isCourseScope && !hasCourseDoc(tab)) {
       console.log(`[NAV] switchTab: "${tab}" has no course doc → falling back to lesson`);
@@ -867,6 +888,7 @@
     isEditing = false;
     showPromptCard = false;
     isLessonActionsOpen = false;
+    isMobileTabDropdownOpen = false;
     if (isUnitScopeId(lessonId)) {
       if (activeTab !== 'assignments' && activeTab !== 'test' && !isCustomTabSlug(activeTab)) {
         activeTab = 'assignments';
@@ -893,6 +915,7 @@
     isCourseScope = true;
     isEditing = false;
     isLessonActionsOpen = false;
+    isMobileTabDropdownOpen = false;
     if (!hasCourseDoc(activeTab)) {
       activeTab = 'lesson';
     }
@@ -2074,6 +2097,7 @@
   });
 
   onMount(async () => {
+    isMobile = isMobileDevice();
     installPerfObservers();
     await loadPrompts();
     startQueueFeedback();
@@ -2156,11 +2180,11 @@
     >Return to courses</button>
   </div>
 {:else}
-  <div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
+  <div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] w-full max-w-full min-w-0 overflow-hidden">
     <!-- Sub-Header: Lesson Selector & Tabs -->
-    <div class="border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0">
+    <div class="relative z-20 border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-2 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-1.5 xs:gap-2 sm:gap-3 shrink-0 w-full max-w-full">
       <!-- Left: Lesson Selector & Add Chapters Button -->
-      <div class="flex items-center space-x-2">
+      <div class="flex items-center space-x-1.5 sm:space-x-2 shrink min-w-0">
         <LessonSelector
           {course}
           {selectedLessonId}
@@ -2294,8 +2318,9 @@
         {/if}
       </div>
 
-      <!-- Middle: Study Tabs (Course | Unit | Lesson) -->
-      <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium">
+      <!-- Middle: Study Tabs (Course | Unit | Lesson) - Desktop / Tablet (>= 480px) -->
+      <div class="hidden xs:block max-w-full overflow-x-auto scrollbar-none py-0.5">
+        <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium shrink-0">
         {#if isCourseScope}
           <button
             onclick={() => switchTab('lesson')}
@@ -2423,11 +2448,248 @@
             <Plus class="w-3.5 h-3.5" />
           </button>
         {/if}
+        </div>
+      </div>
+
+      <!-- Mobile Compact Tab Dropdown (< 480px) -->
+      <div class="block xs:hidden relative shrink-0">
+        <button
+          type="button"
+          onclick={() => (isMobileTabDropdownOpen = !isMobileTabDropdownOpen)}
+          class="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-800 bg-stone-100 dark:bg-stone-800/80 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 text-xs font-medium text-stone-800 dark:text-stone-200 transition shadow-2xs shrink-0 cursor-pointer {isMobileTabDropdownOpen ? 'ring-2 ring-stone-400/20 dark:ring-stone-600/30' : ''}"
+          title="Switch tab ({activeTabLabel})"
+          aria-expanded={isMobileTabDropdownOpen}
+        >
+          {#if activeTab === 'lesson'}
+            <BookOpen class="w-3.5 h-3.5 shrink-0 text-stone-600 dark:text-stone-300" />
+          {:else if activeTab === 'summary'}
+            <Sparkles class="w-3.5 h-3.5 shrink-0 text-amber-500" />
+          {:else if activeTab === 'cheatsheet'}
+            <ListCollapse class="w-3.5 h-3.5 shrink-0 text-blue-500" />
+          {:else if activeTab === 'schedule'}
+            <CalendarDays class="w-3.5 h-3.5 shrink-0 text-stone-600 dark:text-stone-300" />
+          {:else if activeTab === 'assignments'}
+            <Bookmark class="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
+          {:else if activeTab === 'test'}
+            <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+          {:else}
+            <FileText class="w-3.5 h-3.5 shrink-0 text-stone-500" />
+          {/if}
+          <span class="truncate max-w-[70px] min-[390px]:max-w-[85px]">{activeTabLabel}</span>
+          <ChevronDown class="w-3 h-3 text-stone-400 shrink-0 transition {isMobileTabDropdownOpen ? 'rotate-180' : ''}" />
+        </button>
+
+        {#if isMobileTabDropdownOpen}
+          <!-- Click outside backdrop -->
+          <div
+            class="fixed inset-0 z-40"
+            onclick={() => (isMobileTabDropdownOpen = false)}
+            aria-hidden="true"
+          ></div>
+
+          <div
+            role="menu"
+            tabindex="-1"
+            class="absolute right-0 top-full mt-1.5 w-48 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 py-1 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100"
+          >
+            <div class="py-1">
+              {#if isCourseScope}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('lesson')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'lesson' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <BookOpen class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Complete Lessons</span>
+                  </div>
+                  {#if activeTab === 'lesson'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('summary')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'summary' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <Sparkles class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Summary</span>
+                  </div>
+                  {#if activeTab === 'summary'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('schedule')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'schedule' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <CalendarDays class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Schedule</span>
+                  </div>
+                  {#if activeTab === 'schedule'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('test')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'test' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <CheckCircle2 class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Practice Test</span>
+                  </div>
+                  {#if activeTab === 'test'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+              {:else if isUnitScope}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('assignments')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'assignments' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <Bookmark class="w-3.5 h-3.5 text-purple-600 dark:text-purple-400 shrink-0" />
+                    <span class="truncate">Assignments</span>
+                  </div>
+                  {#if activeTab === 'assignments'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('test')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'test' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                    <span class="truncate">Unit Test</span>
+                  </div>
+                  {#if activeTab === 'test'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                {#each customTabs as slug (slug)}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => switchTab(slug)}
+                    class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === slug ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                  >
+                    <div class="flex items-center space-x-2 truncate">
+                      <FileText class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                      <span class="truncate">{customTabDisplayName(slug)}</span>
+                    </div>
+                    {#if activeTab === slug}
+                      <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    {/if}
+                  </button>
+                {/each}
+
+              {:else}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('lesson')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'lesson' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <BookOpen class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Lessons</span>
+                  </div>
+                  {#if activeTab === 'lesson'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('summary')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'summary' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <Sparkles class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Summary</span>
+                  </div>
+                  {#if activeTab === 'summary'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('cheatsheet')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'cheatsheet' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <ListCollapse class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <span class="truncate">Cheatsheet</span>
+                  </div>
+                  {#if activeTab === 'cheatsheet'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                {#each customTabs as slug (slug)}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => switchTab(slug)}
+                    class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === slug ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                  >
+                    <div class="flex items-center space-x-2 truncate">
+                      <FileText class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                      <span class="truncate">{customTabDisplayName(slug)}</span>
+                    </div>
+                    {#if activeTab === slug}
+                      <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    {/if}
+                  </button>
+                {/each}
+              {/if}
+            </div>
+
+            {#if !isCourseScope}
+              <div class="py-1">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => {
+                    isMobileTabDropdownOpen = false;
+                    openNewTabModal();
+                  }}
+                  class="flex w-full items-center space-x-2 px-3 py-2 text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer text-left"
+                >
+                  <Plus class="w-3.5 h-3.5 shrink-0" />
+                  <span>New Tab...</span>
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
       </div>
     </div>
 
     <!-- Main Workspace Content Area (with checkpoints support). -->
-    <div class="relative flex-1 flex flex-col overflow-hidden w-full">
+    <div class="relative flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0">
       <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
         <FloatingCheckpointTrigger
           containerEl={contentScroller}
@@ -2437,7 +2699,7 @@
       </div>
 
       <div
-        class="relative flex-1 overflow-y-auto p-4 sm:p-8 max-w-5xl mx-auto w-full [overflow-anchor:none]"
+        class="relative flex-1 overflow-y-auto overflow-x-hidden {isMobile ? 'p-0' : 'p-0 sm:p-8'} max-w-5xl mx-auto w-full min-w-0 [overflow-anchor:none]"
         bind:this={contentScroller}
         onscroll={handleContentScroll}
       >
@@ -2462,21 +2724,20 @@
         </div>
       {:else}
         <!-- Top-Right Action Controls (Sticky): direct child of the scroll
-             container. Negative top offsets cancel the container's py padding
-             (p-4 = 16px, sm:p-8 = 32px) so the row pins ~2px below the
-             header line instead of 16-32px down. -->
-        <div class="sticky -top-[14px] sm:-top-[30px] z-10 flex justify-end px-8 sm:px-12 pt-0.5 mt-1 -mb-[30px] pointer-events-none">
-          <div class="pointer-events-auto flex items-center space-x-2">
-            {#if pageCharCount > 0}
-              <span
-                class="text-xs font-mono text-stone-400 dark:text-stone-500 select-none mr-1.5 whitespace-nowrap"
-                title="Document length: ~{pageCharCount.toLocaleString()} characters"
-              >
-                ~ {pageCharCount.toLocaleString()} chars
-              </span>
-            {/if}
-
+             container. Negative top offsets cancel the container's py padding on desktop
+             while staying flush on mobile. -->
+        <div class="sticky top-1 sm:-top-[30px] z-10 flex justify-end px-2 sm:px-12 pt-0.5 mt-1 mb-2 sm:-mb-[30px] pointer-events-none max-w-full">
+          <div class="pointer-events-auto flex items-center space-x-1.5 sm:space-x-2 max-w-full">
             {#if isEditing}
+              {#if pageCharCount > 0}
+                <span
+                  class="text-[10px] sm:text-[11px] font-mono text-stone-400 dark:text-stone-500 select-none mr-0.5 sm:mr-1 whitespace-nowrap leading-none"
+                  title="Document length: {pageCharCount.toLocaleString()} characters"
+                >
+                  {pageCharCount}-chars
+                </span>
+              {/if}
+
               <button
                 onclick={handleCancelEdit}
                 class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 transition shadow-xs hover:shadow-sm cursor-pointer"
@@ -2532,6 +2793,15 @@
                 </button>
               {/if}
 
+              {#if pageCharCount > 0}
+                <span
+                  class="text-[10px] sm:text-[11px] font-mono text-stone-400 dark:text-stone-500 select-none mr-0.5 sm:mr-1 whitespace-nowrap leading-none"
+                  title="Document length: {pageCharCount.toLocaleString()} characters"
+                >
+                  {pageCharCount}-chars
+                </span>
+              {/if}
+
               {#if activeTab !== 'lesson' && activeTab !== 'schedule'}
                 <button
                   type="button"
@@ -2577,7 +2847,7 @@
 
         <!-- Prompt Card for generated tabs (when revealed and not editing raw markdown) -->
         {#if showPromptCard && activeTab !== 'lesson' && activeTab !== 'schedule' && !isEditing}
-          <div class="pt-9 sm:pt-10">
+          <div class="pt-6 sm:pt-10 px-1.5 sm:px-0 mb-2 sm:mb-4">
             <PromptCard
               prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
               defaultPrompt={defaultPromptForActiveTab}
@@ -2605,8 +2875,8 @@
           </div>
         {/if}
 
-        <!-- Main Card -->
-        <div class="relative bg-white dark:bg-stone-900 rounded-2xl border border-stone-200 dark:border-stone-800 shadow-2xs group">
+        <!-- Main Card: disappears on mobile (no rounded corners, no borders, no shadow) -->
+        <div class="relative bg-white dark:bg-stone-900 {isMobile ? 'rounded-none border-0 shadow-none' : 'rounded-none sm:rounded-2xl border-0 sm:border border-stone-200 dark:border-stone-800 shadow-none sm:shadow-2xs'} group w-full max-w-full min-w-0 overflow-hidden">
           {#if isCourseScope && isGeneratingCourseDoc && activeTab !== 'schedule'}
             <div class="h-64 flex flex-col items-center justify-center space-y-3 p-8 text-center">
               <Loader2 class="w-7 h-7 animate-spin text-amber-500" />
@@ -2619,8 +2889,8 @@
             </div>
           {:else if isEditing}
             <!-- CodeMirror Editor (direct raw markdown with YAML frontmatter) -->
-            <div class="p-4 sm:p-6 pt-16">
-              <div class="h-[calc(100vh-16rem)]">
+            <div class="px-[6px] py-3 {isMobile ? 'pt-12' : 'sm:p-6 sm:pt-16 pt-12'} w-full max-w-full min-w-0 overflow-hidden">
+              <div class="h-[calc(100vh-16rem)] w-full max-w-full min-w-0">
                 <CodeMirrorEditor
                   value={tabContents[activeTab]}
                   courseId={course.id}
@@ -2631,7 +2901,7 @@
             </div>
           {:else if activeTab === 'schedule' && isCourseScope}
             <!-- Schedule: structured viewer or first-time intro -->
-            <div class="p-6 sm:p-10">
+            <div class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-x-auto">
               {#if isScheduleGenerating}
                 <div class="mb-5 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800/60 bg-blue-50/70 dark:bg-blue-950/40 flex items-center space-x-3 text-blue-900 dark:text-blue-200">
                   <Loader2 class="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
@@ -2710,7 +2980,7 @@
             </div>
           {:else if isCourseScope && activeTab === 'lesson'}
             <!-- Course Navigation Page -->
-            <div class="relative overflow-hidden p-6 sm:p-10 md:p-14 min-h-[460px] sm:min-h-[500px] flex flex-col justify-center">
+            <div class="relative overflow-hidden px-[6px] py-6 sm:p-10 md:p-14 min-h-[460px] sm:min-h-[500px] flex flex-col justify-center w-full max-w-full min-w-0">
               <!-- Left-side Blended Scholarly Book Illustration (Enlarged & Prominently Visible) -->
               <div
                 class="pointer-events-none select-none absolute -left-12 sm:-left-6 md:left-0 top-1/2 -translate-y-1/2 w-80 sm:w-[420px] md:w-[480px] lg:w-[540px] h-[400px] sm:h-[460px] md:h-[500px] flex items-center justify-center opacity-70 sm:opacity-85 dark:opacity-65 transition-opacity"
@@ -2816,7 +3086,7 @@
             </div>
           {:else if isUnitScope && activeTab === 'test'}
             <!-- Unit Practice Test Interactive View -->
-            <div class="p-6 sm:p-10">
+            <div class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-x-auto">
               {#if !parsedActiveTab.body || parsedActiveTab.body.trim().length === 0}
                 <div class="max-w-md mx-auto py-12 text-center space-y-3">
                   <div class="mx-auto w-fit p-3 rounded-2xl bg-stone-100 dark:bg-stone-800 text-emerald-600 dark:text-emerald-400">
@@ -2846,7 +3116,7 @@
             </div>
           {:else}
             <!-- Markdown Reader View -->
-            <article class="p-6 sm:p-10">
+            <article class="px-[6px] py-4 {isMobile ? '' : 'sm:p-10'} w-full max-w-full min-w-0 overflow-hidden">
               <MarkdownViewer
                 markdown={parsedActiveTab.body}
                 courseId={course.id}

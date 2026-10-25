@@ -93,6 +93,7 @@
     const state = EditorState.create({
       doc: lastValue,
       extensions: [
+        EditorView.lineWrapping,
         isolateArrowEvents,
         editorNavigationKeymap,
         liveMarkdown({ courseId }),

@@ -109,27 +109,27 @@
   }
 </script>
 
-<div class="relative">
+<div class="relative shrink-0">
   <!-- Trigger Button in Header: grey, shows queue count beside icon when generating -->
   <button
     type="button"
     onclick={() => { isOpen = !isOpen; if (isOpen) queueStatus.refresh(); }}
-    class="relative flex items-center justify-center h-8 rounded-md text-xs font-medium transition cursor-pointer text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-100 {isGenerating ? 'px-2 space-x-1.5' : 'w-8'} {isOpen ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : ''}"
+    class="relative flex items-center justify-center h-10 sm:h-8 rounded-lg text-xs font-medium transition cursor-pointer text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 hover:text-stone-900 dark:hover:text-stone-100 {isGenerating ? 'px-2.5 space-x-1.5' : 'w-10 sm:w-8'} {isOpen ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : ''}"
     title={isGenerating ? `Background AI Generation Queue (${totalGeneratingCount} active/queued)` : 'Background AI Generation Queue'}
     aria-label="Background AI Generation Queue"
     aria-expanded={isOpen}
   >
     {#if isGenerating}
-      <Loader2 class="w-4 h-4 text-stone-600 dark:text-stone-300 animate-spin shrink-0" />
+      <Loader2 class="w-5 h-5 sm:w-4 sm:h-4 text-stone-600 dark:text-stone-300 animate-spin shrink-0" />
       <span
         class="inline-flex items-center justify-center min-w-[17px] h-4 px-1 text-[10px] font-bold rounded-full bg-stone-200 dark:bg-stone-700 text-stone-700 dark:text-stone-200 tabular-nums shadow-2xs"
       >
         {totalGeneratingCount}
       </span>
     {:else if !reachable}
-      <AlertCircle class="w-4 h-4 text-rose-500 shrink-0" />
+      <AlertCircle class="w-5 h-5 sm:w-4 sm:h-4 text-rose-500 shrink-0" />
     {:else}
-      <Sparkles class="w-4 h-4 text-stone-500 dark:text-stone-400 shrink-0" />
+      <Sparkles class="w-5 h-5 sm:w-4 sm:h-4 text-stone-500 dark:text-stone-400 shrink-0" />
     {/if}
   </button>
 

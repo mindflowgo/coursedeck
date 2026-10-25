@@ -36,6 +36,7 @@ import { ArcSyncProvider } from './services/sync/arc.provider';
 import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
 import { TeacherCheckinService, cleanImageReferences, type PopQuizQuestionResult, type PopQuizResultPayload, type UnitTestQuestionResult, type UnitTestResultPayload } from './services/teacherCheckin.service';
 import { QuestionParser } from '../parser/questionParser';
+import { formatUnitScopeId } from '../tabs';
 
 /**
  * Single source of truth for the entire HTTP API.
@@ -1005,6 +1006,159 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         { converted: 0, bytesBefore: 0, bytesAfter: 0 }
       );
       return json({ success: true, results, totals });
+    }
+
+    // ---- /api/maintenance/reparse-prompts ----
+    if (pathname === '/api/maintenance/reparse-prompts' && method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const rawCategories = Array.isArray(body.categories) ? body.categories.map(String) : [];
+
+      const VALID_CATEGORIES = [
+        'lesson_summaries',
+        'lesson_cheatsheets',
+        'unit_assignments',
+        'unit_tests',
+        'course_summaries',
+        'course_cheatsheets',
+        'course_tests'
+      ] as const;
+
+      const selectedCategories = rawCategories.filter((c): c is (typeof VALID_CATEGORIES)[number] =>
+        (VALID_CATEGORIES as readonly string[]).includes(c)
+      );
+
+      if (selectedCategories.length === 0) {
+        return error(400, 'At least one category must be selected for reparse.');
+      }
+
+      let courseIds: string[] = [];
+      if (body.courseId && body.courseId !== 'all') {
+        let courseId: string;
+        try {
+          courseId = assertCourseId(String(body.courseId)).toLowerCase();
+        } catch {
+          return error(400, `Invalid courseId: "${body.courseId}"`);
+        }
+        const course = CourseService.getCourse(courseId);
+        if (!course) {
+          return error(404, `Course ${courseId} not found`);
+        }
+        courseIds = [courseId];
+      } else {
+        const manifests = CourseService.listCourses();
+        courseIds = manifests.map((m) => m.id.toLowerCase());
+      }
+
+      const tasksToEnqueue: Array<{
+        courseId: string;
+        lessonId: string;
+        lessonTitle: string;
+        tab: string;
+        contextAttachment?: string;
+      }> = [];
+
+      for (const courseId of courseIds) {
+        const course = CourseService.getCourse(courseId);
+        if (!course) continue;
+
+        // 1. Lesson Summaries
+        if (selectedCategories.includes('lesson_summaries')) {
+          for (const unit of course.units) {
+            for (const lesson of unit.lessons) {
+              tasksToEnqueue.push({
+                courseId,
+                lessonId: lesson.id,
+                lessonTitle: lesson.title,
+                tab: 'summary',
+                contextAttachment: 'lesson - lessons'
+              });
+            }
+          }
+        }
+
+        // 2. Lesson Cheatsheets
+        if (selectedCategories.includes('lesson_cheatsheets')) {
+          for (const unit of course.units) {
+            for (const lesson of unit.lessons) {
+              tasksToEnqueue.push({
+                courseId,
+                lessonId: lesson.id,
+                lessonTitle: lesson.title,
+                tab: 'cheatsheet',
+                contextAttachment: 'lesson - lessons'
+              });
+            }
+          }
+        }
+
+        // 3. Unit Assignments
+        if (selectedCategories.includes('unit_assignments')) {
+          for (const unit of course.units) {
+            tasksToEnqueue.push({
+              courseId,
+              lessonId: formatUnitScopeId(unit.number),
+              lessonTitle: `${unit.title} Assignments`,
+              tab: 'assignments',
+              contextAttachment: 'unit - lessons'
+            });
+          }
+        }
+
+        // 4. Unit Tests
+        if (selectedCategories.includes('unit_tests')) {
+          for (const unit of course.units) {
+            tasksToEnqueue.push({
+              courseId,
+              lessonId: formatUnitScopeId(unit.number),
+              lessonTitle: `${unit.title} Unit Test`,
+              tab: 'test',
+              contextAttachment: 'unit - lessons'
+            });
+          }
+        }
+
+        // 5. Course Summaries
+        if (selectedCategories.includes('course_summaries')) {
+          tasksToEnqueue.push({
+            courseId,
+            lessonId: 'course',
+            lessonTitle: `${course.title} Summary`,
+            tab: 'summary',
+            contextAttachment: 'course - summaries'
+          });
+        }
+
+        // 6. Course Cheatsheets
+        if (selectedCategories.includes('course_cheatsheets')) {
+          tasksToEnqueue.push({
+            courseId,
+            lessonId: 'course',
+            lessonTitle: `${course.title} Cheatsheet`,
+            tab: 'cheatsheet',
+            contextAttachment: 'course - cheatsheets'
+          });
+        }
+
+        // 7. Course Tests
+        if (selectedCategories.includes('course_tests')) {
+          tasksToEnqueue.push({
+            courseId,
+            lessonId: 'course',
+            lessonTitle: `${course.title} Course Test`,
+            tab: 'test',
+            contextAttachment: 'course - lessons'
+          });
+        }
+      }
+
+      const enqueued = queueManager.enqueue(tasksToEnqueue);
+      return json({
+        success: true,
+        enqueuedCount: enqueued.length,
+        totalRequested: tasksToEnqueue.length,
+        coursesCount: courseIds.length,
+        categories: selectedCategories
+      });
     }
 
     // ---- /api/settings/theme ----

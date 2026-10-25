@@ -677,7 +677,7 @@
 <div
   bind:this={containerEl}
   onclick={handleContainerClick}
-  class="markdown-body prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2"
+  class="markdown-body prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 w-full max-w-full min-w-0 break-words [overflow-wrap:anywhere]"
 >
   {@html renderedHtml}
 </div>
@@ -744,5 +744,92 @@
   :global(.markdown-section) {
     content-visibility: auto;
     contain-intrinsic-size: 1px 800px;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  /* Robust horizontal overflow containment for markdown elements */
+  :global(.markdown-body) {
+    max-width: 100% !important;
+    min-width: 0 !important;
+    overflow-wrap: anywhere !important;
+    word-break: break-word !important;
+  }
+
+  :global(.markdown-body p),
+  :global(.markdown-body li),
+  :global(.markdown-body blockquote) {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  :global(.markdown-body a) {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+  }
+
+  /* Tables: block display with horizontal scroll on small screens prevents layout blowout */
+  :global(.markdown-body table) {
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    box-sizing: border-box !important;
+  }
+
+  /* Code blocks: ensure horizontal scroll within container */
+  :global(.markdown-body pre) {
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    box-sizing: border-box !important;
+  }
+
+  :global(.markdown-body code) {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  :global(.markdown-body pre code) {
+    overflow-wrap: normal;
+    word-break: normal;
+    white-space: pre;
+  }
+
+  /* Math display formulas */
+  :global(.katex-display) {
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+    -webkit-overflow-scrolling: touch;
+    padding: 0.25rem 0 !important;
+  }
+
+  :global(.katex) {
+    max-width: 100%;
+  }
+
+  /* Images: enforce that no image or container exceeds 100% of the viewport width */
+  :global(.image-container),
+  :global(.image-inner) {
+    max-width: 100% !important;
+    box-sizing: border-box !important;
+  }
+
+  :global(.image-inner img),
+  :global(.image-resizable) {
+    max-width: 100% !important;
+    height: auto !important;
+    box-sizing: border-box !important;
+  }
+
+  /* Hide floating image toolbar on mobile viewports to prevent phantom horizontal width bleed */
+  @media (max-width: 640px) {
+    :global(.image-toolbar) {
+      display: none !important;
+    }
   }
 </style>

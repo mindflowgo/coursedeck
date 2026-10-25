@@ -93,7 +93,7 @@
   <div class="relative">
     <button
       onclick={toggleDropdown}
-      class="flex items-center space-x-2 px-3 py-1.5 rounded border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-100 font-medium transition shadow-2xs max-w-[280px] sm:max-w-md"
+      class="flex items-center space-x-2 px-2.5 sm:px-3 py-1.5 rounded border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-100 font-medium transition shadow-2xs max-w-[155px] min-[390px]:max-w-[190px] xs:max-w-[250px] sm:max-w-md"
     >
       {#if isCourseMode}
         <GraduationCap class="w-3.5 h-3.5 text-stone-700 dark:text-stone-300 shrink-0" />
@@ -117,12 +117,12 @@
     <!-- Dropdown Menu -->
     {#if isOpen}
       <div
-        class="fixed inset-0 z-30"
+        class="fixed inset-0 z-40"
         onclick={() => (isOpen = false)}
         role="presentation"
       ></div>
 
-      <div class="absolute left-0 mt-1 w-80 sm:w-96 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-40 overflow-hidden flex flex-col max-h-[480px]">
+      <div class="absolute left-0 mt-1 w-80 sm:w-96 max-w-[calc(100vw-16px)] rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden flex flex-col max-h-[480px]">
         <!-- Complete Course Option -->
         <div class="p-1 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950">
           <button

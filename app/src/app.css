@@ -16,6 +16,10 @@
   border-radius: 0.375rem;
   padding: 1rem 1.25rem;
   margin: 1.25rem 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .callout-note {
@@ -75,6 +79,10 @@ details.suggested-answer {
   margin: 1rem 0;
   background-color: #fafaf9;
   transition: all 0.2s ease-in-out;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 details.suggested-answer[open] {

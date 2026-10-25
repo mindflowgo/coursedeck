@@ -24,12 +24,17 @@
     QrCode
   } from 'lucide-svelte';
   import RenameCourseModal from '$lib/components/RenameCourseModal.svelte';
-  import { apiFetch, isTauriDesktop, isTauriEnvironment } from '$lib/api';
+  import { apiFetch, isTauriDesktop, isTauriEnvironment, isMobileDevice } from '$lib/api';
   import { openScanDesktopModal } from '$lib/modalState.svelte';
   import { stripCourseCodePrefix } from '$lib/courses';
   import { confirmDialog } from '$lib/dialog';
 
   const isTauri = isTauriEnvironment();
+  let isMobile = $state(typeof window !== 'undefined' ? isMobileDevice() : false);
+
+  onMount(() => {
+    isMobile = isMobileDevice();
+  });
   let courses: CourseManifest[] = $state([]);
   let isLoading = $state(true);
   let searchQuery = $state('');
@@ -172,17 +177,17 @@
 
 <Header />
 
-<main class="flex-1 overflow-y-auto px-4 py-8 sm:px-8 max-w-6xl mx-auto w-full space-y-8">
+<main class="flex-1 overflow-y-auto {isMobile ? 'px-0 py-3 space-y-4' : 'px-4 py-8 sm:px-8 space-y-8'} max-w-6xl mx-auto w-full">
   <!-- Page Hero & Search -->
-  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 {isMobile ? 'px-[6px]' : 'px-0'}">
     <div>
-      <h1 class="text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Active Courses</h1>
-      <p class="text-xs text-stone-500 dark:text-stone-400 mt-1">
+      <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Active Courses</h1>
+      <p class="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
         Click on a course to dive in. 
       </p>
     </div>
 
-    <div class="flex items-center space-x-3">
+    <div class="flex items-center space-x-2">
       <div class="relative w-full sm:w-64">
         <Search class="absolute left-3 top-2.5 w-3.5 h-3.5 text-stone-400 dark:text-stone-500" />
         <input
@@ -205,9 +210,9 @@
 
   <!-- Course Cards Grid -->
   {#if isLoading}
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div class="{isMobile ? 'flex flex-col divide-y divide-stone-200/60 dark:divide-stone-800/60' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'}">
       {#each [1, 2, 3] as _}
-        <div class="h-56 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 animate-pulse space-y-4">
+        <div class="h-44 {isMobile ? 'px-[6px] py-4' : 'h-56 rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 shadow-2xs'} animate-pulse space-y-4">
           <div class="w-16 h-5 bg-stone-100 dark:bg-stone-800 rounded"></div>
           <div class="w-3/4 h-6 bg-stone-100 dark:bg-stone-800 rounded"></div>
           <div class="w-full h-12 bg-stone-100 dark:bg-stone-800 rounded"></div>
@@ -215,7 +220,7 @@
       {/each}
     </div>
   {:else if filteredCourses.length === 0}
-    <div class="p-12 text-center rounded-2xl border border-dashed border-stone-300 dark:border-stone-800 bg-white/50 dark:bg-stone-900/50 space-y-4">
+    <div class="{isMobile ? 'mx-[6px] p-8' : 'p-12'} text-center rounded-2xl border border-dashed border-stone-300 dark:border-stone-800 bg-white/50 dark:bg-stone-900/50 space-y-4">
       <div class="w-12 h-12 rounded-2xl bg-stone-100 dark:bg-stone-800 text-stone-400 flex items-center justify-center mx-auto">
         <BookOpen class="w-6 h-6" />
       </div>
@@ -244,7 +249,7 @@
       {/if}
     </div>
   {:else}
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div class="{isMobile ? 'flex flex-col divide-y divide-stone-200/60 dark:divide-stone-800/60' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'}">
       {#each filteredCourses as course}
         {@const totalLessons = course.units.reduce((acc, u) => acc + u.lessons.length, 0)}
         <div
@@ -258,7 +263,7 @@
               goto(`/courses/${course.id}`);
             }
           }}
-          class="group relative rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 shadow-2xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700 transition flex flex-col justify-between cursor-pointer text-left {course.archived ? 'opacity-60 hover:opacity-100' : ''}"
+          class="group relative {isMobile ? 'px-[6px] py-4 border-0 rounded-none bg-transparent shadow-none' : 'rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6 shadow-2xs hover:shadow-md hover:border-stone-300 dark:hover:border-stone-700'} transition flex flex-col justify-between cursor-pointer text-left {course.archived ? 'opacity-60 hover:opacity-100' : ''}"
         >
           {#if openMenuCourseId === course.id}
             <!-- Transparent click-catcher: closes the menu on any outside click
