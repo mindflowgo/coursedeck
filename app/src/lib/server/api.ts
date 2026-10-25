@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
+import type { MarkupStroke } from '../markup/types';
 import { PromptService } from './prompts';
 import { LLMService, type LLMConfig, type LlmModelCard } from './llm';
 import { stripLessonMedia } from '../markdown/stripMedia';
@@ -467,7 +468,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         }
 
         const checkpoints = CourseService.getCheckpoints(courseId);
-        return { manifest, files, checkpoints };
+        const annotations = CourseService.getAnnotations(courseId);
+        return { manifest, files, checkpoints, annotations };
       });
 
       const prompts = PromptService.listPrompts();
@@ -495,6 +497,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
     if (pathname === '/api/sync/push' && method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as {
         checkpoints?: Record<string, any[]>;
+        annotations?: Record<string, any[]>;
       };
 
       if (!body || typeof body !== 'object') {
@@ -502,6 +505,27 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       }
 
       const results: Record<string, { merged: number; errors: string[] }> = {};
+
+      if (body.annotations && typeof body.annotations === 'object') {
+        for (const [rawCourseId, ipadStrokes] of Object.entries(body.annotations)) {
+          let courseId: string;
+          try {
+            courseId = assertCourseId(rawCourseId).toLowerCase();
+          } catch {
+            continue;
+          }
+          if (!Array.isArray(ipadStrokes)) continue;
+
+          const entry = results[courseId] ?? { merged: 0, errors: [] };
+          try {
+            const { merged } = CourseService.mergeAnnotations(courseId, ipadStrokes as MarkupStroke[]);
+            entry.merged += merged;
+          } catch (e) {
+            entry.errors.push(e instanceof Error ? e.message : String(e));
+          }
+          results[courseId] = entry;
+        }
+      }
 
       if (body.checkpoints && typeof body.checkpoints === 'object') {
         for (const [rawCourseId, ipadCheckpoints] of Object.entries(body.checkpoints)) {
@@ -2380,6 +2404,22 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
       }
 
       // ---- Checkpoints for course ----
+      // GET /api/courses/:course_id/annotations
+      if (subpath === 'annotations' && method === 'GET') {
+        const strokes = CourseService.getAnnotations(courseId);
+        return json({ strokes });
+      }
+
+      // PUT /api/courses/:course_id/annotations (merge upserts, LWW on date)
+      if (subpath === 'annotations' && method === 'PUT') {
+        const body = (await req.json().catch(() => ({}))) as { upserts?: unknown[] };
+        if (!Array.isArray(body.upserts)) {
+          return error(400, 'upserts array is required');
+        }
+        const { strokes, merged } = CourseService.mergeAnnotations(courseId, body.upserts as MarkupStroke[]);
+        return json({ success: true, merged, strokes });
+      }
+
       // GET /api/courses/:course_id/checkpoints
       if (subpath === 'checkpoints' && method === 'GET') {
         const checkpoints = CourseService.getCheckpoints(courseId);

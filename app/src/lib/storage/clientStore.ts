@@ -3,6 +3,8 @@
 
 import type { CourseManifest } from '$lib/parser/courseIngest';
 import type { Checkpoint } from '$lib/checkpoint';
+import { mergeStrokes } from '$lib/markup/render';
+import { isMarkupStroke, type MarkupStroke } from '$lib/markup/types';
 
 export interface ClientLlmModelCard {
   id: string;
@@ -30,6 +32,7 @@ export interface SyncBundle {
     manifest: CourseManifest;
     files: Record<string, string>;
     checkpoints: Checkpoint[];
+    annotations?: MarkupStroke[];
   }>;
   prompts: Array<{ id: string; content: string }>;
   llmConfig?: ClientLlmStore;
@@ -45,7 +48,7 @@ export function isTauri(): boolean {
 }
 
 const DB_NAME = 'coursedeck_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORES = [
   'meta',
@@ -54,7 +57,9 @@ const STORES = [
   'prompts',
   'llm_config',
   'checkpoints',
-  'pending_push'
+  'annotations',
+  'pending_push',
+  'pending_push_annotations'
 ] as const;
 
 let _db: IDBDatabase | null = null;
@@ -400,6 +405,14 @@ export async function importBundle(bundle: SyncBundle, desktopUrl: string): Prom
     if (Array.isArray(course.checkpoints)) {
       await put('checkpoints', courseId, course.checkpoints);
     }
+
+    if (Array.isArray(course.annotations) && course.annotations.length > 0) {
+      // Merge (never clobber local strokes not yet pushed; LWW on date)
+      const local = await getAnnotationsLocally(courseId);
+      const merged = mergeStrokes(local, course.annotations.filter(isMarkupStroke)).strokes;
+      await writeAnnotationsNative(courseId, merged);
+      await put('annotations', courseId, merged);
+    }
   }
 
   if (Array.isArray(bundle.prompts)) {
@@ -501,9 +514,76 @@ export async function getPendingPushPayload(): Promise<Record<string, Checkpoint
 export async function clearPendingPush(): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction('pending_push', 'readwrite');
-    const req = tx.objectStore('pending_push').clear();
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
+    const tx = db.transaction(['pending_push', 'pending_push_annotations'], 'readwrite');
+    tx.objectStore('pending_push').clear();
+    tx.objectStore('pending_push_annotations').clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
+}
+
+// ── Markup annotations (iPad-local, queued for push) ─────────────────────────
+
+async function writeAnnotationsNative(courseId: string, strokes: MarkupStroke[]): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('save_annotations', { courseId, strokesJson: JSON.stringify(strokes) });
+  } catch (err) {
+    console.warn('[NativeStore] Native save_annotations failed:', err);
+  }
+}
+
+export async function getAnnotationsLocally(courseId: string): Promise<MarkupStroke[]> {
+  const id = courseId.toLowerCase();
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const json = await invoke<string | null>('get_annotations', { courseId: id });
+      if (json) {
+        const parsed = JSON.parse(json);
+        if (Array.isArray(parsed)) return parsed.filter(isMarkupStroke);
+      }
+      return [];
+    } catch (err) {
+      console.warn('[NativeStore] get_annotations failed:', err);
+    }
+  }
+  return (await get<MarkupStroke[]>('annotations', id)) ?? [];
+}
+
+export async function saveAnnotationsLocally(courseId: string, upserts: MarkupStroke[]): Promise<void> {
+  const id = courseId.toLowerCase();
+  const valid = upserts.filter(isMarkupStroke);
+  if (valid.length === 0) return;
+
+  const existing = await getAnnotationsLocally(id);
+  const merged = mergeStrokes(existing, valid).strokes;
+
+  await writeAnnotationsNative(id, merged);
+  await put('annotations', id, merged);
+
+  // Queue the upserts for the next push to desktop (tombstones included)
+  const pending = (await get<MarkupStroke[]>('pending_push_annotations', id)) ?? [];
+  for (const s of valid) {
+    const i = pending.findIndex((p) => p.id === s.id);
+    if (i !== -1) pending[i] = s;
+    else pending.push(s);
+  }
+  await put('pending_push_annotations', id, pending);
+}
+
+export async function getPendingPushAnnotations(): Promise<Record<string, MarkupStroke[]>> {
+  try {
+    const rows = await getAll<MarkupStroke[]>('pending_push_annotations');
+    const result: Record<string, MarkupStroke[]> = {};
+    for (const { key, value } of rows) {
+      if (value && value.length > 0) {
+        result[key] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
 }

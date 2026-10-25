@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Marked } from 'marked';
+  import MarkupLayer from './MarkupLayer.svelte';
   import { extractMathFromMarkdown, restoreMathTokens } from '$lib/markdown/mathRenderer';
   import { repairMarkdownTables } from '$lib/markdown/tableRepair';
   import DOMPurify from 'dompurify';
@@ -85,9 +86,13 @@
     courseId: string;
     onDeleteNote?: (targetText: string, query: string) => void;
     onOpenDocument?: (url: string, title?: string) => void;
+    /** Doc file key for free-hand markup annotations (omits the overlay). */
+    markupFile?: string;
+    /** Scroll container used for finger-pan while in markup mode. */
+    markupScroller?: HTMLElement | null;
   }
 
-  let { markdown, courseId, onDeleteNote, onOpenDocument }: Props = $props();
+  let { markdown, courseId, onDeleteNote, onOpenDocument, markupFile, markupScroller }: Props = $props();
 
   let containerEl: HTMLElement | null = $state(null);
 
@@ -674,12 +679,17 @@
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  bind:this={containerEl}
-  onclick={handleContainerClick}
-  class="markdown-body prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 w-full max-w-full min-w-0 break-words [overflow-wrap:anywhere]"
->
-  {@html renderedHtml}
+<div class="relative w-full max-w-full min-w-0">
+  <div
+    bind:this={containerEl}
+    onclick={handleContainerClick}
+    class="markdown-body relative prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 w-full max-w-full min-w-0 break-words [overflow-wrap:anywhere]"
+  >
+    {@html renderedHtml}
+  </div>
+  {#if markupFile}
+    <MarkupLayer {courseId} file={markupFile} scrollerEl={markupScroller} {containerEl} />
+  {/if}
 </div>
 
 <style>
@@ -742,8 +752,7 @@
   }
 
   :global(.markdown-section) {
-    content-visibility: auto;
-    contain-intrinsic-size: 1px 800px;
+    position: relative;
     max-width: 100% !important;
     min-width: 0 !important;
     overflow-wrap: anywhere;

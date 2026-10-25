@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
 import type { Checkpoint } from '../checkpoint';
+import { isMarkupStroke, type MarkupStroke } from '../markup/types';
 import { tabFileName, courseDocFileName, parseDocFileName, parseUnitNumber, isUnitScopeId } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
@@ -339,6 +340,62 @@ export class CourseService {
       console.error(`Failed to save checkpoints to ${filePath}:`, e);
       return false;
     }
+  }
+
+  // ── Free-hand markup annotations (annotations.json per course) ────────────
+
+  static getAnnotationsPath(courseId: string): string {
+    return safeJoin(this.courseDir(courseId), 'annotations.json');
+  }
+
+  static getAnnotations(courseId: string): MarkupStroke[] {
+    const filePath = this.getAnnotationsPath(courseId);
+    if (!fs.existsSync(filePath)) return [];
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(isMarkupStroke);
+    } catch (e) {
+      console.warn(`Failed to read annotations from ${filePath}:`, e);
+      return [];
+    }
+  }
+
+  static saveAnnotations(courseId: string, strokes: MarkupStroke[]): boolean {
+    const courseDir = this.courseDir(courseId);
+    if (!fs.existsSync(courseDir)) {
+      fs.mkdirSync(courseDir, { recursive: true });
+    }
+    const filePath = this.getAnnotationsPath(courseId);
+    try {
+      fs.writeFileSync(filePath, JSON.stringify(strokes, null, 2), 'utf8');
+      return true;
+    } catch (e) {
+      console.error(`Failed to save annotations to ${filePath}:`, e);
+      return false;
+    }
+  }
+
+  /**
+   * Merges upserts into the stored strokes (by id, last-write-wins on date).
+   * Tombstones are retained so erases/undos survive device sync merges.
+   */
+  static mergeAnnotations(courseId: string, upserts: MarkupStroke[]): { strokes: MarkupStroke[]; merged: number } {
+    const existing = this.getAnnotations(courseId);
+    const byId = new Map(existing.map((s) => [s.id, s]));
+    let merged = 0;
+    for (const up of upserts) {
+      if (!isMarkupStroke(up)) continue;
+      const cur = byId.get(up.id);
+      if (!cur || new Date(up.date).getTime() >= new Date(cur.date).getTime()) {
+        byId.set(up.id, up);
+        merged++;
+      }
+    }
+    const strokes = Array.from(byId.values());
+    this.saveAnnotations(courseId, strokes);
+    return { strokes, merged };
   }
 
   static recordPositionCheckpoint(courseId: string, file: string, verticalPosition: number): Checkpoint {

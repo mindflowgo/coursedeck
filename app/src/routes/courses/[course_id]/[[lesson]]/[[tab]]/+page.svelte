@@ -19,6 +19,13 @@
   import SyncScheduleModal from '$lib/components/SyncScheduleModal.svelte';
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
+  import MarkupMenu from '$lib/components/MarkupMenu.svelte';
+  import {
+    exitMarkupMode,
+    markupUi,
+    redo as markupRedo,
+    undo as markupUndo
+  } from '$lib/markup/annotationStore.svelte';
   import { parseFrontmatter, serializeWithFrontmatter } from '$lib/parser/frontmatter';
   import { stripLessonMedia } from '$lib/markdown/stripMedia';
   import { validateScheduleMarkdown } from '$lib/parser/scheduleValidation';
@@ -1771,7 +1778,29 @@
     }
   }
 
+  // Markup drawing requires the rendered reader; leave the mode when editing.
+  $effect(() => {
+    if (isEditing) exitMarkupMode();
+  });
+
   function handleKeydown(e: KeyboardEvent) {
+    if (markupUi.mode && course && (e.metaKey || e.ctrlKey)) {
+      if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) {
+        e.preventDefault();
+        markupRedo(course.id, currentFile);
+        return;
+      }
+      if (e.key === 'y' || e.key === 'Y') {
+        e.preventDefault();
+        markupRedo(course.id, currentFile);
+        return;
+      }
+      if (e.key === 'z' || e.key === 'Z') {
+        e.preventDefault();
+        markupUndo(course.id, currentFile);
+        return;
+      }
+    }
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
       if (isEditing) {
@@ -2831,6 +2860,10 @@
                 {/if}
               </button>
 
+              {#if !(isCourseScope && activeTab === 'schedule') && !(isCourseScope && activeTab === 'lesson') && !(isUnitScope && activeTab === 'test')}
+                <MarkupMenu courseId={course.id} file={currentFile} />
+              {/if}
+
               {#if !(isCourseScope && activeTab === 'lesson')}
                 <button
                   onclick={() => (isEditing = true)}
@@ -3122,6 +3155,8 @@
                 courseId={course.id}
                 onDeleteNote={handleDeleteNote}
                 onOpenDocument={handleOpenDocument}
+                markupFile={currentFile}
+                markupScroller={contentScroller}
               />
             </article>
           {/if}

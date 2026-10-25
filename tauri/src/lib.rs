@@ -490,6 +490,8 @@ pub fn run() {
             courses_fs::get_cached_checkpoints,
             courses_fs::save_checkpoint,
             courses_fs::delete_checkpoint,
+            courses_fs::get_annotations,
+            courses_fs::save_annotations,
             courses_fs::list_prompts,
         ]);
 

@@ -239,7 +239,7 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     return jsonRes({ schedules });
   }
 
-  const reservedSubpaths = ['course-docs', 'checkpoints', 'open', 'meta', 'unit-test', 'export-pdf'];
+  const reservedSubpaths = ['course-docs', 'checkpoints', 'annotations', 'open', 'meta', 'unit-test', 'export-pdf'];
 
   // GET /api/courses/:id
   const courseGetMatch = pathname.match(/^\/api\/courses\/([^/]+)$/);
@@ -308,6 +308,21 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     const content = body.content || '';
     await store.saveDocumentLocally(courseId, `course.${tab}.md`, content);
     return jsonRes({ success: true });
+  }
+
+  // GET /api/courses/:id/annotations
+  const annMatch = pathname.match(/^\/api\/courses\/([^/]+)\/annotations$/);
+  if (method === 'GET' && annMatch) {
+    const strokes = await store.getAnnotationsLocally(annMatch[1]);
+    return jsonRes({ strokes });
+  }
+
+  // PUT /api/courses/:id/annotations (merge upserts locally, queue for push)
+  if (method === 'PUT' && annMatch) {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const upserts = Array.isArray(body.upserts) ? body.upserts : [];
+    await store.saveAnnotationsLocally(annMatch[1], upserts);
+    return jsonRes({ success: true, merged: upserts.length });
   }
 
   // GET /api/courses/:id/checkpoints

@@ -3,6 +3,7 @@
 
 import {
   getPendingPushPayload,
+  getPendingPushAnnotations,
   hasCachedData,
   getLastSyncedAt,
   getDesktopUrl,
@@ -28,7 +29,10 @@ export async function refreshPendingPushCount(): Promise<number> {
   if (typeof window === 'undefined') return 0;
   try {
     const payload = await getPendingPushPayload();
-    const count = Object.values(payload).reduce((sum, arr) => sum + (arr?.length || 0), 0);
+    const annotations = await getPendingPushAnnotations();
+    const count =
+      Object.values(payload).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
+      Object.values(annotations).reduce((sum, arr) => sum + (arr?.length || 0), 0);
     syncState.pendingPushCount = count;
     return count;
   } catch {
@@ -135,7 +139,10 @@ export async function pushToDesktop(): Promise<{ success: boolean; results?: Rec
 
   try {
     const checkpoints = await getPendingPushPayload();
-    const count = Object.values(checkpoints).reduce((sum, arr) => sum + (arr?.length || 0), 0);
+    const annotations = await getPendingPushAnnotations();
+    const count =
+      Object.values(checkpoints).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
+      Object.values(annotations).reduce((sum, arr) => sum + (arr?.length || 0), 0);
 
     if (count === 0) {
       syncState.pendingPushCount = 0;
@@ -147,7 +154,7 @@ export async function pushToDesktop(): Promise<{ success: boolean; results?: Rec
     const res = await smartFetch(`${baseUrl}/api/sync/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ checkpoints })
+      body: JSON.stringify({ checkpoints, annotations })
     });
 
     if (!res.ok) {

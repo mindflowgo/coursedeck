@@ -54,6 +54,7 @@
     "marked": "^15.0.6",
     "mcp-lite": "^0.10.0",
     "pdfmake": "^0.3.11",
+    "perfect-freehand": "^1.2.3",
     "rrule": "^2.8.1",
     "tailwind-merge": "^3.0.1",
     "turndown": "^7.2.0",

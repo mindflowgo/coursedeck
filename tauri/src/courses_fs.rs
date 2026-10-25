@@ -467,6 +467,44 @@ pub fn delete_checkpoint(
     Ok(())
 }
 
+// ── Markup annotations (annotations.json per course) ──────────────────────────
+// The webview sends the already-merged full stroke array (LWW applied in JS),
+// so these commands are a plain read/write of the JSON file.
+
+#[tauri::command]
+pub fn get_annotations(app: tauri::AppHandle, course_id: String) -> Result<Option<String>, String> {
+    if let Some(course_dir) = find_course_dir(&app, &course_id) {
+        let path = course_dir.join("annotations.json");
+        if path.exists() {
+            match std::fs::read_to_string(&path) {
+                Ok(raw) => return Ok(Some(raw)),
+                Err(e) => return Err(format!("Failed to read annotations: {e}")),
+            }
+        }
+    }
+    Ok(None)
+}
+
+#[tauri::command]
+pub fn save_annotations(
+    app: tauri::AppHandle,
+    course_id: String,
+    strokes_json: String,
+) -> Result<(), String> {
+    let course_dir = find_course_dir(&app, &course_id)
+        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
+    std::fs::create_dir_all(&course_dir)
+        .map_err(|e| format!("Failed to create dir {:?}: {e}", course_dir))?;
+    // Validate it is a JSON array before writing
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&strokes_json)
+        .map_err(|e| format!("Invalid annotations JSON: {e}"))?;
+    let json = serde_json::to_string_pretty(&parsed)
+        .map_err(|e| format!("Serialization error: {e}"))?;
+    std::fs::write(course_dir.join("annotations.json"), &json)
+        .map_err(|e| format!("Failed to write annotations: {e}"))?;
+    Ok(())
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PromptItem {
     pub id: String,
