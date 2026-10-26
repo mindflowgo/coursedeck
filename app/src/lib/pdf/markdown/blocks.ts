@@ -11,7 +11,7 @@ import { parseImageSpec, isIconImage } from './imageSpec';
 const parser = new Marked({ gfm: true, breaks: true });
 
 /**
- * Compiles a markdown document (raw lesson/summary/cheatsheet source, or the
+ * Compiles a markdown document (raw lesson/summary/studysheet source, or the
  * body of a callout/post-it/details block) into pdfmake content blocks.
  * Pure string-in/content-out — no DOM access, so it runs in any JS runtime.
  */

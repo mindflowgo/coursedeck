@@ -56,14 +56,14 @@
     const scope = scopeId ? 'lesson' : 'course';
     if (scope === 'lesson') return 'lesson - lessons';
     const cleanTab = tab.toLowerCase().trim();
-    if (cleanTab === 'cheatsheet') return 'course - cheatsheets';
+    if (cleanTab === 'studysheet') return 'course - studysheets';
     return 'course - summaries';
   }
 
   function normalizeAttachment(attachment: string | undefined, tab: string, scopeId?: string): string {
     const isLesson = scopeId && !isUnitScopeId(scopeId);
     if (isLesson) {
-      if (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - cheatsheets') {
+      if (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - studysheets') {
         return 'lesson - lessons';
       }
       return attachment;
@@ -232,7 +232,7 @@
           >
             <option value="lessons">lesson(s)</option>
             <option value="summaries">summary(s)</option>
-            <option value="cheatsheets">cheatsheet(s)</option>
+            <option value="studysheets">studysheet(s)</option>
           </select>
         </div>
 

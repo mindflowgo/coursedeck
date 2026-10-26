@@ -110,7 +110,7 @@
               courseId: finalCourseId,
               lessonId: mode === 'replace' ? targetLessonId : undefined,
               lessonTitle: mode === 'replace' ? targetLessonTitle : undefined,
-              tabs: ['summary', 'cheatsheet', 'test']
+              tabs: ['summary', 'studysheet', 'test']
             })
           });
         } catch (queueErr) {

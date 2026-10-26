@@ -25,11 +25,11 @@
       attachment: 'lesson - lessons'
     },
     {
-      id: 'lesson_cheatsheets',
-      label: 'Lesson Cheatsheets',
+      id: 'lesson_studysheets',
+      label: 'Lesson Studysheets',
       description: 'Per-lesson quick references & formulas',
-      target: '<lesson_id>.cheatsheet.md',
-      prompt: 'cheatsheet.md',
+      target: '<lesson_id>.studysheet.md',
+      prompt: 'studysheet.md',
       attachment: 'lesson - lessons'
     },
     {
@@ -57,12 +57,12 @@
       attachment: 'course - summaries'
     },
     {
-      id: 'course_cheatsheets',
-      label: 'Course Cheatsheets',
-      description: 'Master reference cheatsheet for the course',
-      target: 'course.cheatsheet.md',
-      prompt: 'course_cheatsheet.md',
-      attachment: 'course - cheatsheets'
+      id: 'course_studysheets',
+      label: 'Course Studysheets',
+      description: 'Master reference studysheet for the course',
+      target: 'course.studysheet.md',
+      prompt: 'course_studysheet.md',
+      attachment: 'course - studysheets'
     },
     {
       id: 'course_tests',

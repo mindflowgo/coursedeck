@@ -3,7 +3,7 @@ import path from 'node:path';
 import { getPromptsDir, getDefaultDataDir, assertPromptId, safeJoin } from './paths';
 
 export interface PromptItem {
-  id: string; // e.g. "summary", "cheatsheet", "test_kica"
+  id: string; // e.g. "summary", "studysheet", "test_kica"
   title: string;
   filename: string;
   content: string;

@@ -18,22 +18,40 @@
   import { keymap } from '@codemirror/view';
   import { onMount } from 'svelte';
   import { liveMarkdown } from '$lib/editor';
+  import { splitFrontmatter, reappendFrontmatter } from '$lib/parser/frontmatter';
 
   interface Props {
     value: string;
     courseId?: string;
+    preserveFrontmatter?: boolean;
     onChange?: (val: string) => void;
     onSave?: () => void;
   }
 
-  let { value, courseId = '', onChange, onSave }: Props = $props();
+  let {
+    value,
+    courseId = '',
+    preserveFrontmatter = true,
+    onChange,
+    onSave
+  }: Props = $props();
 
   let editorContainer: HTMLDivElement;
   let view: EditorView | null = null;
   let lastValue = '';
+  let lastEmittedValue = '';
+  let rememberedFrontmatter = '';
 
   onMount(() => {
     lastValue = value || '';
+    lastEmittedValue = lastValue;
+
+    let initialDoc = lastValue;
+    if (preserveFrontmatter) {
+      const split = splitFrontmatter(lastValue);
+      rememberedFrontmatter = split.rawFrontmatter;
+      initialDoc = split.body;
+    }
 
     const isolateArrowEvents = EditorView.domEventHandlers({
       keydown(event) {
@@ -91,7 +109,7 @@
     ]);
 
     const state = EditorState.create({
-      doc: lastValue,
+      doc: initialDoc,
       extensions: [
         EditorView.lineWrapping,
         isolateArrowEvents,
@@ -105,9 +123,14 @@
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const newDoc = update.state.doc.toString();
-            lastValue = newDoc;
+            const fullDoc = (preserveFrontmatter && rememberedFrontmatter)
+              ? reappendFrontmatter(rememberedFrontmatter, newDoc)
+              : newDoc;
+
+            lastEmittedValue = fullDoc;
+            lastValue = fullDoc;
             if (onChange) {
-              onChange(newDoc);
+              onChange(fullDoc);
             }
           }
         }),
@@ -130,12 +153,24 @@
     const val = value || '';
     if (view && val !== lastValue) {
       lastValue = val;
+      // Echo guard: if parent is reflecting back what we just emitted, ignore
+      if (val === lastEmittedValue) {
+        return;
+      }
+
+      let targetDoc = val;
+      if (preserveFrontmatter) {
+        const split = splitFrontmatter(val);
+        rememberedFrontmatter = split.rawFrontmatter;
+        targetDoc = split.body;
+      }
+
       const currentDoc = view.state.doc.toString();
-      if (val !== currentDoc) {
+      if (targetDoc !== currentDoc) {
         const currentSelection = view.state.selection;
         view.dispatch({
-          changes: { from: 0, to: currentDoc.length, insert: val },
-          selection: currentSelection.main.head <= val.length ? currentSelection : undefined
+          changes: { from: 0, to: currentDoc.length, insert: targetDoc },
+          selection: currentSelection.main.head <= targetDoc.length ? currentSelection : undefined
         });
       }
     }

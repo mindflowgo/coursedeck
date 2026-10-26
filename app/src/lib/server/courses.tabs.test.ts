@@ -53,7 +53,7 @@ describe('CourseService tab file helpers', () => {
     });
 
     it('returns false when nothing exists', () => {
-      expect(CourseService.hasLessonTabContent(courseId, '03.04', 'cheatsheet')).toBe(false);
+      expect(CourseService.hasLessonTabContent(courseId, '03.04', 'studysheet')).toBe(false);
     });
   });
 
@@ -194,7 +194,7 @@ describe('CourseService tab file helpers', () => {
 
       const flags = CourseService.discoverCourseDocs(courseDir);
       expect(flags.summary).toBe(true);
-      expect(flags.cheatsheet).toBe(false);
+      expect(flags.studysheet).toBe(false);
       expect(flags['resources']).toBe(true);
     });
 
@@ -243,11 +243,11 @@ describe('CourseService tab file helpers', () => {
         '---\ntitle: Internal Lesson Title\norder: 1\n---\nLesson 1.1 content here'
       );
       fs.writeFileSync(path.join(pcDir, '01.01.summary.md'), '---\ntype: summary\n---\nSummary 1.1 content');
-      fs.writeFileSync(path.join(pcDir, '01.01.cheatsheet.md'), '---\ntype: cheatsheet\n---\nCheatsheet 1.1 content');
+      fs.writeFileSync(path.join(pcDir, '01.01.studysheet.md'), '---\ntype: studysheet\n---\nCheatsheet 1.1 content');
       fs.writeFileSync(path.join(pcDir, '01.02.lesson.md'), 'Lesson 1.2 content here');
       fs.writeFileSync(path.join(pcDir, '02.01.lesson.md'), 'Lesson 2.1 content here');
       fs.writeFileSync(path.join(pcDir, '02.01.summary.md'), '---\ntype: summary\n---\nSummary 2.1 content');
-      fs.writeFileSync(path.join(pcDir, '02.01.cheatsheet.md'), '---\ntype: cheatsheet\n---\nCheatsheet 2.1 content');
+      fs.writeFileSync(path.join(pcDir, '02.01.studysheet.md'), '---\ntype: studysheet\n---\nCheatsheet 2.1 content');
     });
 
     it('resolves lesson - lessons', () => {
@@ -260,8 +260,8 @@ describe('CourseService tab file helpers', () => {
       expect(res).toBe('Summary 1.1 content');
     });
 
-    it('resolves lesson - cheatsheets', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'lesson - cheatsheets', '01.01');
+    it('resolves lesson - studysheets', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'lesson - studysheets', '01.01');
       expect(res).toBe('Cheatsheet 1.1 content');
     });
 
@@ -287,8 +287,8 @@ describe('CourseService tab file helpers', () => {
       expect(res).toContain('Summary 2.1 content');
     });
 
-    it('resolves course - cheatsheets across all units', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'course - cheatsheets');
+    it('resolves course - studysheets across all units', () => {
+      const res = CourseService.getPromptContext(pcCourse, 'course - studysheets');
       expect(res).toContain('Cheatsheet 1.1 content');
       expect(res).toContain('Cheatsheet 2.1 content');
     });

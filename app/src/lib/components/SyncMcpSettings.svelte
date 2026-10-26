@@ -120,7 +120,7 @@
     { name: 'list_courses', type: 'read', desc: 'List all available courses with metadata and lesson counts' },
     { name: 'get_course', type: 'read', desc: 'Retrieve complete course manifest, unit structure, and metadata' },
     { name: 'list_lessons', type: 'read', desc: 'List all lessons, checkpoints, and tab files for a course' },
-    { name: 'get_lesson_doc', type: 'read', desc: 'Retrieve lesson markdown tab (lesson, summary, cheatsheet, test)' },
+    { name: 'get_lesson_doc', type: 'read', desc: 'Retrieve lesson markdown tab (lesson, summary, studysheet, test)' },
     { name: 'create_course', type: 'write', desc: 'Initialize a new course directory and empty curriculum skeleton' },
     { name: 'delete_course', type: 'write', desc: 'Permanently remove a course and clean up any synced calendar events' },
     { name: 'inject_lessons', type: 'write', desc: 'Batch ingest lesson content directly into curriculum units' },

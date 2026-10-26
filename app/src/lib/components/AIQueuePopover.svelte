@@ -99,7 +99,7 @@
         body: JSON.stringify({
           action: 'enqueue',
           courseId,
-          tabs: ['summary', 'cheatsheet', 'test']
+          tabs: ['summary', 'studysheet', 'test']
         })
       });
       await queueStatus.refresh();

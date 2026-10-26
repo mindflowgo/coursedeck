@@ -62,7 +62,7 @@ describe('Checkpoint Palette & Models', () => {
     expect(resolveFileFromRoute('01.01', 'lesson', false)).toBe('01.01.lesson.md');
     expect(resolveFileFromRoute('02.04', 'summary', false)).toBe('02.04.summary.md');
     expect(resolveFileFromRoute('course', 'summary', true)).toBe('course.summary.md');
-    expect(resolveFileFromRoute('course', 'cheatsheet', false)).toBe('course.cheatsheet.md');
+    expect(resolveFileFromRoute('course', 'studysheet', false)).toBe('course.studysheet.md');
   });
 
   it('resolves route from filename', () => {

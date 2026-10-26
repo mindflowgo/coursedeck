@@ -26,7 +26,7 @@ export type PromptGroupKey = 'course' | 'unit' | 'lessons' | 'custom';
 
 export const COURSE_PROMPT_ORDER = ['course_summary', 'course_schedule', 'course_test'] as const;
 export const UNIT_PROMPT_ORDER = ['unit_assignments', 'unit_test'] as const;
-export const LESSON_PROMPT_ORDER = ['summary', 'cheatsheet', 'popquiz', 'lesson'] as const;
+export const LESSON_PROMPT_ORDER = ['summary', 'studysheet', 'popquiz', 'lesson'] as const;
 
 export function classifyPrompt(p: { id: string }): PromptGroupKey {
   const id = p.id.toLowerCase().replace(/\.md$/, '').replace(/\./g, '_');
@@ -54,7 +54,7 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
   // Standard lesson prompts
   if (
     id === 'summary' ||
-    id === 'cheatsheet' ||
+    id === 'studysheet' ||
     id === 'popquiz' ||
     id === 'pop_quiz' ||
     id === 'lesson'

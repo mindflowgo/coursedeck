@@ -91,7 +91,7 @@
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
   let selectedLessonId: string = $state('');
-  // Tab slugs: built-ins (lesson/summary/cheatsheet/test), course-scope
+  // Tab slugs: built-ins (lesson/summary/studysheet/test), course-scope
   // schedule, and per-lesson custom tabs discovered from tab files on disk.
   type PageTab = string;
   let activeTab: PageTab = $state('lesson');
@@ -124,7 +124,7 @@
     } else {
       if (activeTab === 'lesson') return 'Lessons';
       if (activeTab === 'summary') return 'Summary';
-      if (activeTab === 'cheatsheet') return 'Cheatsheet';
+      if (activeTab === 'studysheet') return 'Cheatsheet';
     }
     return customTabDisplayName(activeTab);
   });
@@ -209,7 +209,7 @@
   let tabContents: Record<string, string> = $state({
     lesson: '',
     summary: '',
-    cheatsheet: '',
+    studysheet: '',
     test: '',
     schedule: ''
   });
@@ -217,7 +217,7 @@
   let originalContents: Record<string, string> = $state({
     lesson: '',
     summary: '',
-    cheatsheet: '',
+    studysheet: '',
     test: '',
     schedule: ''
   });
@@ -524,7 +524,7 @@
   // Display name for active tab
   let tabDisplayName = $derived.by(() => {
     if (activeTab === 'summary') return 'Summary';
-    if (activeTab === 'cheatsheet') return 'Cheatsheet';
+    if (activeTab === 'studysheet') return 'Cheatsheet';
     if (activeTab === 'assignments') return 'Assignments';
     if (activeTab === 'test') return isUnitScope ? 'Unit Test' : isCourseScope ? 'Course Test' : 'Practice Test';
     if (activeTab === 'schedule') return 'Schedule';
@@ -537,7 +537,7 @@
     tabContents[activeTab] !== originalContents[activeTab]
   );
 
-  // Character count for current document (lessons, summary, cheatsheet, etc.)
+  // Character count for current document (lessons, summary, studysheet, etc.)
   let pageCharCount = $derived.by(() => {
     if (isCourseScope && activeTab === 'lesson') return 0;
     if (activeTab === 'schedule') return 0;
@@ -545,7 +545,7 @@
     if (
       activeTab !== 'lesson' &&
       activeTab !== 'summary' &&
-      activeTab !== 'cheatsheet' &&
+      activeTab !== 'studysheet' &&
       !isCustomTabSlug(activeTab)
     ) {
       return 0;
@@ -616,7 +616,7 @@
             // intro panel instead of silently calling the LLM.
             tabContents.schedule = '';
             originalContents.schedule = '';
-          } else if (['summary', 'cheatsheet', 'test'].includes(tab)) {
+          } else if (['summary', 'studysheet', 'test'].includes(tab)) {
             // Built-in course doc not yet generated: auto-trigger generation
             isLoadingCourseDoc = false;
             await generateCourseDocument(tab);
@@ -711,7 +711,7 @@
     type: PageTab,
     opts?: { customPrompt?: string; customContent?: string; contextAttachment?: string }
   ) {
-    if (type === 'lesson' || !['summary', 'cheatsheet', 'test', 'schedule'].includes(type)) return;
+    if (type === 'lesson' || !['summary', 'studysheet', 'test', 'schedule'].includes(type)) return;
 
     const promptKey = type === 'schedule' ? 'course_schedule' : `course_${type}`;
     const activePrompt =
@@ -827,7 +827,7 @@
 
       if (course) {
         if (!course.courseDocs) {
-          course.courseDocs = { summary: false, cheatsheet: false, test: false, schedule: false };
+          course.courseDocs = { summary: false, studysheet: false, test: false, schedule: false };
         }
         (course.courseDocs as unknown as Record<string, boolean>)[type] = true;
       }
@@ -972,7 +972,7 @@
         if (!data.tabs) {
           data.tabs = {};
           if ((data as any).summary) data.tabs.summary = (data as any).summary;
-          if ((data as any).cheatsheet) data.tabs.cheatsheet = (data as any).cheatsheet;
+          if ((data as any).studysheet) data.tabs.studysheet = (data as any).studysheet;
           if ((data as any).test) data.tabs.test = (data as any).test;
         }
         lessonBundle = data;
@@ -1269,7 +1269,7 @@
       const rawAttachment = opts?.contextAttachment || parsedActiveTab.frontmatter.contextAttachment;
       const isLesson = selectedLessonId && !isUnitScopeId(selectedLessonId);
       const effectiveAttachment =
-        isLesson && (!rawAttachment || rawAttachment === 'lesson - summaries' || rawAttachment === 'lesson - cheatsheets')
+        isLesson && (!rawAttachment || rawAttachment === 'lesson - summaries' || rawAttachment === 'lesson - studysheets')
           ? 'lesson - lessons'
           : (rawAttachment || (isUnitScopeId(selectedLessonId) ? 'unit - lessons' : 'lesson - lessons'));
 
@@ -1393,7 +1393,7 @@
           await loadCourseDocument('schedule');
           if (course) {
             if (!course.courseDocs) {
-              course.courseDocs = { summary: false, cheatsheet: false, test: false, schedule: false };
+              course.courseDocs = { summary: false, studysheet: false, test: false, schedule: false };
             }
             course.courseDocs.schedule = true;
           }
@@ -1571,7 +1571,7 @@
         body: JSON.stringify({
           action: 'enqueue',
           courseId,
-          tabs: ['summary', 'cheatsheet', 'test']
+          tabs: ['summary', 'studysheet', 'test']
         })
       });
 
@@ -1741,7 +1741,7 @@
         } else {
           const displayTitles: Record<string, { lessonTitle: string; tabDisplayName: string }> = {
             summary: { lessonTitle: 'Comprehensive Course Summary', tabDisplayName: 'Course Summary' },
-            cheatsheet: { lessonTitle: 'Master Course Cheatsheet', tabDisplayName: 'Course Cheatsheet' },
+            studysheet: { lessonTitle: 'Master Course Cheatsheet', tabDisplayName: 'Course Cheatsheet' },
             test: { lessonTitle: 'Final Course Practice Exam', tabDisplayName: 'Course Practice Test' },
             schedule: { lessonTitle: 'Course Study Schedule', tabDisplayName: 'Course Schedule' }
           };
@@ -1853,7 +1853,7 @@
     if (!t) return null;
     const clean = t.toLowerCase().trim();
     if (clean === 'notes') return 'lesson';
-    if (['lesson', 'summary', 'cheatsheet', 'test', 'schedule', 'assignments'].includes(clean)) {
+    if (['lesson', 'summary', 'studysheet', 'test', 'schedule', 'assignments'].includes(clean)) {
       return clean;
     }
     // Custom tabs: any valid slug (created on visit if the lesson lacks it)
@@ -2367,13 +2367,13 @@
             <span>Summary</span>
           </button>
 
-          <button
+          <!-- <button
             onclick={() => switchTab('schedule')}
             class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'schedule' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
           >
             <CalendarDays class="w-3.5 h-3.5" />
             <span>Schedule</span>
-          </button>
+          </button> -->
 
           <button
             onclick={() => switchTab('test')}
@@ -2431,7 +2431,7 @@
             class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
           >
             <BookOpen class="w-3.5 h-3.5" />
-            <span>Lessons</span>
+            <span>Lesson</span>
           </button>
 
           <button
@@ -2443,11 +2443,11 @@
           </button>
 
           <button
-            onclick={() => switchTab('cheatsheet')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'cheatsheet' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+            onclick={() => switchTab('studysheet')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'studysheet' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
           >
             <ListCollapse class="w-3.5 h-3.5" />
-            <span>Cheatsheet</span>
+            <span>Studysheet</span>
           </button>
 
           {#each customTabs as slug (slug)}
@@ -2493,7 +2493,7 @@
             <BookOpen class="w-3.5 h-3.5 shrink-0 text-stone-600 dark:text-stone-300" />
           {:else if activeTab === 'summary'}
             <Sparkles class="w-3.5 h-3.5 shrink-0 text-amber-500" />
-          {:else if activeTab === 'cheatsheet'}
+          {:else if activeTab === 'studysheet'}
             <ListCollapse class="w-3.5 h-3.5 shrink-0 text-blue-500" />
           {:else if activeTab === 'schedule'}
             <CalendarDays class="w-3.5 h-3.5 shrink-0 text-stone-600 dark:text-stone-300" />
@@ -2665,14 +2665,14 @@
                 <button
                   type="button"
                   role="menuitem"
-                  onclick={() => switchTab('cheatsheet')}
-                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'cheatsheet' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                  onclick={() => switchTab('studysheet')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'studysheet' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
                 >
                   <div class="flex items-center space-x-2 truncate">
                     <ListCollapse class="w-3.5 h-3.5 text-stone-500 shrink-0" />
                     <span class="truncate">Cheatsheet</span>
                   </div>
-                  {#if activeTab === 'cheatsheet'}
+                  {#if activeTab === 'studysheet'}
                     <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                   {/if}
                 </button>
@@ -2921,7 +2921,7 @@
               </p>
             </div>
           {:else if isEditing}
-            <!-- CodeMirror Editor (direct raw markdown with YAML frontmatter) -->
+            <!-- CodeMirror Editor (markdown body only; frontmatter preserved and re-appended) -->
             <div class="px-[6px] py-3 {isMobile ? 'pt-12' : 'sm:p-6 sm:pt-16 pt-12'} w-full max-w-full min-w-0 overflow-hidden">
               <div class="h-[calc(100vh-16rem)] w-full max-w-full min-w-0">
                 <CodeMirrorEditor
@@ -3082,7 +3082,7 @@
 
                 <div class="space-y-3.5 text-sm sm:text-[15px] text-stone-600 dark:text-stone-300 leading-relaxed">
                   <p>
-                    The tabs above gather aggregate course-wide summaries, cheatsheets, and practice tests to support your studies. Whenever you would like a printable document of all the lesson pages, click the <button
+                    The tabs above gather aggregate course-wide summaries, studysheets, and practice tests to support your studies. Whenever you would like a printable document of all the lesson pages, click the <button
                       type="button"
                       onclick={handleExportPDF}
                       disabled={isExportingPdf}

@@ -150,7 +150,7 @@
   }}
 />
 
-<main class="flex-1 overflow-y-auto px-4 py-8 sm:px-8 max-w-6xl mx-auto w-full space-y-6">
+<main class="flex-1 overflow-y-auto px-4 py-2 sm:px-8 max-w-6xl mx-auto w-full space-y-6">
     <!-- Page header + view toggle -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>

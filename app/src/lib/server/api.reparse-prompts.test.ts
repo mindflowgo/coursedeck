@@ -52,9 +52,9 @@ describe('Reparse with Updated Prompts API', () => {
       '---\nprompt: "OLD OUTDATED PROMPT"\ncontextAttachment: "old-attachment"\n---\n# Old Summary',
       'utf8'
     );
-    // Create an existing cheatsheet that should NOT be touched when only summary is selected
+    // Create an existing studysheet that should NOT be touched when only summary is selected
     fs.writeFileSync(
-      path.join(courseDir, '01.01.cheatsheet.md'),
+      path.join(courseDir, '01.01.studysheet.md'),
       '---\nprompt: "CHEATSHEET PROMPT MUST REMAIN UNTOUCHED"\n---\n# Unchanged Cheatsheet',
       'utf8'
     );
@@ -114,18 +114,18 @@ describe('Reparse with Updated Prompts API', () => {
       expect(task.customPrompt).toBeUndefined(); // Fresh latest prompt loaded dynamically
       expect(task.customContent).toBeUndefined(); // Fresh context
       expect(task.contextAttachment).toBe('lesson - lessons');
-      // Must NOT be cheatsheet, assignments, or unit/course tests
-      expect(task.tab).not.toBe('cheatsheet');
+      // Must NOT be studysheet, assignments, or unit/course tests
+      expect(task.tab).not.toBe('studysheet');
       expect(task.tab).not.toBe('assignments');
       expect(task.tab).not.toBe('test');
     }
 
-    // Verify cheatsheet file on disk is completely untouched
-    const cheatsheetContent = fs.readFileSync(
-      path.join(CourseService.getCoursesDir(), courseId, '01.01.cheatsheet.md'),
+    // Verify studysheet file on disk is completely untouched
+    const studysheetContent = fs.readFileSync(
+      path.join(CourseService.getCoursesDir(), courseId, '01.01.studysheet.md'),
       'utf8'
     );
-    expect(cheatsheetContent).toContain('CHEATSHEET PROMPT MUST REMAIN UNTOUCHED');
+    expect(studysheetContent).toContain('CHEATSHEET PROMPT MUST REMAIN UNTOUCHED');
   });
 
   it('selecting unit_assignments and course_summaries enqueues ONLY those specific scopes', async () => {
@@ -151,9 +151,9 @@ describe('Reparse with Updated Prompts API', () => {
     expect(tabsEnqueued).toContain('02.unit:assignments');
     expect(tabsEnqueued).toContain('course:summary');
 
-    // Make sure no lesson-level summaries or cheatsheets were enqueued
+    // Make sure no lesson-level summaries or studysheets were enqueued
     expect(tabsEnqueued).not.toContain('01.01:summary');
-    expect(tabsEnqueued).not.toContain('01.01:cheatsheet');
+    expect(tabsEnqueued).not.toContain('01.01:studysheet');
   });
 
   it('executing a course-level task in queue saves course.<tab>.md with updated frontmatter', async () => {

@@ -44,7 +44,7 @@
   let renamingCourse = $state<CourseManifest | null>(null);
   let isRenameModalOpen = $state(false);
 
-  function openCourseDoc(courseId: string, tab: 'lesson' | 'summary' | 'cheatsheet' | 'test' | 'schedule') {
+  function openCourseDoc(courseId: string, tab: 'lesson' | 'summary' | 'studysheet' | 'test' | 'schedule') {
     goto(`/courses/${courseId.toLowerCase()}/course/${tab}`);
   }
 
@@ -177,7 +177,7 @@
 
 <Header />
 
-<main class="flex-1 overflow-y-auto {isMobile ? 'px-0 py-3 space-y-4' : 'px-4 py-8 sm:px-8 space-y-8'} max-w-6xl mx-auto w-full">
+<main class="flex-1 overflow-y-auto {isMobile ? 'px-0 py-3 space-y-4' : 'px-4 py-3 sm:px-3 space-y-8'} max-w-6xl mx-auto w-full">
   <!-- Page Hero & Search -->
   <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 {isMobile ? 'px-[6px]' : 'px-0'}">
     <div>
@@ -405,20 +405,6 @@
             </div>
 
             <div class="flex flex-wrap items-center gap-1.5 mt-2">
-              <!-- Notes -->
-              <button
-                type="button"
-                title="View complete course lessons"
-                onclick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  openCourseDoc(course.id, 'lesson');
-                }}
-                class="inline-flex items-center justify-center px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 hover:text-stone-900 dark:hover:text-stone-100 text-stone-700 dark:text-stone-300 border border-stone-200 dark:border-stone-700 transition cursor-pointer"
-              >
-                <span>Lessons</span>
-              </button>
-
               <!-- Summary -->
               <button
                 type="button"
@@ -439,16 +425,16 @@
               <!-- Cheatsheet -->
               <button
                 type="button"
-                title={course.courseDocs?.cheatsheet ? 'View Master Course Cheatsheet' : 'Generate Course Cheatsheet'}
+                title={course.courseDocs?.studysheet ? 'View Master Course Cheatsheet' : 'Generate Course Cheatsheet'}
                 onclick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  openCourseDoc(course.id, 'cheatsheet');
+                  openCourseDoc(course.id, 'studysheet');
                 }}
                 class="inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 hover:text-stone-900 dark:hover:text-stone-100 text-stone-700 dark:text-stone-300 border border-stone-200 dark:border-stone-700 transition cursor-pointer"
               >
-                <span>Mem-Aids</span>
-                {#if course.courseDocs?.cheatsheet}
+                <span>Study-Help</span>
+                {#if course.courseDocs?.studysheet}
                   <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title="Generated"></span>
                 {/if}
               </button>
@@ -470,7 +456,7 @@
                 {/if}
               </button>
 
-              <!-- Schedule -->
+              <!-- Attachments -->
               <button
                 type="button"
                 title={course.courseDocs?.schedule ? 'View Course Schedule' : 'Build Course Schedule'}
@@ -481,7 +467,7 @@
                 }}
                 class="inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium whitespace-nowrap bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 hover:text-stone-900 dark:hover:text-stone-100 text-stone-700 dark:text-stone-300 border border-stone-200 dark:border-stone-700 transition cursor-pointer"
               >
-                <span>Schedule</span>
+                <span>Attachments</span>
                 {#if course.courseDocs?.schedule}
                   <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" title="Generated"></span>
                 {/if}

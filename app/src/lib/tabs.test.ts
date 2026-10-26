@@ -56,7 +56,7 @@ describe('isCustomTabSlug', () => {
   it('is false for built-in and reserved tabs', () => {
     expect(isCustomTabSlug('lesson')).toBe(false);
     expect(isCustomTabSlug('summary')).toBe(false);
-    expect(isCustomTabSlug('cheatsheet')).toBe(false);
+    expect(isCustomTabSlug('studysheet')).toBe(false);
     expect(isCustomTabSlug('test')).toBe(false);
     expect(isCustomTabSlug('schedule')).toBe(false);
     expect(isCustomTabSlug('course')).toBe(false);
@@ -78,7 +78,7 @@ describe('isCourseTab', () => {
   it('is true for all valid course-level tabs', () => {
     expect(isCourseTab('lesson')).toBe(true);
     expect(isCourseTab('summary')).toBe(true);
-    expect(isCourseTab('cheatsheet')).toBe(false);
+    expect(isCourseTab('studysheet')).toBe(false);
     expect(isCourseTab('test')).toBe(true);
     expect(isCourseTab('schedule')).toBe(true);
   });
@@ -100,7 +100,7 @@ describe('customTabDisplayName', () => {
 });
 
 describe('validateTabName', () => {
-  const existing = ['lesson', 'summary', 'cheatsheet', 'test', 'assignment'];
+  const existing = ['lesson', 'summary', 'studysheet', 'test', 'assignment'];
 
   it('accepts a fresh name and returns its slug', () => {
     const result = validateTabName('Reading Log', existing);

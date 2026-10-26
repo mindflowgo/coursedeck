@@ -307,7 +307,7 @@ export class GenerationQueue {
    */
   enqueueCourseMissing(
     courseId: string,
-    tabs: Array<string> = ['summary', 'cheatsheet']
+    tabs: Array<string> = ['summary', 'studysheet']
   ): GenerationTask[] {
     const manifest = CourseService.getManifest(courseId);
     if (!manifest) return [];
@@ -780,13 +780,13 @@ export class GenerationQueue {
         let attachment = nextTask.contextAttachment;
         if (!attachment) {
           if (isCourse) {
-            attachment = nextTask.tab === 'summary' ? 'course - summaries' : nextTask.tab === 'cheatsheet' ? 'course - cheatsheets' : 'course - lessons';
+            attachment = nextTask.tab === 'summary' ? 'course - summaries' : nextTask.tab === 'studysheet' ? 'course - studysheets' : 'course - lessons';
           } else if (isUnit) {
             attachment = 'unit - lessons';
           } else {
             attachment = 'lesson - lessons';
           }
-        } else if (!isUnit && !isCourse && (attachment === 'lesson - summaries' || attachment === 'lesson - cheatsheets')) {
+        } else if (!isUnit && !isCourse && (attachment === 'lesson - summaries' || attachment === 'lesson - studysheets')) {
           attachment = 'lesson - lessons';
         }
 

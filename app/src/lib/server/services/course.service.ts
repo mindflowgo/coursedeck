@@ -260,7 +260,7 @@ export class CourseService {
             const tabFile = tabFileName(item.id, tabName);
             atomicWriteFileSync(path.join(courseDir, tabFile), tabContent);
             if (tabName === 'summary') activeLesson.hasSummary = true;
-            if (tabName === 'cheatsheet') activeLesson.hasCheatsheet = true;
+            if (tabName === 'studysheet') activeLesson.hasCheatsheet = true;
             if (tabName === 'test') activeLesson.hasTest = true;
           }
         }
@@ -295,7 +295,7 @@ export class CourseService {
     return BaseCourseService.saveLessonTab(normalizeCourseId(courseId), lessonId, tab, content);
   }
 
-  static buildAggregatedPayload(courseId: string, tab: 'summary' | 'cheatsheet' | 'test'): string {
+  static buildAggregatedPayload(courseId: string, tab: 'summary' | 'studysheet' | 'test'): string {
     return BaseCourseService.buildAggregatedPayload(normalizeCourseId(courseId), tab);
   }
 
@@ -306,7 +306,7 @@ export class CourseService {
   static hasLessonTabContent(
     courseId: string,
     lessonId: string,
-    tab: 'summary' | 'cheatsheet' | 'test'
+    tab: 'summary' | 'studysheet' | 'test'
   ): boolean {
     return BaseCourseService.hasLessonTabContent(normalizeCourseId(courseId), lessonId, tab);
   }

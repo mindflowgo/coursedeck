@@ -41,11 +41,11 @@ export interface CourseManifest {
 }
 
 /** Course-level documents stored as `course.<type>.md` in the course folder. */
-export type CourseDocType = 'summary' | 'cheatsheet' | 'test' | 'schedule';
+export type CourseDocType = 'summary' | 'studysheet' | 'test' | 'schedule';
 
 export interface CourseDocsFlags {
   summary: boolean;
-  cheatsheet: boolean;
+  studysheet: boolean;
   test: boolean;
   schedule: boolean;
   [key: string]: boolean;
@@ -70,7 +70,7 @@ export class CourseIngest {
     this.turndownConverter = new TurndownConverter();
   }
 
-  private loadGenericPrompt(type: 'summary' | 'cheatsheet' | 'test'): string {
+  private loadGenericPrompt(type: 'summary' | 'studysheet' | 'test'): string {
     const rootDir = process.cwd().endsWith('/app') ? path.resolve(process.cwd(), '..') : process.cwd();
     const promptsDir = path.join(rootDir, 'data', 'prompts');
     const filename = type === 'test' ? 'test.md' : `${type}.md`;
@@ -182,7 +182,7 @@ export class CourseIngest {
           type: isAssignment ? 'assignment' : 'lesson',
           hasFull: fs.existsSync(path.join(courseDir, `${lessonId}.lesson.md`)),
           hasSummary: fs.existsSync(path.join(courseDir, `${lessonId}.summary.md`)),
-          hasCheatsheet: fs.existsSync(path.join(courseDir, `${lessonId}.cheatsheet.md`)),
+          hasCheatsheet: fs.existsSync(path.join(courseDir, `${lessonId}.studysheet.md`)),
           hasTest: fs.existsSync(path.join(courseDir, `${lessonId}.test.md`))
         });
         continue;
@@ -232,11 +232,11 @@ export class CourseIngest {
       }
 
       // 3. Generate Initial Cheatsheet with YAML frontmatter
-      const cheatsheetFilename = `${lessonId}.cheatsheet.md`;
-      const cheatsheetFilePath = path.join(courseDir, cheatsheetFilename);
-      if (!fs.existsSync(cheatsheetFilePath) || shouldOverwrite) {
-        const cheatsheetPrompt = this.loadGenericPrompt('cheatsheet');
-        const cheatsheetBody = this.generateInitialCheatsheet(
+      const studysheetFilename = `${lessonId}.studysheet.md`;
+      const studysheetFilePath = path.join(courseDir, studysheetFilename);
+      if (!fs.existsSync(studysheetFilePath) || shouldOverwrite) {
+        const studysheetPrompt = this.loadGenericPrompt('studysheet');
+        const studysheetBody = this.generateInitialCheatsheet(
           courseId,
           extracted.unitNumber,
           extracted.lessonNumber,
@@ -245,14 +245,14 @@ export class CourseIngest {
         );
         const finalContent = serializeWithFrontmatter(
           {
-            prompt: cheatsheetPrompt,
-            type: 'cheatsheet',
+            prompt: studysheetPrompt,
+            type: 'studysheet',
             version: 1,
             updatedAt: new Date().toISOString().split('T')[0]
           },
-          cheatsheetBody
+          studysheetBody
         );
-        fs.writeFileSync(cheatsheetFilePath, finalContent, 'utf8');
+        fs.writeFileSync(studysheetFilePath, finalContent, 'utf8');
       }
 
       // 4. Generate Initial KICA Test with YAML frontmatter
@@ -321,7 +321,7 @@ export class CourseIngest {
       level: existingManifest?.level || 'University/College Preparation',
       description:
         existingManifest?.description ||
-        'Comprehensive ILC course study notes, summaries, cheatsheets, and interactive practice questions.',
+        'Comprehensive ILC course study notes, summaries, studysheets, and interactive practice questions.',
       units,
       updatedAt: new Date().toISOString(),
       archived: existingManifest?.archived
@@ -377,7 +377,7 @@ export class CourseIngest {
   ): string {
     return `# Cheatsheet: ${title}
 
-*Not yet generated. This cheatsheet can be generated using the AI button above or automatically in the background.*
+*Not yet generated. This studysheet can be generated using the AI button above or automatically in the background.*
 `;
   }
 

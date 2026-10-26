@@ -68,10 +68,10 @@ const MIME_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon'
 };
 
-type Tab = 'summary' | 'cheatsheet' | 'test';
+type Tab = 'summary' | 'studysheet' | 'test';
 
 /** Course-level document types accepted by /api/courses/:id/course-docs. */
-const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'cheatsheet', 'test', 'schedule'];
+const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'studysheet', 'test', 'schedule'];
 
 interface ActiveCourseDocJob {
   courseId: string;
@@ -89,7 +89,7 @@ interface ActiveCourseDocJob {
 
 const activeCourseDocJobs = new Map<string, ActiveCourseDocJob>();
 
-const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'cheatsheet'];
+const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'studysheet'];
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -767,7 +767,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           if (!valid) {
             return error(
               400,
-              "Invalid tabs. Bulk generation supports 'summary', 'cheatsheet', and 'test'"
+              "Invalid tabs. Bulk generation supports 'summary', 'studysheet', and 'test'"
             );
           }
           const lessonTabs = requested as Tab[];
@@ -858,11 +858,11 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           const safeId = assertPromptId(String(id));
           const STANDARD_BUILTINS = [
             'course_summary',
-            'course_cheatsheet',
+            'course_studysheet',
             'course_schedule',
             'course_test',
             'summary',
-            'cheatsheet',
+            'studysheet',
             'test',
             'test_kica',
             'lesson',
@@ -1039,11 +1039,11 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
       const VALID_CATEGORIES = [
         'lesson_summaries',
-        'lesson_cheatsheets',
+        'lesson_studysheets',
         'unit_assignments',
         'unit_tests',
         'course_summaries',
-        'course_cheatsheets',
+        'course_studysheets',
         'course_tests'
       ] as const;
 
@@ -1100,15 +1100,15 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
         }
 
-        // 2. Lesson Cheatsheets
-        if (selectedCategories.includes('lesson_cheatsheets')) {
+        // 2. Lesson S
+        if (selectedCategories.includes('lesson_studysheets')) {
           for (const unit of course.units) {
             for (const lesson of unit.lessons) {
               tasksToEnqueue.push({
                 courseId,
                 lessonId: lesson.id,
                 lessonTitle: lesson.title,
-                tab: 'cheatsheet',
+                tab: 'studysheet',
                 contextAttachment: 'lesson - lessons'
               });
             }
@@ -1152,14 +1152,14 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           });
         }
 
-        // 6. Course Cheatsheets
-        if (selectedCategories.includes('course_cheatsheets')) {
+        // 6. Course Studysheets
+        if (selectedCategories.includes('course_studysheets')) {
           tasksToEnqueue.push({
             courseId,
             lessonId: 'course',
-            lessonTitle: `${course.title} Cheatsheet`,
-            tab: 'cheatsheet',
-            contextAttachment: 'course - cheatsheets'
+            lessonTitle: `${course.title} Studysheet`,
+            tab: 'studysheet',
+            contextAttachment: 'course - studysheets'
           });
         }
 
@@ -2195,7 +2195,7 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
             success: true,
             courseDocs: course.courseDocs || {
               summary: false,
-              cheatsheet: false,
+              studysheet: false,
               test: false,
               schedule: false
             }
@@ -2209,7 +2209,7 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
           const customPrompt = typeof body.customPrompt === 'string' ? body.customPrompt.trim() : undefined;
 
           if (!type || !(COURSE_DOC_TYPES as readonly string[]).includes(type)) {
-            return error(400, "Invalid type. Must be 'summary', 'cheatsheet', 'test', or 'schedule'");
+            return error(400, "Invalid type. Must be 'summary', 'studysheet', 'test', or 'schedule'");
           }
 
           // 1. Cached document unless regeneration is forced
@@ -2264,10 +2264,10 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
           const contextAttachment =
             typeof body.contextAttachment === 'string'
               ? body.contextAttachment.trim()
-              : `course - ${type === 'summary' ? 'summaries' : type === 'cheatsheet' ? 'cheatsheets' : 'lessons'}`;
+              : `course - ${type === 'summary' ? 'summaries' : type === 'studysheet' ? 'studysheets' : 'lessons'}`;
           const customContent = typeof body.customContent === 'string' ? body.customContent : undefined;
 
-          // 4. Aggregated lesson payload for course summary / cheatsheet / test
+          // 4. Aggregated lesson payload for course summary / studysheet / test
           const payload =
             customContent !== undefined
               ? customContent

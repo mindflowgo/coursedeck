@@ -11,7 +11,7 @@ export interface ScheduleEvent {
   type: string;
   /** Lesson id, e.g. 01.05 or 01.05_assign1. */
   lessonId: string;
-  /** Optional sub-artifact: summary | cheatsheet | test | study | research | … */
+  /** Optional sub-artifact: summary | studysheet | test | study | research | … */
   section?: string;
   title: string;
   /** Joined indented lines directly under the entry. */
@@ -53,7 +53,7 @@ const ENTRY_RE =
 const DURATION_RE = /\((\d+(?:\.\d+)?)\s*(m(?:in(?:ute)?s?)?|h(?:(?:ou)?rs?)?)\)\s*$/i;
 
 /** Course-level document tabs only — custom tabs never exist at course scope. */
-const COURSE_DOC_TABS = ['summary', 'cheatsheet', 'test'];
+const COURSE_DOC_TABS = ['summary', 'studysheet', 'test'];
 
 /**
  * Sections that resolve to a lesson tab page: built-in tabs and any custom

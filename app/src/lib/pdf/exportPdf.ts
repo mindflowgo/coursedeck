@@ -11,7 +11,7 @@ import { isTauriEnvironment } from '$lib/api';
 /**
  * Vector PDF export engine.
  *
- * Compiles the active study document (notes / summary / cheatsheet /
+ * Compiles the active study document (notes / summary / studysheet /
  * practice test) from raw markdown into a pdfmake document definition and
  * downloads it as a real text PDF: selectable, searchable, and fast —
  * no full-page canvas rasterization, no html2canvas.

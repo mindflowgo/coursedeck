@@ -406,6 +406,7 @@
     <div class="flex-1 min-h-0 bg-white dark:bg-stone-900 rounded-xl border border-stone-200 dark:border-stone-800 shadow-2xs overflow-hidden">
       <CodeMirrorEditor
         value={editorContent}
+        preserveFrontmatter={false}
         onChange={(val) => (editorContent = val)}
         onSave={savePrompt}
       />
