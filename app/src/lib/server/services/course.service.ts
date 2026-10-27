@@ -86,6 +86,7 @@ export class CourseService {
     // Create directories
     fs.mkdirSync(courseDir, { recursive: true });
     fs.mkdirSync(path.join(courseDir, 'assets'), { recursive: true });
+    fs.mkdirSync(path.join(courseDir, 'assets', 'locker_docs'), { recursive: true });
     fs.mkdirSync(path.join(courseDir, '_backup'), { recursive: true });
 
     const now = new Date().toISOString();

@@ -26,5 +26,18 @@ describe('Asset path rewriting for locker docs and images', () => {
     expect(resolveImageSource('../../assets/img/test.png', 'gwl3o')).toBe('/api/courses/gwl3o/assets/img/test.png');
     expect(resolveImageSource('./assets/img/test.png', 'gwl3o')).toBe('/api/courses/gwl3o/assets/img/test.png');
     expect(resolveImageSource('assets/img/test.png', 'gwl3o')).toBe('/api/courses/gwl3o/assets/img/test.png');
+    expect(resolveImageSource('/assets/locker_docs/01.01_abc123.jpg', 'gwl3o')).toBe('/api/courses/gwl3o/assets/locker_docs/01.01_abc123.jpg');
+    expect(resolveImageSource('/assets/img/test.png', 'gwl3o')).toBe('/api/courses/gwl3o/assets/img/test.png');
+  });
+
+  it('rewrites /assets/ links and images to API endpoints', () => {
+    const markdown = [
+      'Pasted image: ![image](/assets/locker_docs/01.01_abc123.jpg)',
+      'Linked doc: [Doc](/assets/locker_docs/01.01_ref.pdf)'
+    ].join('\n');
+
+    const result = normalizeMarkdown(markdown, 'gwl3o');
+    expect(result.markdown).toContain('![image](/api/courses/gwl3o/assets/locker_docs/01.01_abc123.jpg)');
+    expect(result.markdown).toContain('[Doc](/api/courses/gwl3o/assets/locker_docs/01.01_ref.pdf)');
   });
 });

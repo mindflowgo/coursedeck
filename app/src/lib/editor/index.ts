@@ -82,3 +82,5 @@ export function liveMarkdown(options?: LiveMarkdownOptions): Extension {
 export { courseIdFacet } from "./sources";
 export { liveMarkdownPreview } from "./livePreview";
 export { liveMarkdownTheme } from "./theme";
+export { imagePasteHandler } from "./imagePaste";
+export { generateLockerDocFilename, compressImageToJpeg } from "./imageProcessor";

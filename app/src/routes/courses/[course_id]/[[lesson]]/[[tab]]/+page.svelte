@@ -2928,6 +2928,7 @@
                 <CodeMirrorEditor
                   value={tabContents[activeTab]}
                   courseId={course.id}
+                  lessonId={isCourseScope ? 'course' : selectedLessonId}
                   onChange={handleEditorChange}
                   onSave={handleSaveEdit}
                 />

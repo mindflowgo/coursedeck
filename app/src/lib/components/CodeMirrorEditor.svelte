@@ -17,12 +17,13 @@
   import { bracketMatching } from '@codemirror/language';
   import { keymap } from '@codemirror/view';
   import { onMount } from 'svelte';
-  import { liveMarkdown } from '$lib/editor';
+  import { liveMarkdown, imagePasteHandler } from '$lib/editor';
   import { splitFrontmatter, reappendFrontmatter } from '$lib/parser/frontmatter';
 
   interface Props {
     value: string;
     courseId?: string;
+    lessonId?: string;
     preserveFrontmatter?: boolean;
     onChange?: (val: string) => void;
     onSave?: () => void;
@@ -31,6 +32,7 @@
   let {
     value,
     courseId = '',
+    lessonId = '',
     preserveFrontmatter = true,
     onChange,
     onSave
@@ -115,6 +117,10 @@
         isolateArrowEvents,
         editorNavigationKeymap,
         liveMarkdown({ courseId }),
+        imagePasteHandler({
+          courseId: () => courseId,
+          lessonId: () => lessonId
+        }),
         history(),
         drawSelection(),
         dropCursor(),

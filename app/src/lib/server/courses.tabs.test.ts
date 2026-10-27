@@ -300,5 +300,21 @@ describe('CourseService tab file helpers', () => {
       const res = await CourseService.getPromptContext(pcCourse, 'locker - notes.txt');
       expect(res).toBe('Locker notes content');
     });
+
+    it('saves image files to assets/locker_docs and resolves their asset path', () => {
+      const filename = '01.01_m7xyz12.jpg';
+      const fakeBuffer = Buffer.from('fake-jpeg-data');
+      const saved = CourseService.saveLockerDoc(pcCourse, filename, fakeBuffer);
+
+      expect(saved.filename).toBe(filename);
+      expect(saved.ext).toBe('jpg');
+      expect(saved.url).toBe(`/api/courses/${pcCourse}/assets/locker_docs/${filename}`);
+
+      const diskPath = path.join(pcDir, 'assets', 'locker_docs', filename);
+      expect(fs.existsSync(diskPath)).toBe(true);
+
+      const resolved = CourseService.resolveAssetPath(pcCourse, `locker_docs/${filename}`);
+      expect(resolved).toBe(diskPath);
+    });
   });
 });

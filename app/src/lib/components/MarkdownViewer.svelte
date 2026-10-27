@@ -236,15 +236,15 @@
 
       const apiBase = getApiBaseUrl();
       out = out.replace(
-        /(src|href)=["'](?:\.{1,2}\/)*assets\/(.*?)["']/gi,
+        /(src|href)=["'](?:\.{1,2}\/|\/)*assets\/(.*?)["']/gi,
         (match, attr, path) => `${attr}="${apiBase}/api/courses/${courseId}/assets/${path}"`
       );
       out = out.replace(
-        /!\[(.*?)\]\((?:\.{1,2}\/)*assets\/(.*?)\)/gi,
+        /!\[(.*?)\]\((?:\.{1,2}\/|\/)*assets\/(.*?)\)/gi,
         `![$1](${apiBase}/api/courses/${courseId}/assets/$2)`
       );
       out = out.replace(
-        /\[(.*?)\]\((?:\.{1,2}\/)*assets\/(.*?)\)/gi,
+        /\[(.*?)\]\((?:\.{1,2}\/|\/)*assets\/(.*?)\)/gi,
         `[$1](${apiBase}/api/courses/${courseId}/assets/$2)`
       );
       return out;
@@ -657,7 +657,7 @@
         e.stopPropagation();
         const linkTitle = link.textContent?.trim() || link.getAttribute('title') || '';
         let targetUrl = href;
-        const relativeAssetMatch = href.match(/^(?:(?:\.{1,2}\/)+)?assets\/(.*)$/i);
+        const relativeAssetMatch = href.match(/^(?:(?:\.{1,2}\/)+|\/)?assets\/(.*)$/i);
         if (relativeAssetMatch && courseId) {
           const apiBase = getApiBaseUrl();
           targetUrl = `${apiBase}/api/courses/${courseId}/assets/${relativeAssetMatch[1]}`;

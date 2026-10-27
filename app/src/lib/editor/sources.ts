@@ -37,7 +37,7 @@ export function resolveImageSource(url: string, courseId: string): string | null
   if (trimmed.startsWith("/api/")) return trimmed;
   if (HAS_SCHEME.test(trimmed)) return null;
 
-  let clean = trimmed.replace(/^(?:\.{1,2}\/)+/, "");
+  let clean = trimmed.replace(/^(?:\.{1,2}\/|\/)+/, "");
   if (clean.startsWith("assets/")) {
     clean = clean.slice("assets/".length);
   }
