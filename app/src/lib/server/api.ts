@@ -38,7 +38,7 @@ import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
 import { TeacherCheckinService, cleanImageReferences, type PopQuizQuestionResult, type PopQuizResultPayload, type UnitTestQuestionResult, type UnitTestResultPayload } from './services/teacherCheckin.service';
 import { QuestionParser } from '../parser/questionParser';
 import { formatUnitScopeId, courseDocFileName } from '../tabs';
-import { NotFoundError } from './services/errors';
+import { NotFoundError, ConflictError, ValidationError } from './services/errors';
 import { CourseService as CourseManagerService } from './services/course.service';
 
 /**
@@ -113,6 +113,152 @@ function llmStoreState(store: ReturnType<typeof LLMService.loadStore>) {
     hasConfig: Boolean(active && active.baseUrl),
     activeId: store.activeId,
     cards: LLMService.summarizeCards(store)
+  };
+}
+
+const FALLBACK_COURSE_BUILDER_PROMPT = `# Course Builder Prompt
+
+You are an expert curriculum architect and educator.
+Analyze the provided course material, syllabus, textbook chapter, or document and propose a structured course curriculum.
+
+### Instructions:
+1. Extract or determine:
+   - "title": Clear and descriptive course title
+   - "suggestedId": Short lowercase alphanumeric code (e.g. "cs101", "mcr3u")
+   - "grade": Target grade level or course level (e.g. "11", "12", "Introductory")
+   - "level": Academic level (e.g. "University", "College", "Open", "AP")
+   - "description": 1-3 sentence course syllabus description
+2. Structure the curriculum into a logical sequence of Units (typically 3 to 6 units).
+3. Under each unit, break down the content into individual Lessons (and optional assignments):
+   - "id": Two-digit dot numbering: "01.01", "01.02" for Unit 1; "02.01", "02.02" for Unit 2, etc.
+   - "title": Student-friendly topic title
+   - "type": "lesson" or "assignment"
+   - "content": A markdown starter overview for the lesson with learning goals and key concepts
+
+### Output Format:
+Respond ONLY with a valid JSON object matching the requested schema without markdown backticks.`;
+
+function extractJsonProposal(raw: string): any {
+  let text = raw.trim();
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  if (fenceMatch) {
+    text = fenceMatch[1].trim();
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+    }
+    throw new Error('AI output did not contain valid JSON.');
+  }
+}
+
+function normalizeProposal(rawProposal: any): {
+  title: string;
+  suggestedId: string;
+  grade: string;
+  level: string;
+  description: string;
+  units: Array<{
+    number: number;
+    title: string;
+    lessons: Array<{
+      id: string;
+      title: string;
+      type: 'lesson' | 'assignment';
+      content?: string;
+    }>;
+  }>;
+} {
+  const title = typeof rawProposal?.title === 'string' && rawProposal.title.trim() ? rawProposal.title.trim() : 'New Course';
+  let suggestedId = typeof rawProposal?.suggestedId === 'string' ? rawProposal.suggestedId.toLowerCase().replace(/[^a-z0-9._-]/g, '') : '';
+  if (!suggestedId) {
+    suggestedId = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 16).replace(/^-+|-+$/g, '') || 'course';
+  }
+  const grade = typeof rawProposal?.grade === 'string' ? rawProposal.grade.trim() : '11';
+  const level = typeof rawProposal?.level === 'string' ? rawProposal.level.trim() : 'University';
+  const description = typeof rawProposal?.description === 'string' ? rawProposal.description.trim() : '';
+
+  const rawUnits = Array.isArray(rawProposal?.units) ? rawProposal.units : [];
+  const units: Array<{
+    number: number;
+    title: string;
+    lessons: Array<{
+      id: string;
+      title: string;
+      type: 'lesson' | 'assignment';
+      content?: string;
+    }>;
+  }> = [];
+
+  for (let uIdx = 0; uIdx < rawUnits.length; uIdx++) {
+    const u = rawUnits[uIdx];
+    const uNum = typeof u.number === 'number' ? u.number : uIdx + 1;
+    const uTitle = typeof u.title === 'string' && u.title.trim() ? u.title.trim() : `Unit ${uNum}`;
+    const rawLessons = Array.isArray(u.lessons) ? u.lessons : [];
+    const lessons: Array<{
+      id: string;
+      title: string;
+      type: 'lesson' | 'assignment';
+      content?: string;
+    }> = [];
+
+    for (let lIdx = 0; lIdx < rawLessons.length; lIdx++) {
+      const l = rawLessons[lIdx];
+      const lNum = lIdx + 1;
+      const defaultId = `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
+      const lId = typeof l.id === 'string' && l.id.trim() ? l.id.trim() : defaultId;
+      const lTitle = typeof l.title === 'string' && l.title.trim() ? l.title.trim() : `Lesson ${lNum}`;
+      const lType = l.type === 'assignment' ? 'assignment' : 'lesson';
+      const lContent = typeof l.content === 'string' ? l.content : undefined;
+
+      lessons.push({
+        id: lId,
+        title: lTitle,
+        type: lType,
+        content: lContent
+      });
+    }
+
+    if (lessons.length === 0) {
+      lessons.push({
+        id: `${String(uNum).padStart(2, '0')}.01`,
+        title: 'Introduction',
+        type: 'lesson'
+      });
+    }
+
+    units.push({
+      number: uNum,
+      title: uTitle,
+      lessons
+    });
+  }
+
+  if (units.length === 0) {
+    units.push({
+      number: 1,
+      title: 'Unit 1: Overview',
+      lessons: [
+        {
+          id: '01.01',
+          title: 'Introduction',
+          type: 'lesson'
+        }
+      ]
+    });
+  }
+
+  return {
+    title,
+    suggestedId,
+    grade,
+    level,
+    description,
+    units
   };
 }
 
@@ -1667,6 +1813,256 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
     // ---- /api/courses ----
     if (pathname === '/api/courses' && method === 'GET') {
       return json({ courses: CourseService.listCourses() });
+    }
+
+    // POST /api/courses - create course with optional units/lessons and auto-queue
+    if (pathname === '/api/courses' && method === 'POST') {
+      const body = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+      const rawCourseId = typeof body.id === 'string' ? body.id.trim().toLowerCase() : '';
+      if (!rawCourseId) {
+        return error(400, 'Course ID is required.');
+      }
+      let courseId: string;
+      try {
+        courseId = assertCourseId(rawCourseId).toLowerCase();
+      } catch {
+        return error(400, `Invalid course ID: "${rawCourseId}". Must start with a letter or digit and contain only letters, numbers, dots, hyphens, or underscores.`);
+      }
+
+      const title = typeof body.title === 'string' ? body.title.trim() : '';
+      if (!title) {
+        return error(400, 'Course title is required.');
+      }
+
+      const grade = typeof body.grade === 'string' ? body.grade.trim() : '11';
+      const level = typeof body.level === 'string' ? body.level.trim() : 'University';
+      const description = typeof body.description === 'string' ? body.description.trim() : '';
+
+      try {
+        CourseManagerService.createCourse({
+          id: courseId,
+          title,
+          grade,
+          level,
+          description
+        });
+
+        // If units or lessons are provided, inject them
+        const lessonsToInject: Array<{
+          id: string;
+          title: string;
+          unitNumber?: number;
+          unitTitle?: string;
+          lessonNumber?: number;
+          type?: 'lesson' | 'assignment';
+          content?: string;
+        }> = [];
+
+        if (Array.isArray(body.units)) {
+          for (const unit of body.units) {
+            const uNum = Number(unit.number) || 1;
+            const uTitle = unit.title || `Unit ${uNum}`;
+            if (Array.isArray(unit.lessons)) {
+              for (let idx = 0; idx < unit.lessons.length; idx++) {
+                const l = unit.lessons[idx];
+                const lNum = idx + 1;
+                const lId = l.id || `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
+                lessonsToInject.push({
+                  id: lId,
+                  title: l.title || `Lesson ${lNum}`,
+                  unitNumber: uNum,
+                  unitTitle: uTitle,
+                  lessonNumber: lNum,
+                  type: l.type === 'assignment' ? 'assignment' : 'lesson',
+                  content: l.content || `# ${l.title || `Lesson ${lNum}`}\n\n### Overview\nLesson content.`
+                });
+              }
+            }
+          }
+        } else if (Array.isArray(body.lessons)) {
+          for (const l of body.lessons) {
+            lessonsToInject.push({
+              id: l.id,
+              title: l.title,
+              unitNumber: l.unitNumber,
+              unitTitle: l.unitTitle,
+              lessonNumber: l.lessonNumber,
+              type: l.type === 'assignment' ? 'assignment' : 'lesson',
+              content: l.content
+            });
+          }
+        }
+
+        if (lessonsToInject.length > 0) {
+          CourseManagerService.injectLessons(courseId, lessonsToInject);
+        }
+
+        if (body.queueStudyMaterials) {
+          try {
+            queueManager.enqueueCourseMissing(courseId, ['summary', 'studysheet', 'test']);
+          } catch (qErr) {
+            console.warn(`Failed to auto-enqueue study materials for course ${courseId}:`, qErr);
+          }
+        }
+
+        const freshCourse = CourseManagerService.getCourse(courseId);
+        return json({ success: true, courseId, course: freshCourse }, 201);
+      } catch (err: any) {
+        if (err instanceof ConflictError || err?.name === 'ConflictError') {
+          return error(409, err.message || `Course '${courseId}' already exists.`);
+        }
+        if (err instanceof ValidationError || err?.name === 'ValidationError') {
+          return error(400, err.message || 'Validation error.');
+        }
+        return error(500, err?.message || 'Failed to create course.');
+      }
+    }
+
+    // ---- /api/builder/prompt ----
+    if (pathname === '/api/builder/prompt' && method === 'GET') {
+      const promptItem = PromptService.getPrompt('course_builder');
+      return json({
+        success: true,
+        prompt: promptItem?.content || FALLBACK_COURSE_BUILDER_PROMPT
+      });
+    }
+
+    // ---- /api/builder/propose ----
+    if (pathname === '/api/builder/propose' && method === 'POST') {
+      const contentType = req.headers.get('content-type') || '';
+      let extractedText = '';
+      let filename = 'document';
+      let instructions = '';
+      let customPrompt = '';
+      let targetUnits = 0;
+
+      if (contentType.includes('multipart/form-data')) {
+        const formData = await req.formData();
+        const file = formData.get('file') as File | null;
+        instructions = ((formData.get('instructions') as string) || '').trim();
+        customPrompt = ((formData.get('customPrompt') as string) || '').trim();
+        targetUnits = parseInt((formData.get('targetUnits') as string) || '0', 10);
+
+        if (!file) {
+          return error(400, 'No file uploaded.');
+        }
+        filename = file.name;
+        const ext = path.extname(filename).toLowerCase();
+        const buffer = Buffer.from(await file.arrayBuffer());
+
+        if (ext === '.pdf') {
+          try {
+            const { PDFParse } = (await import('pdf-parse')) as any;
+            const parser = new PDFParse(new Uint8Array(buffer));
+            const parsed = await parser.getText();
+            extractedText = parsed?.text?.trim() || '';
+          } catch (pdfErr: any) {
+            return error(400, `Failed to parse PDF: ${pdfErr?.message || String(pdfErr)}`);
+          }
+        } else if (ext === '.html' || ext === '.htm') {
+          try {
+            const cheerio = await import('cheerio');
+            const html = buffer.toString('utf8');
+            const $ = cheerio.load(html);
+            $('script, style, nav, footer, noscript').remove();
+            extractedText = $('body').text().trim() || $.text().trim();
+          } catch (htmlErr: any) {
+            return error(400, `Failed to parse HTML: ${htmlErr?.message || String(htmlErr)}`);
+          }
+        } else {
+          extractedText = buffer.toString('utf8').trim();
+        }
+      } else {
+        const body = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+        extractedText = typeof body.text === 'string' ? body.text.trim() : '';
+        filename = typeof body.filename === 'string' ? body.filename : 'outline.txt';
+        instructions = typeof body.instructions === 'string' ? body.instructions.trim() : '';
+        customPrompt = typeof body.customPrompt === 'string' ? body.customPrompt.trim() : '';
+        targetUnits = typeof body.targetUnits === 'number' ? body.targetUnits : 0;
+      }
+
+      if (!extractedText) {
+        return error(400, 'No readable text content found in the provided document or text is empty.');
+      }
+
+      // Safe truncate to avoid exceeding model context
+      if (extractedText.length > 60000) {
+        extractedText = extractedText.slice(0, 60000) + '\n\n...[content truncated for curriculum planning]...';
+      }
+
+      const promptItem = PromptService.getPrompt('course_builder');
+      const systemPrompt = customPrompt || promptItem?.content || FALLBACK_COURSE_BUILDER_PROMPT;
+
+      let userPrompt = `Document: ${filename}\n\n=== Content ===\n${extractedText}`;
+      if (instructions) {
+        userPrompt += `\n\n=== Additional Instructions ===\n${instructions}`;
+      }
+      if (targetUnits > 0) {
+        userPrompt += `\n\nTarget number of units: exactly ${targetUnits} units.`;
+      }
+
+      const config = LLMService.loadStoredConfig();
+      if (!config || !config.baseUrl) {
+        return error(400, 'No active AI model configured. Please configure an AI model in Settings → AI Models.');
+      }
+
+      try {
+        const result = await LLMService.generateResult(config, systemPrompt, userPrompt, { timeoutMs: 120_000 });
+        const rawProposal = extractJsonProposal(result.completion);
+        const proposal = normalizeProposal(rawProposal);
+        return json({ success: true, proposal, filename });
+      } catch (err: any) {
+        return error(500, `AI curriculum generation failed: ${err?.message || String(err)}`);
+      }
+    }
+
+    // ---- /api/builder/generate-lesson ----
+    if (pathname === '/api/builder/generate-lesson' && method === 'POST') {
+      const body = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
+      const courseTitle = typeof body.courseTitle === 'string' ? body.courseTitle.trim() : '';
+      const unitTitle = typeof body.unitTitle === 'string' ? body.unitTitle.trim() : '';
+      const lessonTitle = typeof body.lessonTitle === 'string' ? body.lessonTitle.trim() : '';
+      const grade = typeof body.grade === 'string' ? body.grade.trim() : '';
+
+      if (!lessonTitle) {
+        return error(400, 'Lesson title is required.');
+      }
+
+      const config = LLMService.loadStoredConfig();
+      if (!config || !config.baseUrl) {
+        return error(400, 'No active AI model configured. Please configure an AI model in Settings → AI Models.');
+      }
+
+      const systemPrompt = `You are an expert curriculum developer and educator.
+Write a comprehensive, engaging starter lesson in Markdown format for high school/university students.
+Include:
+# ${lessonTitle}
+
+### Learning Goals
+- Bullet points of key learning objectives
+
+### Key Concepts & Terminology
+- 3-5 core definitions or principles
+
+### Overview & Exploration
+- Detailed instructional explanation of the topic with structured headings, practical examples, and clear explanations.
+
+### Practice & Discussion Questions
+- 3 thoughtful questions or exercises for self-study.
+
+Respond ONLY with the markdown content (no meta commentary).`;
+
+      const userPrompt = `Course: ${courseTitle || 'General Studies'}
+Unit: ${unitTitle || 'Current Unit'}
+Lesson Topic: ${lessonTitle}
+Grade/Level: ${grade || 'High School'}`;
+
+      try {
+        const result = await LLMService.generateResult(config, systemPrompt, userPrompt, { timeoutMs: 90_000 });
+        return json({ success: true, content: result.completion.trim() });
+      } catch (err: any) {
+        return error(500, `Lesson generation failed: ${err?.message || String(err)}`);
+      }
     }
 
     // ---- /api/schedules ----

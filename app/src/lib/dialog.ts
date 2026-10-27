@@ -10,13 +10,15 @@ export async function confirmDialog(message: string, title?: string): Promise<bo
       const { confirm } = await import('@tauri-apps/plugin-dialog');
       return await confirm(message, title ? { title, kind: 'warning' } : undefined);
     } catch (e) {
-      console.warn('Native dialog.confirm failed, falling back to window.confirm:', e);
+      console.warn('Native dialog.confirm failed, falling back:', e);
+      // In Tauri, do not call window.confirm as it invokes the same native dialog IPC
+      return true;
     }
   }
 
   if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
     try {
-      return await window.confirm(message);
+      return window.confirm(message);
     } catch (e) {
       console.warn('window.confirm failed:', e);
     }
@@ -36,11 +38,14 @@ export async function messageDialog(message: string, title?: string): Promise<vo
       await tauriMessage(message, title ? { title } : undefined);
       return;
     } catch (e) {
-      console.warn('Native dialog.message failed, falling back to window.alert:', e);
+      console.warn('Native dialog.message failed:', e);
+      return;
     }
   }
 
   if (typeof window !== 'undefined' && typeof window.alert === 'function') {
-    window.alert(message);
+    try {
+      window.alert(message);
+    } catch {}
   }
 }

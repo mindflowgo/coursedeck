@@ -130,10 +130,10 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 
   // Direct file routes: courses, lessons, tabs, schedules, checkpoints, prompts, theme
   const isDirectFileRoute =
-    pathname === '/api/courses' ||
-    pathname === '/api/schedules' ||
-    pathname === '/api/checkpoints' ||
-    pathname === '/api/prompts' ||
+    (pathname === '/api/courses' && method === 'GET') ||
+    (pathname === '/api/schedules' && method === 'GET') ||
+    (pathname === '/api/checkpoints' && method === 'GET') ||
+    (pathname === '/api/prompts' && method === 'GET') ||
     pathname === '/api/settings/theme' ||
     (pathname.startsWith('/api/courses/') &&
       !pathname.endsWith('/open') &&
@@ -162,10 +162,11 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     return offlineFetch(path, method, init);
   }
 
-  // Non-file endpoints (e.g. AI queue, LLM proxy, sync bundle, folder opener):
+  // Non-file endpoints (e.g. AI queue, LLM proxy, sync bundle, folder opener, course creation):
   // Fetch via smartFetch to the backend server
   const baseUrl = getApiBaseUrl();
-  if (baseUrl || isTauriDesktop()) {
+  const isDevBrowser = typeof window !== 'undefined' && window.location.port === '5173';
+  if (baseUrl || isTauriDesktop() || isDevBrowser) {
     try {
       let res: Response;
       if (isTauriMobile() && !init?.signal) {
@@ -219,6 +220,48 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   if (method === 'GET' && pathname === '/api/courses') {
     const courses = await store.listCachedCourses();
     return jsonRes({ courses });
+  }
+
+  // POST /api/courses (offline course creation)
+  if (method === 'POST' && pathname === '/api/courses') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const courseId = (body.id || '').trim().toLowerCase();
+    if (!courseId) return jsonRes({ message: 'Course ID is required.' }, 400);
+    const title = (body.title || '').trim();
+    if (!title) return jsonRes({ message: 'Course title is required.' }, 400);
+
+    const units = Array.isArray(body.units) ? body.units : [];
+    const manifest = {
+      id: courseId,
+      title,
+      grade: body.grade || '11',
+      level: body.level || 'University',
+      description: body.description || '',
+      updatedAt: new Date().toISOString(),
+      units: units.map((u: any, uIdx: number) => ({
+        number: Number(u.number) || uIdx + 1,
+        title: u.title || `Unit ${uIdx + 1}`,
+        lessons: (Array.isArray(u.lessons) ? u.lessons : []).map((l: any, lIdx: number) => ({
+          id: l.id || `${String(uIdx + 1).padStart(2, '0')}.${String(lIdx + 1).padStart(2, '0')}`,
+          title: l.title || `Lesson ${lIdx + 1}`,
+          type: l.type === 'assignment' ? 'assignment' : 'lesson'
+        }))
+      }))
+    };
+
+    await store.saveCourseManifestLocally(courseId, manifest);
+
+    for (const unit of units) {
+      if (Array.isArray(unit.lessons)) {
+        for (const lesson of unit.lessons) {
+          if (lesson.id && lesson.content) {
+            await store.saveDocumentLocally(courseId, `${lesson.id}.lesson.md`, lesson.content);
+          }
+        }
+      }
+    }
+
+    return jsonRes({ success: true, courseId, course: manifest }, 201);
   }
 
   // GET /api/checkpoints

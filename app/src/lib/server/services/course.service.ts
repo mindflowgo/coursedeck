@@ -188,6 +188,7 @@ export class CourseService {
       id: string;
       title: string;
       unitNumber?: number;
+      unitTitle?: string;
       lessonNumber?: number;
       type?: 'lesson' | 'assignment';
       content?: string;
@@ -217,11 +218,13 @@ export class CourseService {
       if (!unit) {
         unit = {
           number: uNum,
-          title: `Unit ${uNum}`,
+          title: item.unitTitle || `Unit ${uNum}`,
           lessons: []
         };
         course.units.push(unit);
         course.units.sort((a, b) => a.number - b.number);
+      } else if (item.unitTitle && (!unit.title || unit.title === `Unit ${uNum}` || unit.title !== item.unitTitle)) {
+        unit.title = item.unitTitle;
       }
 
       let lesson = unit.lessons.find((l) => l.id === item.id);

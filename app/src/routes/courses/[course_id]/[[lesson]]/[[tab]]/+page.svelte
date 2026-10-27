@@ -1100,7 +1100,11 @@
   async function handleDeleteCustomTab(slug: string) {
     if (!selectedLessonId || !isCustomTabSlug(slug)) return;
     const name = customTabDisplayName(slug);
-    if (!confirm(`Delete the "${name}" tab for lesson ${selectedLessonId}? This removes ${selectedLessonId}.${slug}.md from disk.`)) {
+    const confirmed = await confirmDialog(
+      `Delete the "${name}" tab for lesson ${selectedLessonId}? This removes ${selectedLessonId}.${slug}.md from disk.`,
+      'Delete Tab'
+    );
+    if (!confirmed) {
       return;
     }
     try {
