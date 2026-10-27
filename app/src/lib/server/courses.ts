@@ -9,6 +9,24 @@ import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
 import { stripLessonMedia } from '../markdown/stripMedia';
 import type { LessonEffort, PlannedSession } from '../scheduleGenerator';
 export type { LessonEffort };
+
+export function formatLogDate(date: Date = new Date()): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const h = date.getHours();
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${h}:${min}`;
+}
+
+export interface CourseLogRecordOptions {
+  courseId: string;
+  type?: string;
+  lessonDoc: string;
+  chars?: number;
+  tokens?: number;
+  date?: Date;
+}
 import {
   assertCourseId,
   assertLessonId,
@@ -26,6 +44,14 @@ export interface LessonContentBundle {
   lesson: string;
   /** Every tab file on disk for this lesson, keyed by tab slug (summary, test, assignment, …). */
   tabs: Record<string, string>;
+}
+
+export interface LockerDocItem {
+  filename: string;
+  size: number;
+  updatedAt: string;
+  url: string;
+  ext: string;
 }
 
 export interface SchedulePayloadItem {
@@ -70,10 +96,17 @@ export class CourseService {
       summary: false,
       studysheet: false,
       test: false,
-      schedule: false
+      schedule: false,
+      logs: false
     };
     if (!fs.existsSync(courseFolder)) return flags;
     try {
+      if (
+        fs.existsSync(path.join(courseFolder, 'logs.md')) ||
+        fs.existsSync(path.join(courseFolder, 'course.logs.md'))
+      ) {
+        flags.logs = true;
+      }
       const files = fs.readdirSync(courseFolder);
       for (const file of files) {
         const parsed = parseDocFileName(file);
@@ -100,7 +133,9 @@ export class CourseService {
 
     for (const dirName of dirs) {
       const courseFolder = path.join(coursesDir, dirName);
-      const metaPath = path.join(courseFolder, 'meta.json');
+      const metaPath = fs.existsSync(path.join(courseFolder, 'meta.json'))
+        ? path.join(courseFolder, 'meta.json')
+        : path.join(courseFolder, 'manifest.json');
       if (fs.existsSync(metaPath)) {
         try {
           const content = fs.readFileSync(metaPath, 'utf8');
@@ -109,7 +144,7 @@ export class CourseService {
           manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
           manifests.push(manifest);
         } catch (e) {
-          console.error(`Failed to read meta.json for ${dirName}:`, e);
+          console.error(`Failed to read manifest for ${dirName}:`, e);
         }
       }
     }
@@ -119,7 +154,9 @@ export class CourseService {
 
   static getCourse(courseId: string): CourseManifest | null {
     const courseFolder = this.courseDir(courseId);
-    const metaPath = safeJoin(courseFolder, 'meta.json');
+    const metaPath = fs.existsSync(safeJoin(courseFolder, 'meta.json'))
+      ? safeJoin(courseFolder, 'meta.json')
+      : safeJoin(courseFolder, 'manifest.json');
     if (!fs.existsSync(metaPath)) return null;
 
     try {
@@ -277,16 +314,173 @@ export class CourseService {
     return fs.statSync(fullPath).isFile() ? fullPath : null;
   }
 
+  static listLockerDocs(courseId: string): LockerDocItem[] {
+    const courseDir = this.courseDir(courseId);
+    const lockerDir = safeJoin(courseDir, 'assets', 'locker_docs');
+    if (!fs.existsSync(lockerDir)) return [];
+
+    try {
+      const files = fs.readdirSync(lockerDir);
+      return files
+        .filter((f) => !f.startsWith('.'))
+        .map((f) => {
+          const filePath = safeJoin(lockerDir, f);
+          const stat = fs.statSync(filePath);
+          const ext = path.extname(f).replace(/^\./, '').toLowerCase();
+          return {
+            filename: f,
+            size: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+            url: `/api/courses/${courseId}/assets/locker_docs/${encodeURIComponent(f)}`,
+            ext
+          };
+        })
+        .sort((a, b) => a.filename.localeCompare(b.filename));
+    } catch (err) {
+      console.error(`Failed to list locker docs for ${courseId}:`, err);
+      return [];
+    }
+  }
+
+  static saveLockerDoc(courseId: string, filename: string, buffer: Buffer): LockerDocItem {
+    const courseDir = this.courseDir(courseId);
+    const lockerDir = safeJoin(courseDir, 'assets', 'locker_docs');
+    if (!fs.existsSync(lockerDir)) {
+      fs.mkdirSync(lockerDir, { recursive: true });
+    }
+    const safeName = path.basename(filename);
+    const dest = safeJoin(lockerDir, safeName);
+    fs.writeFileSync(dest, buffer);
+    const ext = path.extname(safeName).replace(/^\./, '').toLowerCase();
+    return {
+      filename: safeName,
+      size: buffer.length,
+      updatedAt: new Date().toISOString(),
+      url: `/api/courses/${courseId}/assets/locker_docs/${encodeURIComponent(safeName)}`,
+      ext
+    };
+  }
+
+  static deleteLockerDoc(courseId: string, filename: string): boolean {
+    const courseDir = this.courseDir(courseId);
+    const lockerDir = safeJoin(courseDir, 'assets', 'locker_docs');
+    const safeName = path.basename(filename);
+    const dest = safeJoin(lockerDir, safeName);
+    if (fs.existsSync(dest)) {
+      try {
+        fs.unlinkSync(dest);
+        return true;
+      } catch (err) {
+        console.error(`Failed to delete locker doc ${dest}:`, err);
+        return false;
+      }
+    }
+    return false;
+  }
+
+  static async extractLockerDocText(filePath: string): Promise<string> {
+    if (!fs.existsSync(filePath)) return '';
+    const ext = path.extname(filePath).toLowerCase();
+    try {
+      if (ext === '.pdf') {
+        const { PDFParse } = (await import('pdf-parse')) as any;
+        const fileBuf = fs.readFileSync(filePath);
+        const parser = new PDFParse(new Uint8Array(fileBuf));
+        const parsed = await parser.getText();
+        return parsed?.text?.trim() || '';
+      }
+      if (ext === '.html' || ext === '.htm') {
+        const cheerio = await import('cheerio');
+        const html = fs.readFileSync(filePath, 'utf8');
+        const $ = cheerio.load(html);
+        $('script, style, nav, footer, noscript').remove();
+        return $('body').text().trim() || $.text().trim();
+      }
+      return fs.readFileSync(filePath, 'utf8').trim();
+    } catch (err) {
+      console.error(`Failed to extract text from locker doc '${filePath}':`, err);
+      return '';
+    }
+  }
+
+  static getLogsPath(courseId: string): string {
+    const dir = this.courseDir(courseId);
+    const direct = safeJoin(dir, 'logs.md');
+    if (fs.existsSync(direct)) return direct;
+    const prefixed = safeJoin(dir, 'course.logs.md');
+    if (fs.existsSync(prefixed)) return prefixed;
+    return direct;
+  }
+
+  static getLogs(courseId: string): string | null {
+    const filePath = this.getLogsPath(courseId);
+    return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
+  }
+
+  static recordLog(opts: CourseLogRecordOptions): void {
+    try {
+      const courseId = normalizeCourseId(opts.courseId);
+      const courseFolder = this.courseDir(courseId);
+      if (!fs.existsSync(courseFolder)) {
+        fs.mkdirSync(courseFolder, { recursive: true });
+      }
+
+      const filePath = safeJoin(courseFolder, 'logs.md');
+      const dateStr = formatLogDate(opts.date || new Date());
+      const logType = (opts.type || 'llm').trim();
+      const coursePrefix = opts.courseId.trim().toUpperCase();
+      const rawLesson = opts.lessonDoc.trim();
+      const lessonWithPrefix = rawLesson.startsWith(coursePrefix + ':')
+        ? rawLesson
+        : `${coursePrefix}: ${rawLesson}`;
+      const charStr = opts.chars !== undefined ? ` (${Math.round(opts.chars)} chars)` : '';
+      const lessonCol = `${lessonWithPrefix}${charStr}`;
+      const tokensCol = opts.tokens !== undefined && opts.tokens !== null ? Math.round(opts.tokens) : '-';
+      const row = `| ${dateStr} | ${logType} | ${lessonCol} | ${tokensCol} |\n`;
+
+      if (!fs.existsSync(filePath)) {
+        const initial = `# Course Logs\n\n| Date | Type | Lesson | Tokens |\n| :--- | :--- | :--- | :--- |\n${row}`;
+        fs.writeFileSync(filePath, initial, 'utf8');
+      } else {
+        const content = fs.readFileSync(filePath, 'utf8');
+        let updated = content;
+        if (!/\|\s*Date\s*\|\s*Type\s*\|\s*Lesson\s*\|\s*Tokens\s*\|/i.test(content)) {
+          updated = (content.trim() ? content.trim() + '\n\n' : '') + `| Date | Type | Lesson | Tokens |\n| :--- | :--- | :--- | :--- |\n`;
+        }
+        if (!updated.endsWith('\n')) {
+          updated += '\n';
+        }
+        fs.writeFileSync(filePath, updated + row, 'utf8');
+      }
+    } catch (err) {
+      console.warn(`[CourseService] Failed to record log for ${opts.courseId}:`, err);
+    }
+  }
+
   static getCourseDocumentPath(courseId: string, type: string): string {
+    const clean = type.toLowerCase();
+    if (clean === 'logs') {
+      return this.getLogsPath(courseId);
+    }
     return safeJoin(this.courseDir(courseId), courseDocFileName(type));
   }
 
   static getCourseDocument(courseId: string, type: string): string | null {
+    const clean = type.toLowerCase();
+    if (clean === 'logs') {
+      const existing = this.getLogs(courseId);
+      if (existing !== null) return existing;
+      return `# Course Logs\n\n| Date | Type | Lesson | Tokens |\n| :--- | :--- | :--- | :--- |\n`;
+    }
     const filePath = this.getCourseDocumentPath(courseId, type);
     return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : null;
   }
 
   static hasCourseDocument(courseId: string, type: string): boolean {
+    const clean = type.toLowerCase();
+    if (clean === 'logs') {
+      return fs.existsSync(this.getLogsPath(courseId));
+    }
     const filePath = this.getCourseDocumentPath(courseId, type);
     return fs.existsSync(filePath);
   }
@@ -307,7 +501,12 @@ export class CourseService {
   }
 
   static getCheckpointsPath(courseId: string): string {
-    return safeJoin(this.courseDir(courseId), 'checkpoint.json');
+    const courseDir = this.courseDir(courseId);
+    const plural = safeJoin(courseDir, 'checkpoints.json');
+    if (fs.existsSync(plural)) return plural;
+    const legacy = safeJoin(courseDir, 'checkpoint.json');
+    if (fs.existsSync(legacy)) return legacy;
+    return plural;
   }
 
   static getCheckpoints(courseId: string): Checkpoint[] {
@@ -332,9 +531,17 @@ export class CourseService {
     if (!fs.existsSync(courseDir)) {
       fs.mkdirSync(courseDir, { recursive: true });
     }
-    const filePath = this.getCheckpointsPath(courseId);
+    const filePath = safeJoin(courseDir, 'checkpoints.json');
     try {
-      fs.writeFileSync(filePath, JSON.stringify(checkpoints, null, 2), 'utf8');
+      const content = JSON.stringify(checkpoints, null, 2);
+      fs.writeFileSync(filePath, content, 'utf8');
+      // If legacy singular checkpoint.json exists, clean it up so files aren't doubled
+      const legacyPath = safeJoin(courseDir, 'checkpoint.json');
+      if (fs.existsSync(legacyPath)) {
+        try {
+          fs.unlinkSync(legacyPath);
+        } catch {}
+      }
       return true;
     } catch (e) {
       console.error(`Failed to save checkpoints to ${filePath}:`, e);
@@ -572,16 +779,25 @@ export class CourseService {
    * Resolves the actual context content to be supplied alongside a prompt,
    * based on the contextAttachment string (e.g. "lesson - lessons", "unit - lessons", etc.)
    */
-  static getPromptContext(
+  static async getPromptContext(
     courseId: string,
     attachment: string,
     lessonId?: string
-  ): string {
+  ): Promise<string> {
     const course = this.getCourse(courseId);
     const courseDir = this.courseDir(courseId);
     if (!course || !fs.existsSync(courseDir)) return '';
 
     const norm = attachment.toLowerCase().trim();
+
+    // Check for locker document attachment (e.g. "locker - clu3m_01.03.102.pdf" or "locker:doc.pdf")
+    if (norm.startsWith('locker - ') || norm.startsWith('locker:')) {
+      const docName = attachment.replace(/^locker\s*[-:]\s*/i, '').trim();
+      const lockerDir = safeJoin(courseDir, 'assets', 'locker_docs');
+      const safeName = path.basename(docName);
+      const filePath = safeJoin(lockerDir, safeName);
+      return this.extractLockerDocText(filePath);
+    }
 
     if (norm === 'lesson - lessons' && lessonId) {
       const bundle = this.getLessonContent(courseId, lessonId);

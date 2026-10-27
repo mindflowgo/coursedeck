@@ -15,9 +15,7 @@ export class PromptService {
     const candidates = [
       path.join(getDefaultDataDir(), 'prompts'),
       path.resolve(process.cwd(), 'data', 'prompts'),
-      path.resolve(process.cwd(), '..', 'data', 'prompts'),
-      path.resolve(process.cwd(), 'data.old', 'prompts'),
-      path.resolve(process.cwd(), '..', 'data.old', 'prompts')
+      path.resolve(process.cwd(), '..', 'data', 'prompts')
     ];
     return candidates.filter((d) => fs.existsSync(d));
   }

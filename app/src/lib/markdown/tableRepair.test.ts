@@ -157,4 +157,95 @@ Amount |
       expect(cells.length).toBe(5);
     }
   });
+
+  test('repairs multiline tables where cells and pipe delimiters are separated by raw newlines (GWL3O 01.05)', () => {
+    const input = `| 
+Slide
+
+ | 
+
+Topic
+
+ | 
+
+Information to Include
+
+ | 
+
+Points and visuals you will include
+
+ |
+| --- | --- | --- | --- |
+| 
+
+1
+
+ | 
+
+Introduction
+
+ | 
+
+Name, age, and any other information you would like to include about yourself.
+
+ |  |
+| 
+
+2
+
+ | 
+
+Characteristics
+
+ | 
+
+How would someone else describe me? (Are you funny, loving, athletic, creative?) Provide at least three characteristics.
+
+ |  |
+| 
+
+3
+
+ | 
+
+Values
+
+Hope, service, responsibility, faith, honour, trust, freedom, honesty, integrity, justice, truth and family
+
+ | 
+
+What are the top three things that are important to me?
+
+ |  |`;
+
+    const repaired = repairMarkdownTables(input);
+    const html = renderFullHtml(input);
+
+    expect(html).toContain('<table>');
+    expect(html).toContain('<th>Slide</th>');
+    expect(html).toContain('<th>Topic</th>');
+    expect(html).toContain('<th>Information to Include</th>');
+    expect(html).toContain('<th>Points and visuals you will include</th>');
+
+    // Row 1
+    expect(html).toContain('<td>1</td>');
+    expect(html).toContain('<td>Introduction</td>');
+    expect(html).toContain('<td>Name, age, and any other information you would like to include about yourself.</td>');
+
+    // Row 2
+    expect(html).toContain('<td>2</td>');
+    expect(html).toContain('<td>Characteristics</td>');
+
+    // Row 3 (multiline text in single cell collapsed with <br>)
+    expect(html).toContain('<td>Values<br>Hope, service, responsibility, faith, honour, trust, freedom, honesty, integrity, justice, truth and family</td>');
+
+    const lines = repaired.trim().split('\n');
+    // Header (line 0) + delimiter (line 1) + 3 body rows = 5 lines total
+    expect(lines.length).toBe(5);
+    for (let j = 0; j < lines.length; j++) {
+      if (j === 1) continue; // delimiter
+      const cells = splitTableCells(lines[j]);
+      expect(cells.length).toBe(4);
+    }
+  });
 });

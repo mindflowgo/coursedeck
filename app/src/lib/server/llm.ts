@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getLlmConfigPath } from './paths';
-import { getProviderPreset, protocolForProvider, type LlmCardSummary } from '../llmProviders';
+import {
+  getProviderPreset,
+  protocolForProvider,
+  doesModelSupportTemperature,
+  isTemperatureUnsupportedError,
+  type LlmCardSummary
+} from '../llmProviders';
 
 export type LlmAuthHeaderType = 'bearer' | 'api_key' | 'both';
 
@@ -80,10 +86,19 @@ export function resolveCompletionsUrl(baseUrl: string): string {
   if (clean.endsWith('/chat/completions')) {
     return clean;
   }
-  if (clean.endsWith('/v1')) {
-    return `${clean}/chat/completions`;
+  return `${clean}/chat/completions`;
+}
+
+export function resolveResponsesUrl(baseUrl: string): string {
+  if (!baseUrl) return '';
+  const clean = baseUrl.trim().replace(/\/+$/, '');
+  if (clean.endsWith('/responses')) {
+    return clean;
   }
-  return `${clean}/v1/chat/completions`;
+  if (clean.endsWith('/chat/completions')) {
+    return clean.replace(/\/chat\/completions$/, '/responses');
+  }
+  return `${clean}/responses`;
 }
 
 /**
@@ -189,7 +204,15 @@ export class LLMService {
    * every consumer without touching their call sites.
    */
   static loadStoredConfig(): LLMConfig | null {
-    const card = LLMService.activeCard(LLMService.loadStore());
+    return LLMService.loadCardConfig();
+  }
+
+  /**
+   * Resolves a specific model card (or active card if cardId is omitted) as a call-ready `LLMConfig`.
+   */
+  static loadCardConfig(cardId?: string): LLMConfig | null {
+    const store = LLMService.loadStore();
+    const card = (cardId ? store.cards.find((c) => c.id === cardId) : null) ?? LLMService.activeCard(store);
     if (!card || !card.baseUrl) return null;
     return {
       provider: card.provider,
@@ -393,9 +416,13 @@ export class LLMService {
     const timeoutMs = LLMService.resolveRequestTimeoutMs(config, options?.timeoutMs);
     const heartbeatMs = options?.heartbeatMs ?? LLM_HEARTBEAT_INTERVAL_MS;
     const emit = options?.onLog;
-    const isLlamaCppNative = protocolForProvider(config.provider) === 'llamacpp_native';
+    const protocol = protocolForProvider(config.provider, config.model);
+    const isLlamaCppNative = protocol === 'llamacpp_native';
+    const isOpenAiResponses = protocol === 'openai_responses';
     const primaryUrl = isLlamaCppNative
       ? resolveLlamaCppUrl(config.baseUrl, 'completion')
+      : isOpenAiResponses
+      ? resolveResponsesUrl(config.baseUrl)
       : resolveCompletionsUrl(config.baseUrl);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json'
@@ -413,14 +440,16 @@ export class LLMService {
     // never forward one card's key to a different host. Endpoints are compared
     // resolved, so equivalent URL spellings (…:1234 vs …:1234/v1) still match.
     const storedCard = LLMService.loadStore().cards.find((c) => c.id === config.cardId);
-    const endpointOf = (baseUrl: string, provider: string | undefined) =>
-      protocolForProvider(provider) === 'llamacpp_native'
-        ? resolveLlamaCppUrl(baseUrl, 'completion')
-        : resolveCompletionsUrl(baseUrl);
+    const endpointOf = (baseUrl: string, provider: string | undefined, model?: string) => {
+      const p = protocolForProvider(provider, model);
+      if (p === 'llamacpp_native') return resolveLlamaCppUrl(baseUrl, 'completion');
+      if (p === 'openai_responses') return resolveResponsesUrl(baseUrl);
+      return resolveCompletionsUrl(baseUrl);
+    };
     // Each side resolves with its OWN provider protocol, so a changed protocol
     // (different endpoint path, same host) also drops the stored key.
     const sameEndpoint = Boolean(
-      storedCard && endpointOf(storedCard.baseUrl, storedCard.provider) === endpointOf(config.baseUrl, config.provider)
+      storedCard && endpointOf(storedCard.baseUrl, storedCard.provider, storedCard.model) === endpointOf(config.baseUrl, config.provider, config.model)
     );
     const rawKey = (config.apiKey && config.apiKey.trim()) || (sameEndpoint ? storedCard!.apiKey : '') || '';
     if (rawKey.trim()) {
@@ -435,6 +464,10 @@ export class LLMService {
         headers['api-key'] = cleanKey;
         headers['x-api-key'] = cleanKey;
       }
+    }
+
+    if (primaryUrl.includes('opencode.ai')) {
+      headers['x-opencode-session'] = config.sessionId?.trim() || `session_${Date.now().toString(36)}`;
     }
 
     /**
@@ -457,6 +490,13 @@ export class LLMService {
           cache_prompt: true,
           stream: true
         }
+      : isOpenAiResponses
+      ? {
+          model: config.model?.trim() || undefined,
+          stream: true,
+          instructions: systemPrompt,
+          input: userPrompt
+        }
       : {
           stream: true,
           stream_options: { include_usage: true },
@@ -466,15 +506,15 @@ export class LLMService {
           ]
         };
 
-    if (!isLlamaCppNative && config.model && config.model.trim()) {
+    if (!isLlamaCppNative && !isOpenAiResponses && config.model && config.model.trim()) {
       payload.model = config.model.trim();
     }
 
-    if (config.temperature !== undefined) {
+    if (config.temperature !== undefined && doesModelSupportTemperature(config.model)) {
       payload.temperature = config.temperature;
     }
 
-    if (!isLlamaCppNative && config.sendSessionId && config.sessionId && config.sessionId.trim()) {
+    if (!isLlamaCppNative && !isOpenAiResponses && config.sendSessionId && config.sessionId && config.sessionId.trim()) {
       payload.session_id = config.sessionId.trim();
     }
 
@@ -638,8 +678,19 @@ export class LLMService {
                     // /completion shape: top-level content (its `stop` flag and
                     // `timings` ride along on the same objects).
                     const delta = parsed.choices?.[0]?.delta;
-                    const textChunk = isLlamaCppNative ? parsed.content : delta?.content;
-                    if (delta?.reasoning_content) {
+                    const textChunk = isLlamaCppNative
+                      ? parsed.content
+                      : isOpenAiResponses
+                      ? (parsed.type === 'response.output_text.delta'
+                          ? (typeof parsed.delta === 'string' ? parsed.delta : parsed.text)
+                          : (typeof parsed.delta === 'string' && !parsed.type?.includes('reasoning') ? parsed.delta : ''))
+                      : delta?.content;
+
+                    const isReasoning = isOpenAiResponses
+                      ? (parsed.type === 'response.reasoning_text.delta' || parsed.type?.includes('reasoning'))
+                      : Boolean(delta?.reasoning_content);
+
+                    if (isReasoning) {
                       const now = Date.now();
                       if (now - lastLogAt >= 10_000) {
                         emit?.('info', `🧠 Model is reasoning & planning… (${Math.round((now - startedAt) / 1000)}s)`);
@@ -656,6 +707,13 @@ export class LLMService {
                     }
                     if (parsed.usage) {
                       streamUsage = parsed.usage;
+                    } else if (isOpenAiResponses && (parsed.response?.usage || (parsed.type === 'response.completed' && parsed.usage))) {
+                      const u = parsed.response?.usage || parsed.usage;
+                      streamUsage = {
+                        prompt_tokens: u.input_tokens ?? u.prompt_tokens,
+                        completion_tokens: u.output_tokens ?? u.completion_tokens,
+                        total_tokens: u.total_tokens ?? ((u.input_tokens ?? 0) + (u.output_tokens ?? 0))
+                      };
                     } else if (isLlamaCppNative && (parsed.tokens_evaluated !== undefined || parsed.timings?.predicted_n !== undefined)) {
                       // llama.cpp reports token counts as tokens_evaluated/timings
                       // rather than a usage object.
@@ -746,16 +804,59 @@ export class LLMService {
     const bodyJson = JSON.stringify(payload);
     let res = await fetchWithRetry(primaryUrl, bodyJson);
 
-    // Fallback: If 404 and primary had appended /v1/chat/completions, try direct /chat/completions
-    if (res.status === 404 && !isLlamaCppNative && !config.baseUrl.includes('/v1')) {
-      const cleanBase = config.baseUrl.trim().replace(/\/+$/, '');
-      const fallbackUrl = `${cleanBase}/chat/completions`;
-      if (fallbackUrl !== primaryUrl) {
-        console.warn(`[LLM API] Primary URL returned 404, attempting fallback URL: ${fallbackUrl}`);
-        const fallbackRes = await fetchWithRetry(fallbackUrl, bodyJson);
-        if (fallbackRes.status >= 200 && fallbackRes.status < 300) {
-          res = fallbackRes;
-        }
+    // Fallback: If provider returns 400/422 because temperature is unsupported (e.g. gpt-6-luna, o1, o3, etc.),
+    // strip temperature and transparently retry.
+    if ((res.status === 400 || res.status === 422) && payload.temperature !== undefined && isTemperatureUnsupportedError(res.bodyText)) {
+      console.warn(`[LLM API] Model '${config.model}' does not support 'temperature' parameter, retrying without it.`);
+      emit?.('warn', `Model does not support temperature — retrying without temperature parameter...`);
+      delete payload.temperature;
+      res = await fetchWithRetry(primaryUrl, JSON.stringify(payload));
+    }
+
+    // Fallback: If provider reports ModelProtocolUnsupported (e.g. OpenCode on gpt-6/5.6/grok models sent to /chat/completions),
+    // transparently reroute to the OpenAI Responses protocol endpoint (/responses).
+    if (res.status === 400 && !isOpenAiResponses && !isLlamaCppNative && res.bodyText.includes('ModelProtocolUnsupported')) {
+      const fallbackUrl = resolveResponsesUrl(config.baseUrl);
+      console.warn(`[LLM API] Primary URL reported ModelProtocolUnsupported, switching to Responses protocol: ${fallbackUrl}`);
+      emit?.('warn', `Model requires OpenAI Responses protocol — rerouting to ${fallbackUrl}...`);
+
+      const responsesPayload: Record<string, any> = {
+        model: config.model?.trim() || undefined,
+        stream: true,
+        instructions: systemPrompt,
+        input: userPrompt,
+        ...(config.temperature !== undefined && doesModelSupportTemperature(config.model) ? { temperature: config.temperature } : {})
+      };
+      res = await fetchWithRetry(fallbackUrl, JSON.stringify(responsesPayload));
+      if ((res.status === 400 || res.status === 422) && responsesPayload.temperature !== undefined && isTemperatureUnsupportedError(res.bodyText)) {
+        console.warn(`[LLM API] Responses endpoint reported unsupported temperature, retrying without it`);
+        delete responsesPayload.temperature;
+        res = await fetchWithRetry(fallbackUrl, JSON.stringify(responsesPayload));
+      }
+    }
+
+    // Fallback: If /responses returns 404 (e.g. an endpoint that only implements /chat/completions),
+    // transparently fall back to the chat completions endpoint.
+    if (res.status === 404 && isOpenAiResponses && !isLlamaCppNative) {
+      const fallbackUrl = resolveCompletionsUrl(config.baseUrl);
+      console.warn(`[LLM API] Responses endpoint returned 404, switching to Chat Completions: ${fallbackUrl}`);
+      emit?.('warn', `Endpoint does not support /responses — falling back to ${fallbackUrl}...`);
+
+      const chatPayload: Record<string, any> = {
+        stream: true,
+        stream_options: { include_usage: true },
+        ...(config.model?.trim() ? { model: config.model.trim() } : {}),
+        ...(config.temperature !== undefined && doesModelSupportTemperature(config.model) ? { temperature: config.temperature } : {}),
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ]
+      };
+      res = await fetchWithRetry(fallbackUrl, JSON.stringify(chatPayload));
+      if ((res.status === 400 || res.status === 422) && chatPayload.temperature !== undefined && isTemperatureUnsupportedError(res.bodyText)) {
+        console.warn(`[LLM API] Chat endpoint reported unsupported temperature, retrying without it`);
+        delete chatPayload.temperature;
+        res = await fetchWithRetry(fallbackUrl, JSON.stringify(chatPayload));
       }
     }
 
@@ -763,17 +864,31 @@ export class LLMService {
 
     if (res.status < 200 || res.status >= 300) {
       console.error(`[LLM API Error Body] ${res.bodyText.slice(0, 500)}`);
+
+      let quotaDetail = '';
+      if (res.status === 429) {
+        try {
+          const parsed = JSON.parse(res.bodyText);
+          quotaDetail = parsed?.error?.message || parsed?.message || '';
+        } catch {}
+        if (!quotaDetail) quotaDetail = res.bodyText.slice(0, 300).trim();
+      }
+
+      const errorMsg = res.status === 429
+        ? `Plan quota or rate limit exhausted (HTTP 429): ${quotaDetail || 'Usage limit reached'}. Our plan is exhausted for now — wait for the quota window to reset or upgrade your plan.`
+        : res.bodyText.includes('Direct IP access is not allowed')
+        ? `LLM Error (${res.status}): Direct IP access is not allowed by Cloudflare. Check your LLM Base URL in Settings — use the provider's domain name (e.g. https://api.deepseek.com) instead of a direct IP address.`
+        : `LLM Error (${res.status}): ${res.bodyText.slice(0, 500)}`;
+
       emit?.(
         'error',
-        `Provider answered HTTP ${res.status} after ${Math.round(res.elapsedMs / 1000)}s` +
-        ` (${res.statusText || 'error'}): ${res.bodyText.slice(0, 200)}`.trim()
+        res.status === 429
+          ? `⏳ ${errorMsg}`
+          : `Provider answered HTTP ${res.status} after ${Math.round(res.elapsedMs / 1000)}s` +
+            ` (${res.statusText || 'error'}): ${res.bodyText.slice(0, 200)}`.trim()
       );
-      if (res.bodyText.includes('Direct IP access is not allowed')) {
-        throw new Error(
-          `LLM Error (${res.status}): Direct IP access is not allowed by Cloudflare. Check your LLM Base URL in Settings — use the provider's domain name (e.g. https://api.deepseek.com) instead of a direct IP address.`
-        );
-      }
-      throw new Error(`LLM Error (${res.status}): ${res.bodyText.slice(0, 500)}`);
+
+      throw new Error(errorMsg);
     }
 
     let completion = res.completion;
@@ -782,10 +897,21 @@ export class LLMService {
     if (completion === undefined) {
       try {
         const data = JSON.parse(res.bodyText);
+        const isRespObj = isOpenAiResponses || Boolean(data.output) || data.object === 'response' || res.bodyText.includes('"object":"response"');
         completion = isLlamaCppNative
           ? (typeof data.content === 'string' ? data.content : '')
+          : isRespObj
+          ? (data.output?.[0]?.content?.[0]?.text ?? (data.output?.[0]?.text || ''))
           : (data.choices?.[0]?.message?.content || '');
-        usage = data.usage ?? (isLlamaCppNative && data.tokens_evaluated !== undefined
+
+        const rawUsage = data.usage ?? data.response?.usage;
+        usage = isRespObj && rawUsage
+          ? {
+              prompt_tokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens,
+              completion_tokens: rawUsage.output_tokens ?? rawUsage.completion_tokens,
+              total_tokens: rawUsage.total_tokens ?? ((rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0))
+            }
+          : rawUsage ?? (isLlamaCppNative && data.tokens_evaluated !== undefined
           ? {
               prompt_tokens: data.tokens_evaluated,
               completion_tokens: data.timings?.predicted_n,

@@ -91,7 +91,7 @@ export class ScheduleParser {
     };
 
     for (let i = start; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i].replace(/\r$/, '');
 
       const dayMatch = matchDayHeader(line);
       if (dayMatch) {
@@ -275,7 +275,8 @@ export class ScheduleParser {
  */
 export function toggleEventDone(markdown: string, lineIndex: number): string {
   if (!Number.isInteger(lineIndex) || lineIndex < 0) return markdown;
-  const lines = markdown.split('\n');
+  const isCrlf = markdown.includes('\r\n');
+  const lines = markdown.split(/\r?\n/);
   const line = lines[lineIndex];
   if (line === undefined) return markdown;
 
@@ -295,7 +296,7 @@ export function toggleEventDone(markdown: string, lineIndex: number): string {
 
   if (flipped === line) return markdown;
   lines[lineIndex] = flipped;
-  return lines.join('\n');
+  return lines.join(isCrlf ? '\r\n' : '\n');
 }
 
 /**

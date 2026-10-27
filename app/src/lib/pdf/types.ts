@@ -22,7 +22,7 @@ export function tabBadgeLabel(tab: ExportTab): string {
     case 'summary':
       return 'High-Yield Study Summary';
     case 'studysheet':
-      return 'Quick Reference Cheatsheet';
+      return 'Quick Reference Studysheet';
     case 'test':
       return 'Ontario Curriculum Practice Test';
     case 'schedule':

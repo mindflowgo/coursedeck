@@ -42,11 +42,11 @@ export function normalizeMarkdown(raw: string, courseId: string): PreprocessedMa
 
   // 3. Rewrite relative asset paths to API endpoints (same rules as the viewer)
   md = md.replace(
-    /(?:src|href)=["'](?:\.\/)?assets\/(.*?)["']/gi,
-    (_m, p) => `src="/api/courses/${courseId}/assets/${p}"`
+    /(src|href)=["'](?:\.{1,2}\/)*assets\/(.*?)["']/gi,
+    (_m, attr, p) => `${attr}="/api/courses/${courseId}/assets/${p}"`
   );
-  md = md.replace(/!\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi, (_m, alt, p) => `![${alt}](/api/courses/${courseId}/assets/${p})`);
-  md = md.replace(/\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi, (_m, text, p) => `[${text}](/api/courses/${courseId}/assets/${p})`);
+  md = md.replace(/!\[(.*?)\]\((?:\.{1,2}\/)*assets\/(.*?)\)/gi, (_m, alt, p) => `![${alt}](/api/courses/${courseId}/assets/${p})`);
+  md = md.replace(/\[(.*?)\]\((?:\.{1,2}\/)*assets\/(.*?)\)/gi, (_m, text, p) => `[${text}](/api/courses/${courseId}/assets/${p})`);
 
   // 4. GFM callouts: > [!NOTE] etc. -> marker + record
   md = md.replace(

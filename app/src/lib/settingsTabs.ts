@@ -3,7 +3,7 @@ export type SettingsTab = 'settings' | 'llm' | 'prompts' | 'integrations' | 'syn
 export function resolveSettingsTab(tabParam?: string | null): SettingsTab {
   if (!tabParam) return 'settings';
   const param = tabParam.toLowerCase().trim();
-  if (param === 'llm' || param === 'ai' || param === 'models') {
+  if (param === 'llm' || param === 'llms' || param === 'ai' || param === 'models') {
     return 'llm';
   }
   if (param === 'prompts') {
@@ -24,7 +24,7 @@ export function resolveSettingsTab(tabParam?: string | null): SettingsTab {
 
 export type PromptGroupKey = 'course' | 'unit' | 'lessons' | 'custom';
 
-export const COURSE_PROMPT_ORDER = ['course_summary', 'course_schedule', 'course_test'] as const;
+export const COURSE_PROMPT_ORDER = ['course_summary', 'course_studysheet', 'course_schedule', 'course_test'] as const;
 export const UNIT_PROMPT_ORDER = ['unit_assignments', 'unit_test'] as const;
 export const LESSON_PROMPT_ORDER = ['summary', 'studysheet', 'popquiz', 'lesson'] as const;
 
@@ -34,6 +34,7 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
   // Standard complete course prompts
   if (
     id === 'course_summary' ||
+    id === 'course_studysheet' ||
     id === 'course_schedule' ||
     id === 'course_test' ||
     id === 'course'

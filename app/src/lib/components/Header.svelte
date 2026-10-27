@@ -84,7 +84,7 @@
       <GraduationCap class="w-5 h-5 sm:w-4 sm:h-4" />
     </button>
 
-    {#if displayCourseCode && !isMobile}
+    {#if displayCourseCode}
       <div class="hidden sm:flex items-center space-x-1.5 text-xs text-stone-400 dark:text-stone-500 overflow-hidden whitespace-nowrap min-w-0">
         <ChevronRight class="w-3.5 h-3.5 shrink-0" />
         <button
@@ -115,12 +115,10 @@
       onclick={() => goto('/')}
       aria-label="Courses"
       title="Courses"
-      class="{isMobile ? 'w-10 h-10' : 'w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5'} rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath === '/' || activePath.startsWith('/courses') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+      class="w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5 rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath === '/' || activePath.startsWith('/courses') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
     >
-      <BookOpen class="{isMobile ? 'w-5 h-5' : 'w-5 h-5 sm:w-3.5 sm:h-3.5'} shrink-0" />
-      {#if !isMobile}
-        <span class="hidden sm:inline">Courses</span>
-      {/if}
+      <BookOpen class="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" />
+      <span class="hidden sm:inline">Courses</span>
     </button>
 
     <button
@@ -128,12 +126,10 @@
       onclick={() => goto('/checkpoints')}
       aria-label="Checkpoints"
       title="Checkpoints"
-      class="{isMobile ? 'w-10 h-10' : 'w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5'} rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath.startsWith('/checkpoint') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+      class="w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5 rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath.startsWith('/checkpoint') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
     >
-      <FlagTriangleRight class="{isMobile ? 'w-5 h-5' : 'w-5 h-5 sm:w-3.5 sm:h-3.5'} shrink-0" />
-      {#if !isMobile}
-        <span class="hidden sm:inline">Checkpoints</span>
-      {/if}
+      <FlagTriangleRight class="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" />
+      <span class="hidden sm:inline">Checkpoints</span>
     </button>
 
     <button
@@ -141,12 +137,10 @@
       onclick={() => goto('/schedules')}
       aria-label="Schedules"
       title="Schedules"
-      class="{isMobile ? 'w-10 h-10' : 'w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5'} rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath.startsWith('/schedules') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+      class="w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5 rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath.startsWith('/schedules') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
     >
-      <CalendarDays class="{isMobile ? 'w-5 h-5' : 'w-5 h-5 sm:w-3.5 sm:h-3.5'} shrink-0" />
-      {#if !isMobile}
-        <span class="hidden sm:inline">Schedules</span>
-      {/if}
+      <CalendarDays class="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" />
+      <span class="hidden sm:inline">Schedules</span>
     </button>
 
     <AIQueuePopover {courseId} {onLessonUpdated} />

@@ -20,11 +20,11 @@ describe('CourseService checkpoint persistence', () => {
     );
   });
 
-  it('returns empty array when checkpoint.json does not exist', () => {
+  it('returns empty array when checkpoints.json does not exist', () => {
     expect(CourseService.getCheckpoints(courseId)).toEqual([]);
   });
 
-  it('records and updates position checkpoints', () => {
+  it('records and updates position checkpoints into checkpoints.json only', () => {
     const pos1 = CourseService.recordPositionCheckpoint(courseId, '01.01.lesson.md', 250);
     expect(pos1.type).toBe('position');
     expect(pos1.file).toBe('01.01.lesson.md');
@@ -37,6 +37,8 @@ describe('CourseService checkpoint persistence', () => {
     const all = CourseService.getCheckpoints(courseId);
     expect(all.length).toBe(1);
     expect(all[0].verticalPosition).toBe(780);
+    expect(fs.existsSync(path.join(courseDir, 'checkpoints.json'))).toBe(true);
+    expect(fs.existsSync(path.join(courseDir, 'checkpoint.json'))).toBe(false);
   });
 
   it('creates, updates, and deletes note checkpoints', () => {
@@ -91,5 +93,42 @@ describe('CourseService checkpoint persistence', () => {
     expect(notes.every((n) => n.type === 'note')).toBe(true);
     expect(notes[0].courseId).toBe(courseId);
     expect(notes[0].courseTitle).toBe('Test Course Checkpoints');
+  });
+
+  it('reads legacy checkpoint.json (singular) if present, and migrates to checkpoints.json on save', () => {
+    const legacyCourseId = 'legacycp';
+    const legacyDir = path.join(scratch, 'courses', legacyCourseId);
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(legacyDir, 'meta.json'),
+      JSON.stringify({ id: legacyCourseId, title: 'Legacy Checkpoints Course', archived: false })
+    );
+    fs.writeFileSync(
+      path.join(legacyDir, 'checkpoint.json'),
+      JSON.stringify([
+        {
+          id: 'cp_legacy_1',
+          file: '01.01.lesson.md',
+          verticalPosition: 300,
+          type: 'note',
+          color: 'green',
+          noteText: 'From legacy file',
+          date: '2026-10-25T12:00:00Z'
+        }
+      ])
+    );
+
+    const cps = CourseService.getCheckpoints(legacyCourseId);
+    expect(cps.length).toBe(1);
+    expect(cps[0].noteText).toBe('From legacy file');
+
+    // Saving updates checkpoints.json and removes legacy checkpoint.json
+    CourseService.addOrUpdateNoteCheckpoint(legacyCourseId, {
+      file: '01.02.lesson.md',
+      verticalPosition: 50,
+      noteText: 'New note'
+    });
+    expect(fs.existsSync(path.join(legacyDir, 'checkpoints.json'))).toBe(true);
+    expect(fs.existsSync(path.join(legacyDir, 'checkpoint.json'))).toBe(false);
   });
 });

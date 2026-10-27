@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiFetch, isMobileDevice } from '$lib/api';
+  import { apiFetch } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
@@ -75,8 +75,10 @@
     CalendarSync,
     FileDown,
     MoreHorizontal,
+    MoreVertical,
     ChevronRight,
     ChevronDown,
+    ScrollText,
     ThumbsUp
   } from 'lucide-svelte';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
@@ -99,6 +101,7 @@
   let isUploadModalOpen: boolean = $state(false);
   let uploadModalMode: 'add' | 'replace' = $state('add');
   let isLessonActionsOpen: boolean = $state(false);
+  let isActionMenuOpen: boolean = $state(false);
   let isLLMModalOpen: boolean = $state(false);
   let isScheduleModalOpen: boolean = $state(false);
   let isSyncModalOpen: boolean = $state(false);
@@ -109,22 +112,19 @@
   let isLoadingCourseDoc: boolean = $state(false);
   let isGeneratingCourseDoc: boolean = $state(false);
   let quizRunnerKey: number = $state(0);
-  let isMobile: boolean = $state(typeof window !== 'undefined' ? isMobileDevice() : false);
   let isMobileTabDropdownOpen: boolean = $state(false);
 
   let activeTabLabel = $derived.by(() => {
     if (isCourseScope) {
-      if (activeTab === 'lesson') return 'Lessons';
-      if (activeTab === 'summary') return 'Summary';
-      if (activeTab === 'schedule') return 'Schedule';
-      if (activeTab === 'test') return 'Practice Test';
+      if (activeTab === 'logs') return 'Logs';
+      return 'Practice Test';
     } else if (isUnitScope) {
       if (activeTab === 'assignments') return 'Assignments';
       if (activeTab === 'test') return 'Unit Test';
     } else {
       if (activeTab === 'lesson') return 'Lessons';
       if (activeTab === 'summary') return 'Summary';
-      if (activeTab === 'studysheet') return 'Cheatsheet';
+      if (activeTab === 'studysheet') return 'Studysheet';
     }
     return customTabDisplayName(activeTab);
   });
@@ -211,7 +211,8 @@
     summary: '',
     studysheet: '',
     test: '',
-    schedule: ''
+    schedule: '',
+    logs: ''
   });
 
   let originalContents: Record<string, string> = $state({
@@ -219,7 +220,8 @@
     summary: '',
     studysheet: '',
     test: '',
-    schedule: ''
+    schedule: '',
+    logs: ''
   });
 
   let courseScheduleMarkdown: string = $state('');
@@ -524,10 +526,11 @@
   // Display name for active tab
   let tabDisplayName = $derived.by(() => {
     if (activeTab === 'summary') return 'Summary';
-    if (activeTab === 'studysheet') return 'Cheatsheet';
+    if (activeTab === 'studysheet') return 'Studysheet';
     if (activeTab === 'assignments') return 'Assignments';
     if (activeTab === 'test') return isUnitScope ? 'Unit Test' : isCourseScope ? 'Course Test' : 'Practice Test';
     if (activeTab === 'schedule') return 'Schedule';
+    if (activeTab === 'logs') return 'Logs';
     if (isCustomTabSlug(activeTab)) return customTabDisplayName(activeTab);
     return isCourseScope ? 'Course Notes' : 'Notes';
   });
@@ -539,9 +542,8 @@
 
   // Character count for current document (lessons, summary, studysheet, etc.)
   let pageCharCount = $derived.by(() => {
-    if (isCourseScope && activeTab === 'lesson') return 0;
     if (activeTab === 'schedule') return 0;
-    if (isUnitScope && activeTab === 'test') return 0;
+    if (activeTab === 'test') return 0;
     if (
       activeTab !== 'lesson' &&
       activeTab !== 'summary' &&
@@ -611,11 +613,16 @@
             }
             tabContents[tab] = data.markdown;
             originalContents[tab] = data.markdown;
+            quizRunnerKey++;
           } else if (tab === 'schedule') {
             // Schedules need the preferences questionnaire first — show the
             // intro panel instead of silently calling the LLM.
             tabContents.schedule = '';
             originalContents.schedule = '';
+          } else if (tab === 'logs') {
+            const defaultLogs = '# Course Logs\n\n| Date | Type | Lesson | Tokens |\n| :--- | :--- | :--- | :--- |\n';
+            tabContents.logs = data.markdown || defaultLogs;
+            originalContents.logs = tabContents.logs;
           } else if (['summary', 'studysheet', 'test'].includes(tab)) {
             // Built-in course doc not yet generated: auto-trigger generation
             isLoadingCourseDoc = false;
@@ -709,7 +716,7 @@
 
   async function generateCourseDocument(
     type: PageTab,
-    opts?: { customPrompt?: string; customContent?: string; contextAttachment?: string }
+    opts?: { customPrompt?: string; customContent?: string; contextAttachment?: string; cardId?: string }
   ) {
     if (type === 'lesson' || !['summary', 'studysheet', 'test', 'schedule'].includes(type)) return;
 
@@ -750,6 +757,7 @@
           customPrompt: activePrompt,
           customContent: opts?.customContent,
           contextAttachment: opts?.contextAttachment || parsedActiveTab.frontmatter.contextAttachment,
+          cardId: opts?.cardId,
           async: true
         })
       });
@@ -812,7 +820,12 @@
         }
       }
 
-      console.log(`[Course AI] Generated course ${type}: ${generatedMarkdown.length} chars`, {
+      const tokensUsed = data.usage?.total_tokens ?? data.tokensUsed;
+      const tokenBreakdown = data.usage?.prompt_tokens !== undefined
+        ? ` (prompt: ${data.usage.prompt_tokens.toLocaleString()}, completion: ${data.usage.completion_tokens?.toLocaleString() ?? '?'})`
+        : '';
+      const tokenStr = tokensUsed !== undefined ? ` | Total tokens used: ${tokensUsed.toLocaleString()}${tokenBreakdown}` : '';
+      console.log(`[Course AI] Generated course ${type}: ${generatedMarkdown.length.toLocaleString()} characters${tokenStr}`, {
         usage: data.usage
       });
 
@@ -891,6 +904,23 @@
     console.log(
       `[NAV] selectLesson "${lessonId}" | from "${selectedLessonId}" | tab=${activeTab} scope=${isCourseScope} editing=${isEditing}`
     );
+    if (lessonId === 'course') {
+      isCourseScope = true;
+      selectedLessonId = 'course';
+      isEditing = false;
+      showPromptCard = false;
+      isLessonActionsOpen = false;
+      isMobileTabDropdownOpen = false;
+      if (activeTab !== 'test' && activeTab !== 'logs') {
+        activeTab = 'test';
+      }
+      await loadCourseDocument(activeTab);
+      const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course/${activeTab}`;
+      if ($page.url.pathname !== targetUrl) {
+        nav(targetUrl);
+      }
+      return;
+    }
     isCourseScope = false;
     isEditing = false;
     showPromptCard = false;
@@ -914,24 +944,6 @@
       nav(targetUrl);
     } else {
       console.log(`[NAV] selectLesson: URL already ${targetUrl}, no goto needed`);
-    }
-  }
-
-  function selectCourseMode() {
-    console.log(`[NAV] selectCourseMode | from lesson=${selectedLessonId} tab=${activeTab}`);
-    isCourseScope = true;
-    isEditing = false;
-    isLessonActionsOpen = false;
-    isMobileTabDropdownOpen = false;
-    if (!hasCourseDoc(activeTab)) {
-      activeTab = 'lesson';
-    }
-    loadCourseDocument(activeTab);
-    const targetTab = activeTab;
-    const tabSuffix = targetTab && targetTab !== 'lesson' ? `/${targetTab}` : '';
-    const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course${tabSuffix}`;
-    if ($page.url.pathname !== targetUrl) {
-      nav(targetUrl);
     }
   }
 
@@ -1247,6 +1259,7 @@
     customPrompt?: string;
     customContent?: string;
     contextAttachment?: string;
+    cardId?: string;
   }) {
     if (activeTab === 'lesson') return;
 
@@ -1284,7 +1297,8 @@
           tab: activeTab,
           customPrompt: activeSystemPrompt,
           customContent: opts?.customContent,
-          contextAttachment: effectiveAttachment
+          contextAttachment: effectiveAttachment,
+          cardId: opts?.cardId
         })
       });
 
@@ -1327,14 +1341,16 @@
   let unitTestSupervisorMessage: string = $state('');
 
   async function handleSubmitUnitTest(answers: Record<string, string>) {
-    if (!courseId || !selectedLessonId) return;
+    if (!courseId) return;
+    const targetUnitId = isCourseScope ? 'course' : selectedLessonId;
+    if (!targetUnitId) return;
 
     try {
       const res = await apiFetch(`/api/courses/${courseId}/unit-test/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          unitId: selectedLessonId,
+          unitId: targetUnitId,
           testMarkdown: tabContents.test,
           answers
         })
@@ -1342,7 +1358,7 @@
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.message || data.error || 'Failed to submit unit test');
+        throw new Error(data.message || data.error || 'Failed to submit test');
       }
 
       // Update local tab contents and frontmatter so UI reflects the newly saved attempt immediately
@@ -1355,15 +1371,15 @@
         unitTestSupervisorMessage = data.supervisorMessage;
       }
 
-      saveSuccessMessage = `Unit test evaluated: ${data.score}/${data.total} (${data.percentage}%)`;
+      saveSuccessMessage = `${isCourseScope ? 'Course practice test' : 'Unit test'} evaluated: ${data.score}/${data.total} (${data.percentage}%)`;
       setTimeout(() => {
         saveSuccessMessage = '';
       }, 4000);
 
       return data;
     } catch (err: any) {
-      console.error('[Unit Test Submit Error]', err);
-      alert('Error evaluating unit test: ' + (err?.message || 'Check connection'));
+      console.error('[Test Submit Error]', err);
+      alert('Error evaluating test: ' + (err?.message || 'Check connection'));
       throw err;
     }
   }
@@ -1383,7 +1399,9 @@
       if (task.courseId !== (courseId || '').toLowerCase()) return;
       const label = task.tab === 'schedule' ? 'Course Schedule' : (task.tab.charAt(0).toUpperCase() + task.tab.slice(1));
       if (task.status === 'completed') {
-        console.log(`[ILC AI Done] ${label} for ${task.lessonId} generated.`);
+        const tokensUsed = task.tokensUsed;
+        const tokenStr = tokensUsed !== undefined ? ` | Total tokens used: ${tokensUsed.toLocaleString()}` : '';
+        console.log(`[ILC AI Done] ${label} for ${task.courseId.toUpperCase()} ${task.lessonId} generated${tokenStr}.`);
         saveSuccessMessage = `✨ ${label} generated!`;
         setTimeout(() => {
           saveSuccessMessage = '';
@@ -1643,8 +1661,14 @@
 
       const data = await res.json();
       const aiAnswer = data.completion;
-      const usageInfo = data.usage?.total_tokens !== undefined ? ` | "total_tokens":${data.usage.total_tokens}` : '';
-      console.log(`[ILC AI Note Received] ${aiAnswer.length} characters${usageInfo}`);
+      const tokensUsed = data.usage?.total_tokens;
+      const tokenBreakdown = data.usage?.prompt_tokens !== undefined
+        ? ` (prompt: ${data.usage.prompt_tokens.toLocaleString()}, completion: ${data.usage.completion_tokens?.toLocaleString() ?? '?'})`
+        : '';
+      const usageInfo = tokensUsed !== undefined
+        ? ` | Total tokens used: ${tokensUsed.toLocaleString()}${tokenBreakdown}`
+        : '';
+      console.log(`[ILC AI Note Received] ${aiAnswer.length.toLocaleString()} characters${usageInfo}`);
 
       const formattedNote = formatUserNote(query, selectedText, aiAnswer);
       const currentContent = tabContents[activeTab] || '';
@@ -1716,46 +1740,15 @@
     isExportingPdf = true;
     try {
       if (isCourseScope) {
-        if (activeTab === 'lesson') {
-          // In course navigation mode, aggregate lesson notes are not preloaded.
-          // Fetch or generate aggregated notes on demand for PDF export.
-          const res = await apiFetch(`/api/courses/${courseId}/course-docs?type=notes`);
-          if (!res.ok) {
-            throw new Error('Failed to generate complete course notes for PDF');
-          }
-          const data = await res.json();
-          const aggregatedMarkdown = data.markdown || '';
-          if (!aggregatedMarkdown.trim()) {
-            throw new Error('No lesson notes available to generate PDF');
-          }
-
-          await exportDocumentToPdf({
-            courseCode: course.id,
-            courseTitle: course.title,
-            lessonId: 'Course',
-            lessonTitle: 'Complete Course Lessons',
-            tab: 'lesson',
-            tabDisplayName: 'Complete Lessons',
-            rawMarkdown: aggregatedMarkdown
-          });
-        } else {
-          const displayTitles: Record<string, { lessonTitle: string; tabDisplayName: string }> = {
-            summary: { lessonTitle: 'Comprehensive Course Summary', tabDisplayName: 'Course Summary' },
-            studysheet: { lessonTitle: 'Master Course Cheatsheet', tabDisplayName: 'Course Cheatsheet' },
-            test: { lessonTitle: 'Final Course Practice Exam', tabDisplayName: 'Course Practice Test' },
-            schedule: { lessonTitle: 'Course Study Schedule', tabDisplayName: 'Course Schedule' }
-          };
-          const info = displayTitles[activeTab] || { lessonTitle: `Course ${tabDisplayName}`, tabDisplayName: `Course ${tabDisplayName}` };
-          await exportDocumentToPdf({
-            courseCode: course.id,
-            courseTitle: course.title,
-            lessonId: 'Course',
-            lessonTitle: info.lessonTitle,
-            tab: activeTab,
-            tabDisplayName: info.tabDisplayName,
-            rawMarkdown: tabContents[activeTab]
-          });
-        }
+        await exportDocumentToPdf({
+          courseCode: course.id,
+          courseTitle: course.title,
+          lessonId: 'Course',
+          lessonTitle: 'Final Course Practice Exam',
+          tab: 'test',
+          tabDisplayName: 'Course Practice Test',
+          rawMarkdown: tabContents.test
+        });
       } else {
         if (!selectedLessonId) return;
         const exportTabName = activeTab === 'lesson' ? 'Course Notes' : tabDisplayName || activeTab;
@@ -1808,8 +1801,13 @@
       } else {
         saveCurrentTab();
       }
-    } else if (e.key === 'Escape' && isEditing) {
-      handleCancelEdit();
+    } else if (e.key === 'Escape') {
+      if (isActionMenuOpen) {
+        isActionMenuOpen = false;
+      }
+      if (isEditing) {
+        handleCancelEdit();
+      }
     }
   }
 
@@ -1955,22 +1953,12 @@
       }
 
       const isTargetCourse =
-        resumeTarget?.isCourseScope ||
-        pLesson === 'course' ||
-        pLesson === 'schedule' ||
-        qScope === 'course' ||
-        qTab === 'schedule';
+        (resumeTarget?.isCourseScope && (resumeTarget.tab === 'test' || resumeTarget.tab === 'logs')) ||
+        (pLesson === 'course' && (pTab === 'test' || pTab === 'logs' || qTab === 'test' || qTab === 'logs')) ||
+        (qScope === 'course' && (pTab === 'test' || pTab === 'logs' || qTab === 'test' || qTab === 'logs'));
 
       if (isTargetCourse) {
-        let targetTab: PageTab = 'lesson';
-        if (resumeTarget?.isCourseScope) {
-          targetTab = resumeTarget.tab;
-        } else if (pLesson === 'schedule' || qTab === 'schedule') {
-          targetTab = 'schedule';
-        } else {
-          const parsed = parseTabName(pTab) || parseTabName(qTab) || 'lesson';
-          targetTab = hasCourseDoc(parsed) ? parsed : 'lesson';
-        }
+        const targetTab: PageTab = (pTab === 'logs' || qTab === 'logs' || resumeTarget?.tab === 'logs') ? 'logs' : 'test';
 
         const scopeChanged = !isCourseScope;
         const tabChanged = activeTab !== targetTab;
@@ -2031,7 +2019,7 @@
           const allLessons = (course.units || []).flatMap((u) => u.lessons);
           const requestedLesson = (resumeTarget && !resumeTarget.isCourseScope && !isUnitScopeId(resumeTarget.lessonId))
             ? resumeTarget.lessonId
-            : (pLesson || qLesson || '');
+            : (pLesson !== 'course' ? (pLesson || qLesson || '') : '');
           const foundLesson = findLesson(allLessons, requestedLesson);
           const targetLesson = foundLesson ? foundLesson.id : (allLessons[0]?.id || '');
           if (!foundLesson && requestedLesson) {
@@ -2126,7 +2114,6 @@
   });
 
   onMount(async () => {
-    isMobile = isMobileDevice();
     installPerfObservers();
     await loadPrompts();
     startQueueFeedback();
@@ -2216,11 +2203,9 @@
       <div class="flex items-center space-x-1.5 sm:space-x-2 shrink min-w-0">
         <LessonSelector
           {course}
-          {selectedLessonId}
+          selectedLessonId={isCourseScope ? 'course' : selectedLessonId}
           {activeTab}
-          isCourseMode={isCourseScope}
           onSelectLesson={(id) => selectLesson(id)}
-          onSelectCourseMode={() => selectCourseMode()}
         />
 
         {#if !isCourseScope && !isUnitScope}
@@ -2311,7 +2296,7 @@
                     }}
                     disabled={isQueueingMissing}
                     class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left disabled:opacity-50"
-                    title="Scan course and queue all ungenerated study sheets (Summary, Cheatsheet, Test) in background"
+                    title="Scan course and queue all ungenerated study sheets (Summary, Studysheet, Test) in background"
                   >
                     {#if isQueueingMissing}
                       <Loader2 class="w-3.5 h-3.5 text-amber-500 animate-spin shrink-0" />
@@ -2352,35 +2337,21 @@
         <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium shrink-0">
         {#if isCourseScope}
           <button
-            onclick={() => switchTab('lesson')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-          >
-            <BookOpen class="w-3.5 h-3.5" />
-            <span>Complete Lessons</span>
-          </button>
-
-          <button
-            onclick={() => switchTab('summary')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'summary' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-          >
-            <Sparkles class="w-3.5 h-3.5" />
-            <span>Summary</span>
-          </button>
-
-          <!-- <button
-            onclick={() => switchTab('schedule')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'schedule' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-          >
-            <CalendarDays class="w-3.5 h-3.5" />
-            <span>Schedule</span>
-          </button> -->
-
-          <button
+            type="button"
             onclick={() => switchTab('test')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'test' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition cursor-pointer {activeTab === 'test' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
           >
-            <CheckCircle2 class="w-3.5 h-3.5" />
-            <span>Practice Test</span>
+            <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span>Course Practice Test</span>
+          </button>
+
+          <button
+            type="button"
+            onclick={() => switchTab('logs')}
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition cursor-pointer {activeTab === 'logs' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+          >
+            <ScrollText class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+            <span>Logs</span>
           </button>
         {:else if isUnitScope}
           <button
@@ -2526,59 +2497,29 @@
                 <button
                   type="button"
                   role="menuitem"
-                  onclick={() => switchTab('lesson')}
-                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'lesson' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
-                >
-                  <div class="flex items-center space-x-2 truncate">
-                    <BookOpen class="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                    <span class="truncate">Complete Lessons</span>
-                  </div>
-                  {#if activeTab === 'lesson'}
-                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  {/if}
-                </button>
-
-                <button
-                  type="button"
-                  role="menuitem"
-                  onclick={() => switchTab('summary')}
-                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'summary' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
-                >
-                  <div class="flex items-center space-x-2 truncate">
-                    <Sparkles class="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                    <span class="truncate">Summary</span>
-                  </div>
-                  {#if activeTab === 'summary'}
-                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  {/if}
-                </button>
-
-                <button
-                  type="button"
-                  role="menuitem"
-                  onclick={() => switchTab('schedule')}
-                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'schedule' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
-                >
-                  <div class="flex items-center space-x-2 truncate">
-                    <CalendarDays class="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                    <span class="truncate">Schedule</span>
-                  </div>
-                  {#if activeTab === 'schedule'}
-                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  {/if}
-                </button>
-
-                <button
-                  type="button"
-                  role="menuitem"
                   onclick={() => switchTab('test')}
                   class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'test' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
                 >
                   <div class="flex items-center space-x-2 truncate">
-                    <CheckCircle2 class="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                    <span class="truncate">Practice Test</span>
+                    <CheckCircle2 class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    <span class="truncate">Course Practice Test</span>
                   </div>
                   {#if activeTab === 'test'}
+                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  {/if}
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => switchTab('logs')}
+                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'logs' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                >
+                  <div class="flex items-center space-x-2 truncate">
+                    <ScrollText class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                    <span class="truncate">Logs</span>
+                  </div>
+                  {#if activeTab === 'logs'}
                     <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                   {/if}
                 </button>
@@ -2670,7 +2611,7 @@
                 >
                   <div class="flex items-center space-x-2 truncate">
                     <ListCollapse class="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                    <span class="truncate">Cheatsheet</span>
+                    <span class="truncate">Studysheet</span>
                   </div>
                   {#if activeTab === 'studysheet'}
                     <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
@@ -2722,18 +2663,18 @@
       <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
         <FloatingCheckpointTrigger
           containerEl={contentScroller}
-          disabled={activeTab === 'schedule' || isEditing || (isCourseScope && activeTab === 'lesson')}
+          disabled={activeTab === 'schedule' || isEditing}
           onTrigger={handleTriggerAddCheckpoint}
         />
       </div>
 
       <div
-        class="relative flex-1 overflow-y-auto overflow-x-hidden {isMobile ? 'p-0' : 'p-0 sm:p-8'} max-w-5xl mx-auto w-full min-w-0 [overflow-anchor:none]"
+        class="relative flex-1 overflow-y-auto overflow-x-hidden p-0 sm:p-8 max-w-5xl mx-auto w-full min-w-0 [overflow-anchor:none]"
         bind:this={contentScroller}
         onscroll={handleContentScroll}
       >
         <!-- In-page Checkpoint Markers for this file -->
-        {#if !isEditing && activeTab !== 'schedule' && !(isCourseScope && activeTab === 'lesson')}
+        {#if !isEditing && activeTab !== 'schedule'}
           {#each currentFileNotes as note (note.id)}
             <CheckpointMarker
               checkpoint={note}
@@ -2831,55 +2772,109 @@
                 </span>
               {/if}
 
-              {#if activeTab !== 'lesson' && activeTab !== 'schedule'}
-                <button
-                  type="button"
-                  onclick={togglePromptCard}
-                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border backdrop-blur-sm text-xs font-medium transition shadow-xs hover:shadow-sm cursor-pointer {showPromptCard
-                    ? 'border-indigo-300 dark:border-indigo-700 bg-indigo-50/95 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 font-semibold'
-                    : 'border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 hover:bg-white dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100'}"
-                  title={showPromptCard ? 'Hide prompt card' : 'Tweak AI prompt'}
-                >
-                  <Sparkles class="w-3.5 h-3.5 {showPromptCard ? 'text-indigo-600 dark:text-indigo-400' : 'text-stone-500 dark:text-stone-400'}" />
-                  <span>Prompt</span>
-                </button>
-              {/if}
-
-              <button
-                onclick={handleExportPDF}
-                disabled={isExportingPdf}
-                class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer disabled:opacity-50"
-                title={isCourseScope && activeTab === 'lesson' ? 'Generate a printable PDF of all lesson pages' : 'Generate and download PDF for this document'}
-              >
-                {#if isExportingPdf}
-                  <Loader2 class="w-3.5 h-3.5 animate-spin text-stone-500 dark:text-stone-400" />
-                  <span>PDF...</span>
-                {:else}
-                  <FileDown class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
-                  <span>PDF</span>
-                {/if}
-              </button>
-
-              {#if !(isCourseScope && activeTab === 'schedule') && !(isCourseScope && activeTab === 'lesson') && !(isUnitScope && activeTab === 'test')}
+              {#if activeTab !== 'test'}
                 <MarkupMenu courseId={course.id} file={currentFile} />
               {/if}
 
-              {#if !(isCourseScope && activeTab === 'lesson')}
+              <!-- More actions menu ([...]): Edit, Prompt, PDF -->
+              <div class="relative inline-flex items-center">
                 <button
-                  onclick={() => (isEditing = true)}
-                  class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm hover:bg-white dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100 shadow-xs hover:shadow-sm transition cursor-pointer"
-                  title="Edit content"
+                  type="button"
+                  onclick={() => (isActionMenuOpen = !isActionMenuOpen)}
+                  class="relative flex items-center justify-center px-2 py-1.5 rounded-lg border backdrop-blur-sm text-xs font-medium transition shadow-xs hover:shadow-sm cursor-pointer {isActionMenuOpen
+                    ? 'border-stone-400 dark:border-stone-600 bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100'
+                    : 'border-stone-200/90 dark:border-stone-700 bg-white/95 dark:bg-stone-900/95 hover:bg-white dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 hover:text-stone-900 dark:hover:text-stone-100'}"
+                  title="More actions (Prompt, PDF, Edit)"
+                  aria-haspopup="menu"
+                  aria-expanded={isActionMenuOpen}
                 >
-                  <Edit3 class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
-                  <span>Edit</span>
+                  <MoreVertical class="w-4 h-4" />
+                  {#if showPromptCard}
+                    <span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-indigo-500 border-2 border-white dark:border-stone-900" title="Prompt card open"></span>
+                  {/if}
                 </button>
-              {/if}
+
+                {#if isActionMenuOpen}
+                  <!-- Click outside backdrop -->
+                  <div
+                    class="fixed inset-0 z-40"
+                    onclick={() => (isActionMenuOpen = false)}
+                    aria-hidden="true"
+                  ></div>
+
+                  <div
+                    role="menu"
+                    tabindex="-1"
+                    class="absolute right-0 top-full mt-1.5 w-44 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 py-1 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100"
+                  >
+                    <div class="py-1">
+                      <!-- Edit -->
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={() => {
+                          isActionMenuOpen = false;
+                          isEditing = true;
+                        }}
+                        class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left font-medium"
+                        title="Edit content"
+                      >
+                        <Edit3 class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                        <span>Edit</span>
+                      </button>
+
+                      <!-- Prompt -->
+                      {#if activeTab !== 'lesson' && activeTab !== 'schedule' && activeTab !== 'logs'}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onclick={() => {
+                            isActionMenuOpen = false;
+                            togglePromptCard();
+                          }}
+                          class="flex w-full items-center justify-between px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left font-medium {showPromptCard ? 'text-indigo-600 dark:text-indigo-400 font-semibold' : ''}"
+                          title={showPromptCard ? 'Hide prompt card' : 'Tweak AI prompt'}
+                        >
+                          <div class="flex items-center space-x-2">
+                            <Sparkles class="w-3.5 h-3.5 {showPromptCard ? 'text-indigo-600 dark:text-indigo-400' : 'text-stone-500 dark:text-stone-400'} shrink-0" />
+                            <span>Prompt</span>
+                          </div>
+                          {#if showPromptCard}
+                            <span class="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold">Active</span>
+                          {/if}
+                        </button>
+                      {/if}
+
+                      <!-- PDF -->
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={() => {
+                          isActionMenuOpen = false;
+                          handleExportPDF();
+                        }}
+                        disabled={isExportingPdf}
+                        class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-50 transition cursor-pointer text-left font-medium"
+                        title="Generate and download PDF for this document"
+                      >
+                        {#if isExportingPdf}
+                          <Loader2 class="w-3.5 h-3.5 animate-spin text-stone-500 dark:text-stone-400 shrink-0" />
+                          <span>Exporting PDF...</span>
+                        {:else}
+                          <FileDown class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                          <span>Export PDF</span>
+                        {/if}
+                      </button>
+                    </div>
+                  </div>
+                {/if}
+              </div>
             {/if}
           </div>
         </div>
 
         <!-- Prompt Card for generated tabs (when revealed and not editing raw markdown) -->
-        {#if showPromptCard && activeTab !== 'lesson' && activeTab !== 'schedule' && !isEditing}
+        {#if showPromptCard && activeTab !== 'lesson' && activeTab !== 'schedule' && activeTab !== 'logs' && !isEditing}
           <div class="pt-6 sm:pt-10 px-1.5 sm:px-0 mb-2 sm:mb-4">
             <PromptCard
               prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
@@ -2908,8 +2903,8 @@
           </div>
         {/if}
 
-        <!-- Main Card: disappears on mobile (no rounded corners, no borders, no shadow) -->
-        <div class="relative bg-white dark:bg-stone-900 {isMobile ? 'rounded-none border-0 shadow-none' : 'rounded-none sm:rounded-2xl border-0 sm:border border-stone-200 dark:border-stone-800 shadow-none sm:shadow-2xs'} group w-full max-w-full min-w-0 overflow-hidden">
+        <!-- Main Card: responsive layout (edge-to-edge on mobile, rounded card on tablet/desktop) -->
+        <div class="relative bg-white dark:bg-stone-900 rounded-none sm:rounded-2xl border-0 sm:border border-stone-200 dark:border-stone-800 shadow-none sm:shadow-2xs group w-full max-w-full min-w-0 overflow-hidden">
           {#if isCourseScope && isGeneratingCourseDoc && activeTab !== 'schedule'}
             <div class="h-64 flex flex-col items-center justify-center space-y-3 p-8 text-center">
               <Loader2 class="w-7 h-7 animate-spin text-amber-500" />
@@ -2917,12 +2912,14 @@
                 Generating Course {tabDisplayName}...
               </div>
               <p class="text-xs text-stone-500 dark:text-stone-400 max-w-sm">
-                Synthesizing lesson {activeTab}s across all units with AI. This may take 15–30 seconds.
+                {activeTab === 'test'
+                  ? 'Generating comprehensive practice test across all units with AI. This may take 30–60 seconds.'
+                  : `Synthesizing lesson ${activeTab}s across all units with AI. This may take 15–30 seconds.`}
               </p>
             </div>
           {:else if isEditing}
             <!-- CodeMirror Editor (markdown body only; frontmatter preserved and re-appended) -->
-            <div class="px-[6px] py-3 {isMobile ? 'pt-12' : 'sm:p-6 sm:pt-16 pt-12'} w-full max-w-full min-w-0 overflow-hidden">
+            <div class="px-[6px] py-3 pt-12 sm:p-6 sm:pt-16 w-full max-w-full min-w-0 overflow-hidden">
               <div class="h-[calc(100vh-16rem)] w-full max-w-full min-w-0">
                 <CodeMirrorEditor
                   value={tabContents[activeTab]}
@@ -2932,193 +2929,8 @@
                 />
               </div>
             </div>
-          {:else if activeTab === 'schedule' && isCourseScope}
-            <!-- Schedule: structured viewer or first-time intro -->
-            <div class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-x-auto">
-              {#if isScheduleGenerating}
-                <div class="mb-5 p-3.5 rounded-xl border border-blue-200 dark:border-blue-800/60 bg-blue-50/70 dark:bg-blue-950/40 flex items-center space-x-3 text-blue-900 dark:text-blue-200">
-                  <Loader2 class="w-4 h-4 animate-spin text-blue-600 dark:text-blue-400 shrink-0" />
-                  <div class="text-xs">
-                    <span class="font-semibold">Schedule is generating in the background...</span>
-                    <span class="text-blue-700 dark:text-blue-300 ml-1">You can continue browsing. The new schedule will appear here automatically when complete. Watch the AI Queue in the header for real-time progress.</span>
-                  </div>
-                </div>
-              {/if}
-
-              {#if tabContents.schedule.trim().length > 0}
-                {#if scheduleWarnings.length > 0 && !scheduleWarningsDismissed}
-                  <div class="mb-5 p-3.5 rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50/70 dark:bg-amber-950/40">
-                    <div class="flex items-start justify-between gap-3">
-                      <div class="space-y-1.5">
-                        <div class="flex items-center space-x-2 text-amber-900 dark:text-amber-200">
-                          <AlertTriangle class="w-4 h-4 shrink-0" />
-                          <span class="text-xs font-semibold">Schedule check — {scheduleWarnings.length} {scheduleWarnings.length === 1 ? 'issue' : 'issues'} found</span>
-                        </div>
-                        <ul class="text-xs text-amber-800 dark:text-amber-300 leading-relaxed list-disc list-inside space-y-0.5">
-                          {#each scheduleWarnings as warning}
-                            <li>{warning}</li>
-                          {/each}
-                        </ul>
-                        <p class="text-[11px] text-amber-700/80 dark:text-amber-400/80">
-                          The schedule was saved anyway — consider "Rebuild with new preferences" or editing the markdown.
-                        </p>
-                      </div>
-                      <button
-                        onclick={() => (scheduleWarningsDismissed = true)}
-                        class="p-1 rounded-md text-amber-500 hover:text-amber-800 dark:hover:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition cursor-pointer shrink-0"
-                        title="Dismiss"
-                      >
-                        <X class="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                {/if}
-                <ScheduleViewer
-                  courseId={course.id}
-                  markdown={tabContents.schedule}
-                  onToggle={handleScheduleToggle}
-                  onRebuild={handleScheduleRebuild}
-                  onEditMarkdown={() => (isEditing = true)}
-                  isGenerating={isScheduleGenerating}
-                />
-              {:else}
-                <div class="max-w-lg mx-auto py-14 text-center space-y-4">
-                  <div class="mx-auto w-fit p-3 rounded-2xl bg-stone-900 dark:bg-stone-800 text-white dark:text-stone-200 shadow-2xs">
-                    {#if isScheduleGenerating}
-                      <Loader2 class="w-6 h-6 animate-spin text-amber-500" />
-                    {:else}
-                      <CalendarDays class="w-6 h-6" />
-                    {/if}
-                  </div>
-                  <div class="space-y-1.5">
-                    <h3 class="text-base font-semibold text-stone-900 dark:text-stone-100">
-                      {isScheduleGenerating ? 'Generating study schedule...' : 'Build a study schedule'}
-                    </h3>
-                    <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
-                      {isScheduleGenerating
-                        ? 'Your personalized study schedule is being generated in the background AI queue. Watch the header for progress.'
-                        : 'Answer a few questions about your available days and time, and the planner will lay out every lesson, review session, and assignment deadline across real dates.'}
-                    </p>
-                  </div>
-                  {#if !isScheduleGenerating}
-                    <button
-                      onclick={() => (isScheduleModalOpen = true)}
-                      class="px-4 py-2 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-sm cursor-pointer"
-                    >
-                      Build Schedule
-                    </button>
-                  {/if}
-                </div>
-              {/if}
-            </div>
-          {:else if isCourseScope && activeTab === 'lesson'}
-            <!-- Course Navigation Page -->
-            <div class="relative overflow-hidden px-[6px] py-6 sm:p-10 md:p-14 min-h-[460px] sm:min-h-[500px] flex flex-col justify-center w-full max-w-full min-w-0">
-              <!-- Left-side Blended Scholarly Book Illustration (Enlarged & Prominently Visible) -->
-              <div
-                class="pointer-events-none select-none absolute -left-12 sm:-left-6 md:left-0 top-1/2 -translate-y-1/2 w-80 sm:w-[420px] md:w-[480px] lg:w-[540px] h-[400px] sm:h-[460px] md:h-[500px] flex items-center justify-center opacity-70 sm:opacity-85 dark:opacity-65 transition-opacity"
-                style="-webkit-mask-image: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.95) 55%, rgba(0,0,0,0.3) 85%, transparent 100%); mask-image: linear-gradient(to right, rgba(0,0,0,1) 0%, rgba(0,0,0,0.95) 55%, rgba(0,0,0,0.3) 85%, transparent 100%);"
-                aria-hidden="true"
-              >
-                <svg viewBox="0 0 360 340" class="w-full h-full text-stone-700 dark:text-stone-300" fill="none">
-                  <!-- Soft ambient warm glow behind book -->
-                  <ellipse cx="180" cy="180" rx="140" ry="110" fill="currentColor" fill-opacity="0.04" class="text-amber-500" />
-
-                  <!-- Bottom base shadow -->
-                  <ellipse cx="180" cy="275" rx="135" ry="16" fill="currentColor" fill-opacity="0.12" />
-
-                  <!-- Hardcover back casing (left & right) -->
-                  <path d="M 28 245 C 75 262 155 257 180 245 C 205 257 285 262 332 245 L 332 75 C 285 92 205 87 180 75 C 155 87 75 92 28 75 Z" fill="currentColor" fill-opacity="0.15" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-
-                  <!-- Page block edge layers (thickness of closed pages) -->
-                  <path d="M 32 234 C 78 249 155 244 180 235 C 205 244 282 249 328 234" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.8" />
-                  <path d="M 34 226 C 80 241 155 237 180 228 C 205 237 280 241 326 226" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" opacity="0.65" />
-                  <path d="M 36 218 C 82 233 155 229 180 221 C 205 229 278 233 324 218" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.5" />
-
-                  <!-- Main open leaves (pages) with subtle fill for high visibility -->
-                  <path d="M 38 65 C 85 82 158 77 180 66 C 202 77 275 82 322 65 L 322 218 C 275 235 202 230 180 219 C 158 230 85 235 38 218 Z" fill="currentColor" fill-opacity="0.18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
-
-                  <!-- Inner open page layer for 3D fanned depth -->
-                  <path d="M 44 68 C 88 83 156 79 180 70 C 204 79 272 83 316 68 L 316 215 C 272 230 204 226 180 217 C 156 226 88 230 44 215 Z" fill="currentColor" fill-opacity="0.08" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-
-                  <!-- Center spine binding & stitch line -->
-                  <line x1="180" y1="66" x2="180" y2="219" stroke="currentColor" stroke-width="3" stroke-linecap="round" opacity="0.9" />
-                  <ellipse cx="180" cy="66" rx="4" ry="2.5" fill="currentColor" opacity="0.8" />
-
-                  <!-- Silk bookmark ribbon (amber accent for warmth & visibility) -->
-                  <path d="M 180 67 Q 192 110 208 165 Q 218 198 216 256 L 204 246 L 192 254 Q 197 202 189 168 Q 183 120 180 67 Z" class="fill-amber-500/90 dark:fill-amber-400/80 stroke-amber-600 dark:stroke-amber-400" stroke-width="1.5" stroke-linejoin="round" />
-
-                  <!-- Left page rules (text lines) -->
-                  <line x1="60" y1="98" x2="158" y2="93" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="60" y1="118" x2="156" y2="114" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="60" y1="138" x2="158" y2="135" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="60" y1="158" x2="154" y2="155" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="60" y1="178" x2="158" y2="175" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="60" y1="198" x2="132" y2="195" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.45" />
-
-                  <!-- Right page rules (text lines) -->
-                  <line x1="202" y1="93" x2="300" y2="98" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="204" y1="114" x2="300" y2="118" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="202" y1="135" x2="300" y2="138" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="204" y1="155" x2="300" y2="158" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="202" y1="175" x2="300" y2="178" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.55" />
-                  <line x1="202" y1="195" x2="265" y2="198" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.45" />
-
-                  <!-- Header decoration ornament on pages -->
-                  <path d="M 85 82 L 132 80 M 228 80 L 275 82" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4" />
-                </svg>
-              </div>
-
-              <!-- Content positioned beside the blended artwork on sm+ screens -->
-              <div class="relative z-10 max-w-xl sm:max-w-2xl sm:ml-48 md:ml-60 lg:ml-72 space-y-6">
-                <div class="space-y-1.5">
-                  <span class="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
-                    Course Overview
-                  </span>
-                  <h2 class="text-xl sm:text-2xl font-semibold text-stone-900 dark:text-stone-100 tracking-tight leading-snug">
-                    Welcome to the course navigation page
-                  </h2>
-                </div>
-
-                <div class="space-y-3.5 text-sm sm:text-[15px] text-stone-600 dark:text-stone-300 leading-relaxed">
-                  <p>
-                    The tabs above gather aggregate course-wide summaries, studysheets, and practice tests to support your studies. Whenever you would like a printable document of all the lesson pages, click the <button
-                      type="button"
-                      onclick={handleExportPDF}
-                      disabled={isExportingPdf}
-                      class="inline font-medium text-stone-900 dark:text-stone-100 underline decoration-stone-300 dark:decoration-stone-600 underline-offset-2 hover:decoration-stone-900 dark:hover:decoration-stone-100 cursor-pointer disabled:opacity-50"
-                      title="Generate a printable PDF of all lesson pages"
-                    >'PDF'</button> button above to generate a complete PDF booklet.
-                  </p>
-
-                  <p>
-                    Normally you will want to click on the down-arrow to select a lesson to work on. Shall we start with lesson 1?
-                  </p>
-                </div>
-
-                <div class="pt-1">
-                  <button
-                    type="button"
-                    onclick={() => {
-                      if (firstLesson) {
-                        selectLesson(firstLesson.id);
-                      }
-                    }}
-                    disabled={!firstLesson}
-                    class="inline-flex items-center space-x-2.5 px-4.5 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs sm:text-sm font-medium hover:bg-stone-800 dark:hover:bg-stone-200 transition shadow-xs hover:shadow-sm cursor-pointer disabled:opacity-50"
-                  >
-                    &nbsp; Start lesson &nbsp;
-                  </button>
-                </div>
-
-                <div class="pt-4 border-t border-stone-100 dark:border-stone-800 flex items-center space-x-2.5 text-xs sm:text-sm text-stone-500 dark:text-stone-400 italic">
-                  <Sparkles class="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0 not-italic" />
-                  <span>Enjoy the course and remember to use the powerful tools to make it easier to learn.</span>
-                </div>
-              </div>
-            </div>
-          {:else if isUnitScope && activeTab === 'test'}
-            <!-- Unit Practice Test Interactive View -->
+          {:else if (isUnitScope || isCourseScope) && activeTab === 'test'}
+            <!-- Practice Test Interactive View -->
             <div class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-x-auto">
               {#if !parsedActiveTab.body || parsedActiveTab.body.trim().length === 0}
                 <div class="max-w-md mx-auto py-12 text-center space-y-3">
@@ -3126,17 +2938,19 @@
                     <CheckCircle2 class="w-6 h-6" />
                   </div>
                   <h3 class="text-base font-semibold text-stone-900 dark:text-stone-100">
-                    Unit Practice Test
+                    {isCourseScope ? 'Course Practice Test' : 'Unit Practice Test'}
                   </h3>
                   <p class="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
-                    This unit practice test has not been generated yet. Click "Prompt" above to generate a comprehensive practice test covering all lessons in this unit.
+                    {isCourseScope
+                      ? 'This course practice test has not been generated yet. Click "Prompt" above to generate a comprehensive practice test covering all units.'
+                      : 'This unit practice test has not been generated yet. Click "Prompt" above to generate a comprehensive practice test covering all lessons in this unit.'}
                   </p>
                 </div>
               {:else}
                 {#key `${quizRunnerKey}-${parsedActiveTab.body}`}
                   <QuizRunner
                     testMarkdown={parsedActiveTab.body}
-                    isUnitTest={true}
+                    isUnitTest={isUnitScope}
                     lastAttemptDate={parsedActiveTab.frontmatter.lastAttemptDate}
                     lastScore={typeof parsedActiveTab.frontmatter.score === 'number' ? parsedActiveTab.frontmatter.score : undefined}
                     lastTotal={typeof parsedActiveTab.frontmatter.totalQuestions === 'number' ? parsedActiveTab.frontmatter.totalQuestions : undefined}
@@ -3149,7 +2963,7 @@
             </div>
           {:else}
             <!-- Markdown Reader View -->
-            <article class="px-[6px] py-4 {isMobile ? '' : 'sm:p-10'} w-full max-w-full min-w-0 overflow-hidden">
+            <article class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-hidden">
               <MarkdownViewer
                 markdown={parsedActiveTab.body}
                 courseId={course.id}

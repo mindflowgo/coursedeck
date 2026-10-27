@@ -307,13 +307,70 @@ fn start_backend_process(app: &tauri::App) -> Option<std::process::Child> {
 
     let mut cmd: Option<Command> = None;
 
+    // In debug builds, prefer running server/index.ts directly with bun so live code changes are used
+    #[cfg(debug_assertions)]
+    {
+        if let Ok(cwd) = std::env::current_dir() {
+            let script_candidates = [
+                cwd.join("server").join("index.ts"),
+                cwd.join("..").join("server").join("index.ts"),
+            ];
+            for sc in script_candidates {
+                if sc.exists() {
+                    let bun_bin: Option<String> = if cfg!(target_os = "windows") {
+                        std::env::var("USERPROFILE")
+                            .ok()
+                            .and_then(|home| {
+                                let p = PathBuf::from(home).join(".bun").join("bin").join("bun.exe");
+                                if p.exists() {
+                                    Some(p.to_string_lossy().to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                    } else {
+                        ["/usr/local/bin/bun", "/opt/homebrew/bin/bun"]
+                            .iter()
+                            .find(|bp| Path::new(bp).exists())
+                            .map(|bp| bp.to_string())
+                            .or_else(|| {
+                                std::env::var("HOME").ok().and_then(|home| {
+                                    let p = PathBuf::from(home).join(".bun").join("bin").join("bun");
+                                    if p.exists() {
+                                        Some(p.to_string_lossy().to_string())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                    };
+
+                    let bun_executable = bun_bin.unwrap_or_else(|| {
+                        if cfg!(target_os = "windows") {
+                            "bun.exe".to_string()
+                        } else {
+                            "bun".to_string()
+                        }
+                    });
+
+                    let mut c = Command::new(&bun_executable);
+                    c.arg("run").arg(sc);
+                    cmd = Some(c);
+                    break;
+                }
+            }
+        }
+    }
+
     // 1. Check for bundled binary in resource dir
-    if let Ok(res_dir) = app.path().resource_dir() {
-        for name in backend_binary_names() {
-            let candidate = res_dir.join(name);
-            if candidate.exists() {
-                cmd = Some(Command::new(candidate));
-                break;
+    if cmd.is_none() {
+        if let Ok(res_dir) = app.path().resource_dir() {
+            for name in backend_binary_names() {
+                let candidate = res_dir.join(name);
+                if candidate.exists() {
+                    cmd = Some(Command::new(candidate));
+                    break;
+                }
             }
         }
     }
@@ -485,14 +542,18 @@ pub fn run() {
             courses_fs::get_lesson_bundle,
             courses_fs::read_course_doc,
             courses_fs::save_course_doc,
+            courses_fs::delete_course_doc,
             courses_fs::list_cached_courses,
             courses_fs::get_cached_course,
+            courses_fs::delete_course,
             courses_fs::get_cached_checkpoints,
             courses_fs::save_checkpoint,
             courses_fs::delete_checkpoint,
             courses_fs::get_annotations,
             courses_fs::save_annotations,
             courses_fs::list_prompts,
+            courses_fs::save_prompt,
+            courses_fs::delete_prompt,
         ]);
 
     builder

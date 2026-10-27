@@ -609,10 +609,10 @@
           >
             {#if isSubmitting || isSubmittingLocal}
               <Loader2 class="w-4 h-4 animate-spin" />
-              <span>{isUnitTest ? 'Evaluating Answers & Sending to Supervisor...' : 'Sending to Supervisor...'}</span>
+              <span>{isUnitTest || onSubmitUnitTest ? 'Evaluating Answers & Sending to Supervisor...' : 'Submitting Test...'}</span>
             {:else}
               <Send class="w-3.5 h-3.5" />
-              <span>{isUnitTest ? 'Submit Unit Test' : isPopQuiz ? 'Submit Pop Quiz' : 'Submit Test'}</span>
+              <span>{isUnitTest ? 'Submit Unit Test' : isPopQuiz ? 'Submit Pop Quiz' : 'Submit Practice Test'}</span>
             {/if}
           </button>
         </div>

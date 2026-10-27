@@ -430,10 +430,13 @@ export class TeacherCheckinService {
     const transport = this.createMailerTransport(cfg);
     const courseCode = payload.courseId.toUpperCase();
     const cleanTitle = cleanImageReferences(payload.unitTitle);
-    const headingTitle = cleanTitle || `Unit ${payload.unitId} Practice Test`;
+    const isCourseOverall = payload.unitId === 'course';
+    const headingTitle = cleanTitle || (isCourseOverall ? `${courseCode} Practice Exam` : `Unit ${payload.unitId} Practice Test`);
     const textTitle = cleanTitle ? ` (${cleanTitle})` : '';
 
-    const subject = `[CourseDeck] ${courseCode} - ${payload.unitId} (Unit Practice Test)`;
+    const subject = isCourseOverall
+      ? `[CourseDeck] ${courseCode} - Practice Exam`
+      : `[CourseDeck] ${courseCode} - ${payload.unitId} (Unit Practice Test)`;
 
     const scoreColor = payload.percentage >= 75 ? '#059669' : payload.percentage >= 50 ? '#d97706' : '#dc2626';
     const scoreBg = payload.percentage >= 75 ? '#ecfdf5' : payload.percentage >= 50 ? '#fffbeb' : '#fef2f2';

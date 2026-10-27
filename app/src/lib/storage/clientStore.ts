@@ -166,7 +166,7 @@ export async function listCachedCourses(): Promise<CourseManifest[]> {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const courses = await invoke<CourseManifest[]>('list_cached_courses');
-      if (courses && courses.length > 0) {
+      if (Array.isArray(courses)) {
         console.log(`[NativeStore] listCachedCourses: retrieved ${courses.length} courses from filesystem`);
         return courses;
       }
@@ -211,6 +211,47 @@ export async function saveCourseManifestLocally(courseId: string, manifest: Cour
   await put('courses', courseId.toLowerCase(), manifest);
 }
 
+export async function deleteCourseLocally(courseId: string): Promise<void> {
+  const id = courseId.toLowerCase();
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_course', { courseId: id });
+      console.log(`[NativeStore] deleteCourseLocally: deleted course "${id}" from filesystem`);
+    } catch (err) {
+      console.warn('[NativeStore] Native delete_course failed:', err);
+    }
+  }
+
+  const db = await openDb();
+  return new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(
+      ['courses', 'documents', 'checkpoints', 'annotations', 'pending_push', 'pending_push_annotations'],
+      'readwrite'
+    );
+    tx.objectStore('courses').delete(id);
+    tx.objectStore('checkpoints').delete(id);
+    tx.objectStore('annotations').delete(id);
+    tx.objectStore('pending_push').delete(id);
+    tx.objectStore('pending_push_annotations').delete(id);
+
+    const docStore = tx.objectStore('documents');
+    const docReq = docStore.openCursor();
+    docReq.onsuccess = (e) => {
+      const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result;
+      if (cursor) {
+        if (typeof cursor.key === 'string' && cursor.key.startsWith(`${id}:`)) {
+          cursor.delete();
+        }
+        cursor.continue();
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function getDocument(courseId: string, filename: string): Promise<string | undefined> {
   if (isTauri()) {
     try {
@@ -242,14 +283,45 @@ export async function saveDocumentLocally(courseId: string, filename: string, co
   return put('documents', `${courseId.toLowerCase()}:${filename}`, content);
 }
 
-export async function listAllCheckpointsLocally(): Promise<Checkpoint[]> {
-  const courses = await listCachedCourses();
-  const all: Checkpoint[] = [];
+export async function deleteDocumentLocally(courseId: string, filename: string): Promise<boolean> {
+  let removed = false;
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      removed = await invoke<boolean>('delete_course_doc', { courseId, filename });
+      console.log(`[NativeStore] deleteDocumentLocally: deleted "${filename}" for "${courseId}" directly from filesystem: ${removed}`);
+    } catch (err) {
+      console.warn('[NativeStore] delete_course_doc failed:', err);
+    }
+  }
+
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('documents', 'readwrite');
+    tx.objectStore('documents').delete(`${courseId.toLowerCase()}:${filename}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  return removed;
+}
+
+export async function listAllCheckpointsLocally(): Promise<Array<Checkpoint & { courseId: string; courseTitle: string }>> {
+  const courses = (await listCachedCourses()).filter((c) => !c.archived);
+  const all: Array<Checkpoint & { courseId: string; courseTitle: string }> = [];
   for (const c of courses) {
     const cps = await getCachedCheckpoints(c.id);
-    all.push(...cps);
+    for (const cp of cps) {
+      if (cp.type === 'note') {
+        all.push({
+          ...cp,
+          courseId: c.id,
+          courseTitle: c.title || c.id.toUpperCase()
+        });
+      }
+    }
   }
-  return all.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  return all.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
 }
 
 export async function getLessonBundleLocally(
@@ -355,6 +427,44 @@ export async function listPrompts(): Promise<{ id: string; content: string }[]> 
 
   const rows = await getAll<{ id: string; content: string }>('prompts');
   return rows.map((r) => r.value);
+}
+
+export async function savePromptLocally(id: string, content: string): Promise<void> {
+  const cleanId = id.trim().replace(/\.md$/, '');
+
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('save_prompt', { id: cleanId, content });
+      return;
+    } catch (err) {
+      console.warn('[NativeStore] save_prompt native call failed, saving to IDB fallback:', err);
+    }
+  }
+
+  await put('prompts', cleanId, { id: cleanId, content });
+}
+
+export async function deletePromptLocally(id: string): Promise<void> {
+  const cleanId = id.trim().replace(/\.md$/, '');
+
+  if (isTauri()) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('delete_prompt', { id: cleanId });
+      return;
+    } catch (err) {
+      console.warn('[NativeStore] delete_prompt native call failed, deleting from IDB fallback:', err);
+    }
+  }
+
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('prompts', 'readwrite');
+    tx.objectStore('prompts').delete(cleanId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 export async function hasCachedData(): Promise<boolean> {

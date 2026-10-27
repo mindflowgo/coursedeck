@@ -2,9 +2,10 @@
   import { apiFetch } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import CodeMirrorEditor from '$lib/components/CodeMirrorEditor.svelte';
+  import ReparsePromptsModal from '$lib/components/ReparsePromptsModal.svelte';
   import type { PromptItem } from '$lib/server/prompts';
   import { onMount } from 'svelte';
-  import { Save, Check, Loader2, FileCode, Info, X, Trash2 } from 'lucide-svelte';
+  import { Save, Check, Loader2, FileCode, Info, X, Trash2, RotateCw } from 'lucide-svelte';
 
   let prompts: PromptItem[] = $state([]);
   let selectedPromptId: string = $state('');
@@ -14,6 +15,28 @@
   let isSaving = $state(false);
   let isDeleting = $state(false);
   let saveSuccess = $state(false);
+  let isReparseModalOpen = $state(false);
+  let reparseSuccessMessage = $state('');
+
+  let currentReparseCategory = $derived.by(() => {
+    if (!selectedPromptId) return undefined;
+    const id = selectedPromptId.toLowerCase().replace(/\.md$/, '').replace(/\./g, '_');
+    if (id === 'summary') return 'lesson_summaries';
+    if (id === 'studysheet') return 'lesson_studysheets';
+    if (id === 'unit_assignments' || id === 'unit_assignment') return 'unit_assignments';
+    if (id === 'unit_test') return 'unit_tests';
+    if (id === 'course_summary') return 'course_summaries';
+    if (id === 'course_studysheet') return 'course_studysheets';
+    if (id === 'course_test') return 'course_tests';
+    return undefined;
+  });
+
+  function handleReparseSuccess(result: { enqueuedCount: number; coursesCount: number }) {
+    reparseSuccessMessage = `Successfully enqueued ${result.enqueuedCount} sheet(s) across ${result.coursesCount} course(s) into the AI queue with updated prompts!`;
+    setTimeout(() => {
+      reparseSuccessMessage = '';
+    }, 6000);
+  }
 
   let selectedPrompt = $derived(
     prompts.find((p) => p.id === selectedPromptId)
@@ -150,7 +173,13 @@
       if (res.ok) {
         originalContent = editorContent;
         const p = prompts.find((item) => item.id === selectedPromptId);
-        if (p) p.content = editorContent;
+        if (p) {
+          p.content = editorContent;
+          const titleMatch = editorContent.match(/^#\s+(.*)/m);
+          if (titleMatch) {
+            p.title = titleMatch[1].trim();
+          }
+        }
 
         saveSuccess = true;
         setTimeout(() => {
@@ -238,13 +267,14 @@
             {:else}
               {#each coursePrompts as p (p.id)}
                 {@const isSelected = p.id === selectedPromptId}
+                {@const promptTitle = getPromptTitle(p)}
                 <button
                   onclick={() => selectPrompt(p.id)}
-                  title="{p.title || p.id} ({p.filename})"
+                  title="{promptTitle} ({p.filename})"
                   class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-2 cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
                 >
                   <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />
-                  <span class="truncate">{p.title || p.id}</span>
+                  <span class="truncate">{promptTitle}</span>
                 </button>
               {/each}
             {/if}
@@ -261,13 +291,14 @@
             {:else}
               {#each unitPrompts as p (p.id)}
                 {@const isSelected = p.id === selectedPromptId}
+                {@const promptTitle = getPromptTitle(p)}
                 <button
                   onclick={() => selectPrompt(p.id)}
-                  title="{p.title || p.id} ({p.filename})"
+                  title="{promptTitle} ({p.filename})"
                   class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-2 cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
                 >
                   <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />
-                  <span class="truncate">{p.title || p.id}</span>
+                  <span class="truncate">{promptTitle}</span>
                 </button>
               {/each}
             {/if}
@@ -284,13 +315,14 @@
             {:else}
               {#each lessonsPrompts as p (p.id)}
                 {@const isSelected = p.id === selectedPromptId}
+                {@const promptTitle = getPromptTitle(p)}
                 <button
                   onclick={() => selectPrompt(p.id)}
-                  title="{p.title || p.id} ({p.filename})"
+                  title="{promptTitle} ({p.filename})"
                   class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium transition flex items-center space-x-2 cursor-pointer {isSelected ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
                 >
                   <FileCode class="w-3.5 h-3.5 shrink-0 opacity-70" />
-                  <span class="truncate flex-1">{p.title || p.id}</span>
+                  <span class="truncate flex-1">{promptTitle}</span>
                 </button>
               {/each}
             {/if}
@@ -336,6 +368,19 @@
       {/if}
     </div>
 
+    <!-- Reparse Prompts Action in Sidebar -->
+    <div class="shrink-0 pt-3">
+      <button
+        type="button"
+        onclick={() => (isReparseModalOpen = true)}
+        class="w-full flex items-center justify-center space-x-1.5 px-3 py-2 rounded-xl border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-800/80 hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 text-xs font-medium shadow-2xs transition cursor-pointer"
+        title="Reparse course documents with updated prompts"
+      >
+        <RotateCw class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+        <span>Reparse with Prompts...</span>
+      </button>
+    </div>
+
     <!-- Variable Reference Card -->
     <div class="shrink-0 pt-3">
       <div class="p-3 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-800 space-y-1.5 text-[11px] text-stone-600 dark:text-stone-300">
@@ -372,6 +417,16 @@
       </div>
 
       <div class="flex items-center space-x-2">
+        <button
+          type="button"
+          onclick={() => (isReparseModalOpen = true)}
+          class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 text-xs font-medium transition shadow-2xs cursor-pointer"
+          title="Reparse course documents with updated prompts"
+        >
+          <RotateCw class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+          <span>Reparse with Prompts...</span>
+        </button>
+
         {#if selectedPrompt && classifyPrompt(selectedPrompt) === 'custom' && selectedPrompt.id !== 'mcp_prompt_instructions'}
           <button
             onclick={() => selectedPrompt && deletePrompt(selectedPrompt)}
@@ -403,6 +458,15 @@
       </div>
     </div>
 
+    {#if reparseSuccessMessage}
+      <div class="mb-3 px-3 py-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-300 flex items-center justify-between animate-in fade-in">
+        <span>{reparseSuccessMessage}</span>
+        <button type="button" onclick={() => (reparseSuccessMessage = '')} class="p-0.5 text-emerald-600 hover:text-emerald-800 cursor-pointer">
+          <X class="w-3.5 h-3.5" />
+        </button>
+      </div>
+    {/if}
+
     <div class="flex-1 min-h-0 bg-white dark:bg-stone-900 rounded-xl border border-stone-200 dark:border-stone-800 shadow-2xs overflow-hidden">
       <CodeMirrorEditor
         value={editorContent}
@@ -413,3 +477,10 @@
     </div>
   </section>
 </div>
+
+<ReparsePromptsModal
+  isOpen={isReparseModalOpen}
+  initialCategory={currentReparseCategory}
+  onClose={() => (isReparseModalOpen = false)}
+  onSuccess={handleReparseSuccess}
+/>

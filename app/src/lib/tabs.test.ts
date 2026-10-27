@@ -81,6 +81,7 @@ describe('isCourseTab', () => {
     expect(isCourseTab('studysheet')).toBe(false);
     expect(isCourseTab('test')).toBe(true);
     expect(isCourseTab('schedule')).toBe(true);
+    expect(isCourseTab('logs')).toBe(true);
   });
 
   it('is false for custom tabs and invalid slugs', () => {
@@ -141,6 +142,8 @@ describe('tab and document filenames', () => {
   it('formats courseDocFileName for course docs', () => {
     expect(courseDocFileName('summary')).toBe('course.summary.md');
     expect(courseDocFileName('Schedule')).toBe('course.schedule.md');
+    expect(courseDocFileName('logs')).toBe('logs.md');
+    expect(courseDocFileName('Logs')).toBe('logs.md');
   });
 
   it('formats unitDocFileName for unit docs', () => {
@@ -188,6 +191,12 @@ describe('tab and document filenames', () => {
       isUnitScope: false,
       lessonId: 'course',
       tab: 'summary'
+    });
+    expect(parseDocFileName('logs.md')).toEqual({
+      isCourseScope: true,
+      isUnitScope: false,
+      lessonId: 'course',
+      tab: 'logs'
     });
     expect(parseDocFileName('invalid_file.txt')).toBeNull();
   });

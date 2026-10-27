@@ -246,6 +246,17 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     });
     expect(res.result).toBeDefined();
     expect(res.result.content[0].text).toContain('# Lesson 1 Introduction');
+
+    // Also fetches course-level logs accountability sheet
+    const logsRes = await callMcp('tools/call', {
+      name: 'get_lesson_doc',
+      arguments: {
+        courseId: 'tst01',
+        tab: 'logs'
+      }
+    });
+    expect(logsRes.result).toBeDefined();
+    expect(logsRes.result.content[0].text).toContain('| Date | Type | Lesson | Tokens |');
   });
 
   it('executes build_course_schedule synchronously and get_course_schedule', async () => {

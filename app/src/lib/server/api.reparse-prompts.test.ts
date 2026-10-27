@@ -156,6 +156,46 @@ describe('Reparse with Updated Prompts API', () => {
     expect(tabsEnqueued).not.toContain('01.01:studysheet');
   });
 
+  it('selecting lesson_studysheets (and legacy aliases) correctly enqueues studysheet tasks', async () => {
+    // 1. Canonical 'lesson_studysheets'
+    const req1 = new Request('http://localhost:3182/api/maintenance/reparse-prompts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        courseId,
+        categories: ['lesson_studysheets']
+      })
+    });
+    const res1 = await handleApiRequest(req1, new URL(req1.url));
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+    expect(data1.success).toBe(true);
+    expect(data1.enqueuedCount).toBe(3);
+
+    const queueStatus1 = queueManager.getStatus(courseId);
+    for (const task of queueStatus1.tasks) {
+      expect(task.tab).toBe('studysheet');
+    }
+
+    // Reset queue for next assertion
+    (queueManager as any).tasks.clear();
+
+    // 2. Legacy alias 'lesson_cheatsheets' and singular 'lesson_studysheet'
+    const req2 = new Request('http://localhost:3182/api/maintenance/reparse-prompts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        courseId,
+        categories: ['lesson_cheatsheets']
+      })
+    });
+    const res2 = await handleApiRequest(req2, new URL(req2.url));
+    expect(res2.status).toBe(200);
+    const data2 = await res2.json();
+    expect(data2.success).toBe(true);
+    expect(data2.enqueuedCount).toBe(3);
+  });
+
   it('executing a course-level task in queue saves course.<tab>.md with updated frontmatter', async () => {
     const { LLMService } = await import('./llm');
     const origLoad = LLMService.loadStoredConfig;

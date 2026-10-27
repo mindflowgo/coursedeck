@@ -101,12 +101,13 @@ export function resolveLastAccessedCourseRoute(
   const cleanCourseId = (courseId || '').toLowerCase();
 
   if (parsed.isCourseScope) {
+    if (parsed.tab !== 'test') return null;
     return {
       isCourseScope: true,
       lessonId: 'course',
-      tab: parsed.tab,
+      tab: 'test',
       verticalPosition: mostRecent.verticalPosition || 0,
-      href: `/courses/${cleanCourseId}/course/${parsed.tab}`
+      href: `/courses/${cleanCourseId}/course/test`
     };
   }
 

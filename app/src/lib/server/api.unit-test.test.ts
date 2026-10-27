@@ -201,4 +201,73 @@ d) Recommend a computer software strategy.
     expect(data.score).toBe(1.5);
     expect(data.percentage).toBe(38);
   });
+
+  it('evaluates course practice test submissions when unitId is "course" and updates course.test.md frontmatter', async () => {
+    const courseTestMarkdown = `---
+prompt: "Course practice exam prompt"
+---
+
+# Comprehensive Final Course Practice Exam
+
+## Questions
+01) [Application] What is the currency of Canada?
+<Multiple-Choice>
+- [ ] A) USD
+- [ ] B) CAD
+- [ ] C) EUR
+- [ ] D) GBP
+
+--
+
+02) [Knowledge] Ottawa is the capital of Canada.
+<Multiple-Choice>
+- [ ] A) True
+- [ ] B) False
+
+--
+
+## Answers & Detailed Solutions
+01) B
+Explanation: CAD is the Canadian Dollar.
+
+02) A
+Explanation: Ottawa is the capital city.
+`;
+
+    // Save as course test document
+    CourseService.saveCourseDocument(courseId, 'test', courseTestMarkdown);
+
+    const payload = {
+      unitId: 'course',
+      answers: {
+        '01': 'B', // Correct
+        '02': 'B'  // Incorrect (correct is A)
+      }
+    };
+
+    const req = new Request(`http://localhost:5173/api/courses/${courseId}/unit-test/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const res = await handleApiRequest(req, new URL(req.url));
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.total).toBe(2);
+    expect(data.score).toBe(1);
+    expect(data.percentage).toBe(50);
+    expect(data.evaluations['01'].isCorrect).toBe(true);
+    expect(data.evaluations['02'].isCorrect).toBe(false);
+
+    // Verify course.test.md was updated on disk with the attempt frontmatter
+    const savedDoc = CourseService.getCourseDocument(courseId, 'test');
+    expect(savedDoc).toBeTruthy();
+    expect(savedDoc).toContain('score: 1');
+    expect(savedDoc).toContain('totalQuestions: 2');
+    expect(savedDoc).toContain('percentage: 50');
+    expect(savedDoc).not.toContain('answers:');
+  });
 });

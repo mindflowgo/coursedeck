@@ -1,5 +1,13 @@
 import { apiFetch } from '$lib/api';
-import { LLM_PROVIDER_PRESETS, type LlmCardSummary } from '$lib/llmProviders';
+import {
+  LLM_PROVIDER_PRESETS,
+  isResponsesProtocolModel,
+  doesModelSupportTemperature,
+  isTemperatureUnsupportedError,
+  type LlmCardSummary
+} from '$lib/llmProviders';
+
+export type { LlmCardSummary };
 
 /** The stored model list as the Settings UI consumes it. */
 export interface LlmStoreSnapshot {
@@ -95,14 +103,25 @@ export async function generateDirect(
   if (!card.baseUrl) {
     throw new Error('No Base URL configured for active AI model.');
   }
+
+  const model = (card.model || '').trim();
+  if (!model && card.provider !== 'llamacpp') {
+    throw new Error('No model configured for active AI model. Please specify a model in Settings → AI Models.');
+  }
+
   const apiKey = (card.apiKey || '').trim();
 
+  const isResponses = isResponsesProtocolModel(model);
   const baseClean = card.baseUrl.trim().replace(/\/+$/, '');
-  const url = baseClean.endsWith('/chat/completions')
-    ? baseClean
-    : baseClean.endsWith('/v1')
-    ? `${baseClean}/chat/completions`
-    : `${baseClean}/v1/chat/completions`;
+  const url = isResponses
+    ? (baseClean.endsWith('/responses')
+        ? baseClean
+        : baseClean.endsWith('/chat/completions')
+        ? baseClean.replace(/\/chat\/completions$/, '/responses')
+        : `${baseClean}/responses`)
+    : (baseClean.endsWith('/chat/completions')
+        ? baseClean
+        : `${baseClean}/chat/completions`);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json'
@@ -119,36 +138,85 @@ export async function generateDirect(
     }
   }
 
-  const payload: Record<string, any> = {
-    model: card.model || 'gpt-4o-mini',
-    temperature: typeof card.temperature === 'number' ? card.temperature : 0.7,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ]
-  };
+  if (url.includes('opencode.ai')) {
+    headers['x-opencode-session'] = (card as any).sessionId?.trim() || `session_${Date.now().toString(36)}`;
+  }
+
+  const sendTemp = typeof card.temperature === 'number' && doesModelSupportTemperature(model);
+  const payload: Record<string, any> = isResponses
+    ? {
+        model,
+        ...(sendTemp ? { temperature: card.temperature } : {}),
+        instructions: systemPrompt,
+        input: userPrompt
+      }
+    : {
+        ...(model ? { model } : {}),
+        ...(sendTemp ? { temperature: card.temperature } : {}),
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ]
+      };
 
   const timeoutMs = (card.timeoutSeconds || 120) * 1000;
   const ctrl = new AbortController();
   const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    const res = await fetch(url, {
+    let res = await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
       signal: ctrl.signal
     });
+
+    if ((res.status === 400 || res.status === 422) && payload.temperature !== undefined) {
+      const errClone = res.clone();
+      const errText = await errClone.text().catch(() => '');
+      if (isTemperatureUnsupportedError(errText)) {
+        delete payload.temperature;
+        res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          signal: ctrl.signal
+        });
+      }
+    }
     clearTimeout(timeoutId);
 
     if (!res.ok) {
       const txt = await res.text().catch(() => res.statusText);
+      if (res.status === 429) {
+        let quotaDetail = '';
+        try {
+          const parsed = JSON.parse(txt);
+          quotaDetail = parsed?.error?.message || parsed?.message || '';
+        } catch {}
+        throw new Error(
+          `Plan quota or rate limit exhausted (HTTP 429): ${quotaDetail || txt || 'Usage limit reached'}. Our plan is exhausted for now — wait for the quota window to reset or upgrade your plan.`
+        );
+      }
       throw new Error(`AI request failed (${res.status}): ${txt}`);
     }
 
     const data = await res.json();
-    const completion = data.choices?.[0]?.message?.content ?? '';
-    return { completion, usage: data.usage };
+    const isResp = isResponses || data?.object === 'response';
+    const completion = isResp
+      ? (data.output?.[0]?.content?.[0]?.text ?? (data.output?.[0]?.text || ''))
+      : (data.choices?.[0]?.message?.content ?? '');
+
+    const rawUsage = data.usage ?? data.response?.usage;
+    const usage = isResp && rawUsage
+      ? {
+          prompt_tokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens,
+          completion_tokens: rawUsage.output_tokens ?? rawUsage.completion_tokens,
+          total_tokens: rawUsage.total_tokens ?? ((rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0))
+        }
+      : rawUsage;
+
+    return { completion, usage };
   } catch (err: any) {
     clearTimeout(timeoutId);
     if (err?.name === 'AbortError') {
@@ -233,7 +301,7 @@ export function createLlmCardDraft(): LlmCardDraft {
     provider: preset.id,
     baseUrl: preset.defaultBaseUrl,
     authHeaderType: 'bearer',
-    model: '',
+    model: preset.defaultModel || '',
     temperature: 0.3,
     timeoutSeconds: 150,
     sendSessionId: false,

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { apiFetch } from '$lib/api';
   import { LLM_PROVIDER_PRESETS, getProviderPreset, isPublicIpUrl } from '$lib/llmProviders';
-  import { X, Server, Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight } from 'lucide-svelte';
+  import { X, Server, Sparkles, CheckCircle2, AlertCircle, Loader2, ArrowRight, Clock } from 'lucide-svelte';
 
   interface Props {
     isOpen: boolean;
@@ -51,11 +51,15 @@
     }
   });
 
-  /** Preset change swaps the example URL in unless the user typed their own. */
+  /** Preset change swaps the example URL & model in unless the user typed their own. */
   function handleProviderChange(nextProvider: string) {
-    const unchanged = !baseUrl.trim() || baseUrl.trim() === getProviderPreset(provider).defaultBaseUrl;
+    const prevPreset = getProviderPreset(provider);
+    const unchangedUrl = !baseUrl.trim() || baseUrl.trim() === prevPreset.defaultBaseUrl;
+    const unchangedModel = !model.trim() || model.trim() === (prevPreset.defaultModel || '');
     provider = nextProvider;
-    if (unchanged) baseUrl = getProviderPreset(nextProvider).defaultBaseUrl;
+    const nextPreset = getProviderPreset(nextProvider);
+    if (unchangedUrl) baseUrl = nextPreset.defaultBaseUrl;
+    if (unchangedModel && nextPreset.defaultModel) model = nextPreset.defaultModel;
   }
 
   async function handleSaveAndContinue() {
@@ -285,9 +289,12 @@
 
       <!-- Test connection status -->
       {#if statusMessage}
-        <div class="flex items-center space-x-2 text-xs p-3 rounded-lg border {statusMessage.success ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800/60 text-rose-800 dark:text-rose-200'}">
+        {@const isQuota = /429|quota.*exhausted|plan is exhausted/i.test(statusMessage.text)}
+        <div class="flex items-center space-x-2 text-xs p-3 rounded-lg border {statusMessage.success ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800/60 text-emerald-800 dark:text-emerald-200' : isQuota ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800/60 text-amber-800 dark:text-amber-200' : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800/60 text-rose-800 dark:text-rose-200'}">
           {#if statusMessage.success}
             <CheckCircle2 class="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          {:else if isQuota}
+            <Clock class="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
           {:else}
             <AlertCircle class="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
           {/if}

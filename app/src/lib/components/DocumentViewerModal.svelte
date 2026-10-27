@@ -12,6 +12,12 @@
 
   let isLoading = $state(true);
   let isImage = $derived(/\.(png|jpe?g|gif|webp|svg)($|\?)/i.test(url));
+  let docType = $derived.by(() => {
+    if (isImage) return 'Image';
+    if (/\.html?($|\?)/i.test(url)) return 'HTML Document';
+    if (/\.pdf($|\?)/i.test(url)) return 'PDF Document';
+    return 'Document';
+  });
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
@@ -68,7 +74,7 @@
             {displayTitle}
           </h2>
           <span class="hidden sm:inline-block px-2 py-0.5 rounded text-[10px] font-semibold bg-stone-800 text-stone-300 border border-stone-700 uppercase tracking-wider shrink-0">
-            {isImage ? 'Image' : 'PDF Document'}
+            {docType}
           </span>
         </div>
         {#if courseTitle}

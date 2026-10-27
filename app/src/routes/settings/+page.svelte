@@ -4,7 +4,6 @@
   import Header from '$lib/components/Header.svelte';
   import PromptsManager from '$lib/components/PromptsManager.svelte';
   import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
-  import ReparsePromptsModal from '$lib/components/ReparsePromptsModal.svelte';
   import { onMount } from 'svelte';
   import { apiFetch, isTauriEnvironment, isTauriDesktop } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
@@ -38,7 +37,11 @@
     Info,
     Tablet,
     Camera,
-    Sparkles
+    Sparkles,
+    SlidersHorizontal,
+    Bot,
+    Blocks,
+    Clock
   } from 'lucide-svelte';
   import { openConnectIpadModal, openScanDesktopModal } from '$lib/modalState.svelte';
   import { theme } from '$lib/theme.svelte';
@@ -152,18 +155,6 @@
   let isCompressingImages = $state(false);
   let compressImagesResult: string = $state('');
 
-  let isReparsePromptsModalOpen = $state(false);
-  let reparsePromptsResult: string = $state('');
-
-  function handleReparsePromptsSuccess(result: { enqueuedCount: number; coursesCount: number }) {
-    reparsePromptsResult = `Successfully enqueued ${result.enqueuedCount} sheet(s) across ${result.coursesCount} course(s) into the AI generation queue with updated prompts!`;
-    setTimeout(() => {
-      if (reparsePromptsResult.includes('Successfully enqueued')) {
-        reparsePromptsResult = '';
-      }
-    }, 8000);
-  }
-
   function flashLlmMessage(text: string) {
     llmMessage = text;
     setTimeout(() => {
@@ -194,13 +185,15 @@
     applySnapshot(snapshot);
   }
 
-  /** Provider select: swap the preset's default URL in unless the user typed a custom one. */
+  /** Provider select: swap the preset's default URL & model in unless the user typed a custom one. */
   function applyProviderPreset(card: LlmCardDraft, providerId: string) {
-    const previousDefault = getProviderPreset(card.provider).defaultBaseUrl;
-    const untouched = !card.baseUrl.trim() || card.baseUrl.trim() === previousDefault;
+    const previousPreset = getProviderPreset(card.provider);
+    const untouchedUrl = !card.baseUrl.trim() || card.baseUrl.trim() === previousPreset.defaultBaseUrl;
+    const untouchedModel = !card.model?.trim() || card.model.trim() === (previousPreset.defaultModel || '');
     card.provider = providerId;
     const preset = getProviderPreset(providerId);
-    if (untouched) card.baseUrl = preset.defaultBaseUrl;
+    if (untouchedUrl) card.baseUrl = preset.defaultBaseUrl;
+    if (untouchedModel && preset.defaultModel) card.model = preset.defaultModel;
     card.label = preset.label;
   }
 
@@ -737,44 +730,57 @@
 <div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] overflow-hidden">
   <!-- Parent Wrapper (same width constraint as /courses) -->
   <div class="flex-1 flex flex-col max-w-6xl mx-auto w-full px-4 sm:px-8 py-6 min-h-0 overflow-hidden">
-    <!-- Header with Settings / Prompts tabs -->
-    <div role="tablist" aria-label="Settings navigation" class="flex items-center space-x-6 border-b border-stone-200 dark:border-stone-800 pb-3 shrink-0">
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'settings'}
-        onclick={() => switchTab('settings')}
-        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'settings' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
-      >
-        Settings
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'prompts'}
-        onclick={() => switchTab('prompts')}
-        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'prompts' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
-      >
-        Prompts
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'llm'}
-        onclick={() => switchTab('llm')}
-        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'llm' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
-      >
-        LLM
-      </button>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === 'integrations' || activeTab === 'sync_mcp'}
-        onclick={() => switchTab('integrations')}
-        class="text-2xl font-bold tracking-tight transition cursor-pointer {activeTab === 'integrations' || activeTab === 'sync_mcp' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-300'}"
-      >
-        Integrations
-      </button>
+    <!-- Settings navigation tabs -->
+    <div class="border-b border-stone-200 dark:border-stone-800 shrink-0 mb-4">
+      <div role="tablist" aria-label="Settings navigation" class="flex items-center space-x-1 sm:space-x-2 -mb-px overflow-x-auto scrollbar-none">
+        <button
+          type="button"
+          role="tab"
+          id="tab-settings"
+          aria-selected={activeTab === 'settings'}
+          onclick={() => switchTab('settings')}
+          class="group inline-flex items-center space-x-2 px-3 sm:px-3.5 py-2 border-b-2 text-xs sm:text-sm font-medium transition cursor-pointer rounded-t-lg {activeTab === 'settings' ? 'border-stone-900 dark:border-stone-100 text-stone-900 dark:text-stone-100 font-semibold' : 'border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:border-stone-300 dark:hover:border-stone-700 hover:bg-stone-100/60 dark:hover:bg-stone-800/40'}"
+        >
+          <SlidersHorizontal class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition {activeTab === 'settings' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 group-hover:text-stone-700 dark:group-hover:text-stone-300'}" />
+          <span>Settings</span>
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          id="tab-prompts"
+          aria-selected={activeTab === 'prompts'}
+          onclick={() => switchTab('prompts')}
+          class="group inline-flex items-center space-x-2 px-3 sm:px-3.5 py-2 border-b-2 text-xs sm:text-sm font-medium transition cursor-pointer rounded-t-lg {activeTab === 'prompts' ? 'border-stone-900 dark:border-stone-100 text-stone-900 dark:text-stone-100 font-semibold' : 'border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:border-stone-300 dark:hover:border-stone-700 hover:bg-stone-100/60 dark:hover:bg-stone-800/40'}"
+        >
+          <Sparkles class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition {activeTab === 'prompts' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 group-hover:text-stone-700 dark:group-hover:text-stone-300'}" />
+          <span>Prompts</span>
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          id="tab-llm"
+          aria-selected={activeTab === 'llm'}
+          onclick={() => switchTab('llm')}
+          class="group inline-flex items-center space-x-2 px-3 sm:px-3.5 py-2 border-b-2 text-xs sm:text-sm font-medium transition cursor-pointer rounded-t-lg {activeTab === 'llm' ? 'border-stone-900 dark:border-stone-100 text-stone-900 dark:text-stone-100 font-semibold' : 'border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:border-stone-300 dark:hover:border-stone-700 hover:bg-stone-100/60 dark:hover:bg-stone-800/40'}"
+        >
+          <Bot class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition {activeTab === 'llm' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 group-hover:text-stone-700 dark:group-hover:text-stone-300'}" />
+          <span>LLMs</span>
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          id="tab-integrations"
+          aria-selected={activeTab === 'integrations' || activeTab === 'sync_mcp'}
+          onclick={() => switchTab('integrations')}
+          class="group inline-flex items-center space-x-2 px-3 sm:px-3.5 py-2 border-b-2 text-xs sm:text-sm font-medium transition cursor-pointer rounded-t-lg {activeTab === 'integrations' || activeTab === 'sync_mcp' ? 'border-stone-900 dark:border-stone-100 text-stone-900 dark:text-stone-100 font-semibold' : 'border-transparent text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 hover:border-stone-300 dark:hover:border-stone-700 hover:bg-stone-100/60 dark:hover:bg-stone-800/40'}"
+        >
+          <Blocks class="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 transition {activeTab === 'integrations' || activeTab === 'sync_mcp' ? 'text-stone-900 dark:text-stone-100' : 'text-stone-400 dark:text-stone-500 group-hover:text-stone-700 dark:group-hover:text-stone-300'}" />
+          <span>Integrations</span>
+        </button>
+      </div>
     </div>
 
     <!-- Settings Tab Content -->
@@ -1129,7 +1135,7 @@
         <span class="text-[11px] text-stone-400 dark:text-stone-500">Only needed if files were damaged</span>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-0.5">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
         <div class="flex items-center justify-between p-2 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 gap-2">
           <div class="text-[11px] text-stone-600 dark:text-stone-400 leading-tight">
             Re-parse all raw HTML in <code class="text-[10px]">_backup/</code>
@@ -1146,19 +1152,6 @@
               <RotateCw class="w-3 h-3" />
               <span>Re-parse All</span>
             {/if}
-          </button>
-        </div>
-
-        <div class="flex items-center justify-between p-2 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 gap-2">
-          <div class="text-[11px] text-stone-600 dark:text-stone-400 leading-tight">
-            Reparse with updated prompts
-          </div>
-          <button
-            onclick={() => (isReparsePromptsModalOpen = true)}
-            class="flex items-center space-x-1 px-2 py-1 rounded border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-[11px] font-medium text-stone-700 dark:text-stone-300 transition shrink-0 cursor-pointer"
-          >
-            <Sparkles class="w-3 h-3 text-stone-600 dark:text-stone-400" />
-            <span>Reparse Prompts...</span>
           </button>
         </div>
 
@@ -1181,12 +1174,6 @@
           </button>
         </div>
       </div>
-
-      {#if reparsePromptsResult}
-        <div class="text-[11px] px-2 py-1.5 rounded bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300">
-          {reparsePromptsResult}
-        </div>
-      {/if}
 
       {#if reparseResult}
         <div class="text-[11px] px-2 py-1 rounded bg-stone-50 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-stone-700 dark:text-stone-300">
@@ -1620,9 +1607,12 @@
               </button>
 
               {#if cardTestResults[card.id]}
-                <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {cardTestResults[card.id].success ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
+                {@const isQuota = /429|quota.*exhausted|plan is exhausted/i.test(cardTestResults[card.id].message)}
+                <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {cardTestResults[card.id].success ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : isQuota ? 'bg-amber-50 dark:bg-amber-950/60 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">
                   {#if cardTestResults[card.id].success}
                     <CheckCircle2 class="w-3 h-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  {:else if isQuota}
+                    <Clock class="w-3 h-3 shrink-0 text-amber-600 dark:text-amber-400" />
                   {:else}
                     <AlertCircle class="w-3 h-3 shrink-0 text-rose-600 dark:text-rose-400" />
                   {/if}
@@ -1660,9 +1650,5 @@
   </div>
 </div>
 
-<ReparsePromptsModal
-  isOpen={isReparsePromptsModalOpen}
-  onClose={() => (isReparsePromptsModalOpen = false)}
-  onSuccess={handleReparsePromptsSuccess}
-/>
+
 

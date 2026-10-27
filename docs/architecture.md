@@ -21,7 +21,7 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
    - **Incremental Chapter Additions**: An `[+] Add Chapters` button in the workspace subheader allows uploading new lesson `.zip` archives directly to the active course. Existing customized notes and edits are strictly preserved while new chapters are parsed and indexed.
 3. **Settings (`/settings`) & Prompts Engine**:
    - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, supervisor check-in, maintenance), `[LLM]` (AI models configuration & providers), `[Prompts]` (prompt template management), and `[Integrations]` (Google Calendar integration, OAuth configuration, and MCP server tokens).
-   - **AI Models (`/settings?tab=llm`)**: A list of model-provider cards (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
+   - **AI Models (`/settings?tab=llm`)**: A list of model-provider cards (ZCode / Z.ai GLM, OpenCode, LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
    - **Prompts Management (`/settings?tab=prompts`)**: Template editor for course-wide and lesson prompts (summaries, cheatsheets, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
    - **Maintenance & Ingestion**: Manual re-index and image compression triggers.
 4. **Study Schedules & Calendar Sync (`/schedules`)**:
@@ -679,7 +679,7 @@ Students mix cloud and local models (an LM Studio box at home, a llama.cpp serve
 
 ### 16.2 Provider Protocols
 Provider presets live in the dependency-free `app/src/lib/llmProviders.ts`, shared by the server transport layer and the Settings UI:
-- **OpenAI-compatible** (`/v1/chat/completions`, `messages` array): OpenAI, DeepSeek, OpenRouter, vLLM, **LM Studio** (`http://localhost:1234/v1`), **Ollama** (`/v1`), Gemini (OpenAI endpoint).
+- **OpenAI-compatible** (`/v1/chat/completions` or `/paas/v4/chat/completions`, `messages` array): OpenAI, **ZCode / Z.ai GLM** (`https://api.z.ai/api/paas/v4` with default `glm-5.3-flash`), **OpenCode** (`https://opencode.ai/zen/go/v1` with automatic `x-opencode-session`), DeepSeek, OpenRouter, vLLM, **LM Studio** (`http://localhost:1234/v1`), **Ollama** (`/v1`), Gemini (OpenAI endpoint).
 - **llama.cpp native** (`llamacpp_native`): `llama-server`'s non-OAI `POST /completion`, which takes a single `prompt`, streams SSE `{content, stop}` chunks terminated by `data: [DONE]`, and reports token counts via `tokens_evaluated`/`timings.predicted_n`. The chat template is applied server-side first via `POST /apply-template` (falling back to a plain system+user transcript on older builds). OAI-style base URLs (`.../v1`, `.../v1/chat/completions`) pasted into a llama.cpp card are normalized to the native endpoints.
 
 ### 16.3 API & UI Surface
@@ -688,6 +688,18 @@ Provider presets live in the dependency-free `app/src/lib/llmProviders.ts`, shar
 - Settings UI: one card per provider with provider/base URL/model/API key/auth header/timeout fields, an inline **Add another model provider** `[+]` tile, per-card **Test** and remove, plus the **Active Model** dropdown whose options are the model ids of all added cards.
 - **Clearing is explicit.** `save_store` counts the cards that would actually survive normalization (a card without a Base URL is dropped, not stored) and rejects a save that would leave none (400 for all-unusable input, 409 without `confirmClear: true`), so no client bug or stale tab can silently wipe the configured models. An unreadable/corrupt `llm_config.json` is reported as an error (HTTP 500, file left untouched) rather than as "no models configured". Saves replace the whole list, so two Settings windows editing at once resolve last-writer-wins — close the other window before re-arranging models.
 - The frontend keeps no LLM state of its own: feature call sites ask `$lib/llmClient` for the active card (guarding "no model configured → open setup modal") and the server resolves the real config, so a stale browser cache can never generate with the wrong model.
+
+### 16.4 General Coding Notes & Security Invariants
+
+> [!IMPORTANT]
+> **Security Invariant: API Keys Must NEVER Have Defaults — EVER**
+> Under no circumstances may an `apiKey` be specified as a default value anywhere in the codebase.
+> - **Provider Presets (`llmProviders.ts`)**: `LlmProviderPreset` defines only provider metadata (`id`, `label`, `defaultBaseUrl`, `defaultModel`, `protocol`, `hint`). It must NEVER include an `apiKey` property.
+> - **Client Drafts (`llmClient.ts`)**: `createLlmCardDraft` initializes `apiKey: ''` and `hasApiKey: false`.
+> - **Code Repositories & Tests**: No real or test keys may be checked into version control or set as fallbacks in configuration templates.
+> - All API keys must strictly originate from runtime user input in the Settings UI or a git-ignored local user data store (`data/llm_config.json`).
+> - **No Fallback / Default Model Injection**: Calls must never invent or fall back to arbitrary models (such as `gpt-4o-mini` or `gpt-6-luna`) when none is specified. If no model is configured for a provider card, the request must fail immediately with an explicit error prompting the user to configure their model in Settings.
+> - **No Automatic `/v1` Injection**: Base URLs provided by users and presets must include their own API version prefix (e.g. `https://api.openai.com/v1`, `https://api.z.ai/api/paas/v4`, `http://localhost:11434/v1`). The URL resolver (`resolveCompletionsUrl`) never injects `/v1`; it only trims trailing slashes and appends `/chat/completions` (unless `/chat/completions` is already present). This prevents invalid concatenation like `/v4/v1/chat/completions`.
 
 ---
 

@@ -56,6 +56,7 @@ export interface GenerationTask {
   customContent?: string;
   contextAttachment?: string;
   preferences?: SchedulePreferences;
+  cardId?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
   createdAt: string;
@@ -253,14 +254,16 @@ export class GenerationQueue {
       customContent?: string;
       contextAttachment?: string;
       preferences?: SchedulePreferences;
+      cardId?: string;
     }>
   ): GenerationTask[] {
     const enqueued: GenerationTask[] = [];
 
     for (const item of items) {
-      const lessonId = item.lessonId || (item.tab === 'schedule' ? 'schedule' : '');
-      const lessonTitle = item.lessonTitle || (item.tab === 'schedule' ? 'Course Schedule' : lessonId);
-      const id = this.makeId(item.courseId, lessonId, item.tab);
+      const tab = item.tab === 'cheatsheet' ? 'studysheet' : item.tab;
+      const lessonId = item.lessonId || (tab === 'schedule' ? 'schedule' : '');
+      const lessonTitle = item.lessonTitle || (tab === 'schedule' ? 'Course Schedule' : lessonId);
+      const id = this.makeId(item.courseId, lessonId, tab);
       const existing = this.tasks.get(id);
 
       // If already pending or processing, don't duplicate
@@ -273,11 +276,12 @@ export class GenerationQueue {
         courseId: item.courseId.toLowerCase(),
         lessonId,
         lessonTitle,
-        tab: item.tab,
+        tab,
         customPrompt: item.customPrompt,
         customContent: item.customContent,
         contextAttachment: item.contextAttachment,
         preferences: item.preferences,
+        cardId: item.cardId,
         status: 'pending',
         createdAt: new Date().toISOString()
       };
@@ -536,7 +540,7 @@ export class GenerationQueue {
 
   protected async executeTask(nextTask: GenerationTask): Promise<void> {
     const taskStartedAt = nextTask.startedAt;
-      const config = LLMService.loadStoredConfig();
+      const config = LLMService.loadCardConfig(nextTask.cardId);
       if (!config || !config.baseUrl) {
         throw new Error('LLM not configured. Please open Settings or AI configuration modal to set up API endpoint.');
       }
@@ -652,6 +656,13 @@ export class GenerationQueue {
           tokensUsed = result.usage?.total_tokens;
           rawCompletion = result.completion;
 
+          CourseService.recordLog({
+            courseId: nextTask.courseId,
+            lessonDoc: 'course.schedule.md',
+            chars: result.completion.length,
+            tokens: tokensUsed ?? result.usage?.total_tokens ?? 0
+          });
+
           patches = extractJsonPatches(result.completion, skeleton);
           if (patches.length > 0) {
             const enriched = applyEnrichmentPatches(skeleton, patches);
@@ -747,7 +758,7 @@ export class GenerationQueue {
         nextTask.completedAt = new Date().toISOString();
         nextTask.tokensUsed = tokensUsed;
 
-        const tokensInfo = tokensUsed !== undefined ? ` (tokens: ${tokensUsed})` : '';
+        const tokensInfo = tokensUsed !== undefined ? ` (tokens: ${tokensUsed.toLocaleString()})` : '';
         const warningsInfo = validation.warnings.length > 0 ? ` [${validation.warnings.length} warning(s)]` : '';
         const tookS = taskStartedAt ? Math.round((Date.now() - Date.parse(taskStartedAt)) / 1000) : null;
         this.addLog(
@@ -755,6 +766,9 @@ export class GenerationQueue {
           `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalWithFrontmatter.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}${warningsInfo}\n`
         );
       } else {
+        if (nextTask.tab === 'cheatsheet') {
+          nextTask.tab = 'studysheet';
+        }
         const isCourse = nextTask.lessonId === 'course';
         const isUnit = isUnitScopeId(nextTask.lessonId);
         const bundle = !isCourse ? CourseService.getLessonBundle(nextTask.courseId, nextTask.lessonId) : null;
@@ -793,7 +807,7 @@ export class GenerationQueue {
         const userPrompt =
           nextTask.customContent !== undefined
             ? nextTask.customContent
-            : CourseService.getPromptContext(nextTask.courseId, attachment, nextTask.lessonId) ||
+            : (await CourseService.getPromptContext(nextTask.courseId, attachment, nextTask.lessonId)) ||
               (isCourse ? CourseService.buildAggregatedPayload(nextTask.courseId, nextTask.tab as any) : '') ||
               (bundle?.lesson ? stripLessonMedia(parseFrontmatter(bundle.lesson).body).trim() : '');
 
@@ -851,11 +865,28 @@ export class GenerationQueue {
         nextTask.completedAt = new Date().toISOString();
         nextTask.tokensUsed = result.usage?.total_tokens;
 
-        const tokensInfo = result.usage?.total_tokens !== undefined ? ` (tokens: ${result.usage.total_tokens})` : '';
+        const docFileName = isCourse
+          ? `course.${nextTask.tab}.md`
+          : isUnit
+            ? `${nextTask.lessonId}.${nextTask.tab}.md`
+            : `${nextTask.lessonId}.${nextTask.tab}.md`;
+
+        CourseService.recordLog({
+          courseId: nextTask.courseId,
+          lessonDoc: docFileName,
+          chars: result.completion.length,
+          tokens: result.usage?.total_tokens ?? 0
+        });
+
+        const tokensUsed = result.usage?.total_tokens;
+        const tokenBreakdown = result.usage?.prompt_tokens !== undefined
+          ? ` [prompt: ${result.usage.prompt_tokens.toLocaleString()}, completion: ${result.usage.completion_tokens?.toLocaleString() ?? '?'}]`
+          : '';
+        const tokensInfo = tokensUsed !== undefined ? ` (tokens: ${tokensUsed.toLocaleString()}${tokenBreakdown})` : '';
         const tookS = taskStartedAt ? Math.round((Date.now() - Date.parse(taskStartedAt)) / 1000) : null;
         this.addLog(
           'info',
-          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}\n`
+          `[ILC AI Received: ${nextTask.tab.toUpperCase()}] ${nextTask.courseId.toUpperCase()} ${nextTask.lessonId}: Generated ${result.completion.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}\n`
         );
       }
   }

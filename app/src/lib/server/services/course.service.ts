@@ -315,6 +315,25 @@ export class CourseService {
     return BaseCourseService.computeCourseEfforts(normalizeCourseId(courseId));
   }
 
+  static getLogsPath(courseId: string): string {
+    return BaseCourseService.getLogsPath(normalizeCourseId(courseId));
+  }
+
+  static getLogs(courseId: string): string | null {
+    return BaseCourseService.getLogs(normalizeCourseId(courseId));
+  }
+
+  static recordLog(opts: {
+    courseId: string;
+    type?: string;
+    lessonDoc: string;
+    chars?: number;
+    tokens?: number;
+    date?: Date;
+  }): void {
+    BaseCourseService.recordLog(opts);
+  }
+
   private static queueCalendarCleanup(courseId: string): void {
     try {
       const dataDir = getCoursesDir();

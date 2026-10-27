@@ -17,6 +17,11 @@
   let syncCompleted = $state(false);
 
   onMount(async () => {
+    // Skip app initialization and modal prompts when rendered inside an iframe
+    if (typeof window !== 'undefined' && window.self !== window.top) {
+      return;
+    }
+
     theme.init();
     zoom.init();
     initNavHistory();

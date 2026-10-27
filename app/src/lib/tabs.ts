@@ -11,7 +11,7 @@ export const BUILT_IN_TABS = ['lesson', 'summary', 'studysheet'] as const;
 export type BuiltInTab = (typeof BUILT_IN_TABS)[number];
 
 /** Valid tabs for the complete course scope. */
-export const COURSE_TABS = ['lesson', 'summary', 'schedule', 'test'] as const;
+export const COURSE_TABS = ['lesson', 'summary', 'schedule', 'test', 'logs'] as const;
 
 export type CourseTab = (typeof COURSE_TABS)[number];
 
@@ -129,7 +129,11 @@ export function tabFileName(lessonId: string, tab: string): string {
  * Returns the standard markdown filename for a course-level document (e.g. `course.summary.md`, `course.schedule.md`).
  */
 export function courseDocFileName(tab: string): string {
-  return `course.${tab.trim().toLowerCase()}.md`;
+  const clean = tab.trim().toLowerCase();
+  if (clean === 'logs') {
+    return 'logs.md';
+  }
+  return `course.${clean}.md`;
 }
 
 /**
@@ -203,6 +207,14 @@ export function parseDocFileName(
   file: string
 ): ParsedDocFileName | null {
   const clean = file.trim();
+  if (clean.toLowerCase() === 'logs.md') {
+    return {
+      isCourseScope: true,
+      isUnitScope: false,
+      lessonId: 'course',
+      tab: 'logs'
+    };
+  }
   const courseMatch = clean.match(/^course\.([a-z0-9_-]+)\.md$/i);
   if (courseMatch) {
     return {

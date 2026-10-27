@@ -1,24 +1,20 @@
 <script lang="ts">
   import type { CourseManifest } from '$lib/parser/courseIngest';
-  import { ChevronDown, Check, Search, FileText, Bookmark, GraduationCap, Layers } from 'lucide-svelte';
+  import { ChevronDown, Check, Search, FileText, Bookmark, Layers, GraduationCap } from 'lucide-svelte';
   import { isCourseTab, isUnitScopeId, parseUnitNumber, formatUnitScopeId } from '$lib/tabs';
 
   interface Props {
     course: CourseManifest;
     selectedLessonId: string;
     activeTab?: string;
-    isCourseMode?: boolean;
     onSelectLesson: (lessonId: string) => void;
-    onSelectCourseMode?: () => void;
   }
 
   let {
     course,
     selectedLessonId,
     activeTab = 'lesson',
-    isCourseMode = false,
-    onSelectLesson,
-    onSelectCourseMode
+    onSelectLesson
   }: Props = $props();
 
   let isOpen = $state(false);
@@ -38,7 +34,7 @@
   );
 
   let isUnitMode = $derived(
-    !isCourseMode && isUnitScopeId(selectedLessonId)
+    isUnitScopeId(selectedLessonId)
   );
 
   let currentUnitNumber = $derived(
@@ -95,9 +91,9 @@
       onclick={toggleDropdown}
       class="flex items-center space-x-2 px-2.5 sm:px-3 py-1.5 rounded border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-100 font-medium transition shadow-2xs max-w-[155px] min-[390px]:max-w-[190px] xs:max-w-[250px] sm:max-w-md"
     >
-      {#if isCourseMode}
+      {#if selectedLessonId === 'course'}
         <GraduationCap class="w-3.5 h-3.5 text-stone-700 dark:text-stone-300 shrink-0" />
-        <span class="truncate">Complete Course</span>
+        <span class="truncate">Course Wide</span>
       {:else if isUnitMode && currentUnit}
         <Layers class="w-3.5 h-3.5 text-stone-700 dark:text-stone-300 shrink-0" />
         <span class="truncate">Unit {currentUnit.number}: Unit Test / Assignment</span>
@@ -123,26 +119,6 @@
       ></div>
 
       <div class="absolute left-0 mt-1 w-80 sm:w-96 max-w-[calc(100vw-16px)] rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden flex flex-col max-h-[480px]">
-        <!-- Complete Course Option -->
-        <div class="p-1 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950">
-          <button
-            type="button"
-            onclick={() => {
-              if (onSelectCourseMode) onSelectCourseMode();
-              isOpen = false;
-            }}
-            class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition cursor-pointer {isCourseMode ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
-          >
-            <div class="flex items-center space-x-2 truncate pr-2">
-              <GraduationCap class="w-3.5 h-3.5 shrink-0 {isCourseMode ? 'text-white dark:text-stone-900' : 'text-stone-500 dark:text-stone-400'}" />
-              <span class="font-medium">Complete Course</span>
-            </div>
-            {#if isCourseMode}
-              <Check class="w-3.5 h-3.5 shrink-0" />
-            {/if}
-          </button>
-        </div>
-
         <!-- Search bar -->
         <div class="p-2 border-b border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 flex items-center space-x-2">
           <Search class="w-3.5 h-3.5 text-stone-400 dark:text-stone-500 shrink-0" />
@@ -154,11 +130,30 @@
           />
         </div>
 
+        <!-- Course Wide option -->
+        <div class="p-1 border-b border-stone-100 dark:border-stone-800">
+          <button
+            type="button"
+            onclick={() => selectAndClose('course')}
+            class="w-full text-left px-2.5 py-1.5 rounded flex items-center justify-between text-xs transition cursor-pointer {selectedLessonId === 'course' ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
+          >
+            <div class="flex items-center space-x-2 truncate pr-2">
+              <span class="text-[10px] px-1.5 py-0.5 rounded font-mono uppercase font-semibold {selectedLessonId === 'course' ? 'bg-indigo-800 text-indigo-200 dark:bg-indigo-300 dark:text-indigo-950' : 'bg-indigo-100 dark:bg-indigo-950/60 text-indigo-800 dark:text-indigo-300'}">
+                Course
+              </span>
+              <span class="truncate font-medium">Course Wide (Tests & Logs)</span>
+            </div>
+            {#if selectedLessonId === 'course'}
+              <Check class="w-3.5 h-3.5 shrink-0" />
+            {/if}
+          </button>
+        </div>
+
         <!-- Lessons list by Unit -->
         <div class="overflow-y-auto divide-y divide-stone-100 dark:divide-stone-800/60 p-1">
           {#each filteredUnits as unit}
             {@const unitScopeId = formatUnitScopeId(unit.number)}
-            {@const isUnitSelected = !isCourseMode && selectedLessonId === unitScopeId}
+            {@const isUnitSelected = selectedLessonId === unitScopeId}
             <div class="py-1">
               <!-- Unit Section Header (Static, non-clickable) -->
               <div class="px-2.5 py-1.5 flex items-center space-x-1.5 text-stone-500 dark:text-stone-400 select-none">
@@ -169,7 +164,7 @@
               </div>
               <div class="space-y-0.5 mt-0.5 pl-2">
                 {#each unit.lessons as lesson}
-                  {@const isSelected = !isCourseMode && lesson.id === selectedLessonId}
+                  {@const isSelected = lesson.id === selectedLessonId}
                   <button
                     type="button"
                     onclick={() => selectAndClose(lesson.id)}

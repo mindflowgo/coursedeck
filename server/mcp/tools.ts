@@ -18,7 +18,7 @@ function formatCoursesMarkdown(courses: Array<{
   level: string;
   unitCount: number;
   lessonCount: number;
-  courseDocs?: Record<string, boolean>;
+  courseDocs?: Record<string, boolean | undefined>;
 }>): string {
   if (courses.length === 0) return 'No courses found.';
   let md = '| ID | Title | Grade | Level | Units | Lessons | Docs |\n';
@@ -368,7 +368,7 @@ export function registerMcpTools(mcp: McpServer): void {
 
   // ─── 7. search_course ─────────────────────────────────────────────────────────
   mcp.tool('search_course', {
-    description: 'Search across course notes, summaries, cheatsheets, and lesson content with relevance scoring.',
+    description: 'Search across course notes, summaries, studysheets, and lesson content with relevance scoring.',
     inputSchema: z.object({
       query: z.string().min(1).describe('Search term or phrase'),
       courseId: z.string().optional().describe('Optional course ID filter. If omitted, searches all courses.'),
@@ -399,20 +399,22 @@ export function registerMcpTools(mcp: McpServer): void {
   // ─── 8. get_lesson_doc ────────────────────────────────────────────────────────
   mcp.tool('get_lesson_doc', {
     description:
-      'Retrieve lesson or course documents (summary, cheatsheet, test, lesson, notes, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing.',
+      'Retrieve lesson or course documents (summary, studysheet, test, lesson, notes, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing.',
     inputSchema: z.object({
       courseId: z.string().describe("Course ID, e.g. 'mcr3u'"),
       lessonId: z.string().optional().describe('Omit to fetch course-scope documents'),
       tab: z.enum([
         'lesson',
         'summary',
+        'studysheet',
         'cheatsheet',
         'test',
         'schedule',
         'notes',
+        'logs',
         'full',
         'practice-sheet'
-      ]).default('summary').describe("Document tab type ('lesson', 'summary', 'cheatsheet', 'test', 'schedule', 'notes'). Aliases 'full' and 'practice-sheet' are accepted."),
+      ]).default('summary').describe("Document tab type ('lesson', 'summary', 'studysheet', 'test', 'schedule', 'notes', 'logs'). Aliases 'full' and 'practice-sheet' are accepted."),
       generateIfMissing: z.boolean().default(true).describe('If true, generates on demand using the active LLM if missing (default: true)'),
       async: z.boolean().default(false).describe('If true, starts generation in the background and returns a jobId immediately for polling via get_task_status.'),
       format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, markdown content) or "json" (structured job result for async)')
@@ -421,7 +423,7 @@ export function registerMcpTools(mcp: McpServer): void {
       try {
         // Resolve alias
         const tab =
-          args.tab === 'full' ? 'lesson' : args.tab === 'practice-sheet' ? 'test' : args.tab;
+          args.tab === 'full' ? 'lesson' : args.tab === 'practice-sheet' ? 'test' : args.tab === 'cheatsheet' ? 'studysheet' : args.tab;
 
         // Course-scope doc
         if (!args.lessonId) {
@@ -432,6 +434,10 @@ export function registerMcpTools(mcp: McpServer): void {
           if (tab === 'schedule') {
             const schedule = ScheduleService.getSchedule(args.courseId);
             return { content: [{ type: 'text', text: schedule || 'No schedule generated yet.' }] };
+          }
+          if (tab === 'logs') {
+            const doc = CourseService.getLogs(args.courseId) || CourseService.getCourseDocument(args.courseId, 'logs');
+            return { content: [{ type: 'text', text: doc || '# Course Logs\n\n| Date | Type | Lesson | Tokens |\n| :--- | :--- | :--- | :--- |\n' }] };
           }
           const doc = CourseService.getCourseDocument(args.courseId, tab as any);
           if (doc) {
@@ -456,7 +462,7 @@ export function registerMcpTools(mcp: McpServer): void {
         }
 
         // Generate on demand if missing and requested
-        if (args.generateIfMissing && (tab === 'summary' || tab === 'cheatsheet' || tab === 'test')) {
+        if (args.generateIfMissing && (tab === 'summary' || tab === 'studysheet' || tab === 'test')) {
           if (args.async) {
             const tasks = queueManager.enqueue([
               {
@@ -510,6 +516,12 @@ export function registerMcpTools(mcp: McpServer): void {
                 CourseService.stripLessonMedia(bundle.lesson)
               );
               CourseService.saveLessonTab(args.courseId, args.lessonId, tab, result.completion);
+              CourseService.recordLog({
+                courseId: args.courseId,
+                lessonDoc: `${args.lessonId}.${tab}.md`,
+                chars: result.completion.length,
+                tokens: result.usage?.total_tokens ?? 0
+              });
               JobService.updateJob(job.id, {
                 state: 'succeeded',
                 result: {
@@ -677,6 +689,12 @@ export function registerMcpTools(mcp: McpServer): void {
           (async () => {
             try {
               const result = await LLMService.generateResult(config, args.prompt, context);
+              CourseService.recordLog({
+                courseId: args.courseId,
+                lessonDoc: 'prompt_course',
+                chars: result.completion.length,
+                tokens: result.usage?.total_tokens ?? 0
+              });
               JobService.updateJob(job.id, {
                 state: 'succeeded',
                 result: {
@@ -731,6 +749,12 @@ export function registerMcpTools(mcp: McpServer): void {
         // Synchronous execution: await response and return completion with jobId
         try {
           const result = await LLMService.generateResult(config, args.prompt, context);
+          CourseService.recordLog({
+            courseId: args.courseId,
+            lessonDoc: 'prompt_course',
+            chars: result.completion.length,
+            tokens: result.usage?.total_tokens ?? 0
+          });
           JobService.updateJob(job.id, {
             state: 'succeeded',
             result: {

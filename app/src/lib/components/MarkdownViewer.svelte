@@ -236,15 +236,15 @@
 
       const apiBase = getApiBaseUrl();
       out = out.replace(
-        /(?:src|href)=["'](?:\.\/)?assets\/(.*?)["']/gi,
-        `src="${apiBase}/api/courses/${courseId}/assets/$1"`
+        /(src|href)=["'](?:\.{1,2}\/)*assets\/(.*?)["']/gi,
+        (match, attr, path) => `${attr}="${apiBase}/api/courses/${courseId}/assets/${path}"`
       );
       out = out.replace(
-        /!\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi,
+        /!\[(.*?)\]\((?:\.{1,2}\/)*assets\/(.*?)\)/gi,
         `![$1](${apiBase}/api/courses/${courseId}/assets/$2)`
       );
       out = out.replace(
-        /\[(.*?)\]\((?:\.\/)?assets\/(.*?)\)/gi,
+        /\[(.*?)\]\((?:\.{1,2}\/)*assets\/(.*?)\)/gi,
         `[$1](${apiBase}/api/courses/${courseId}/assets/$2)`
       );
       return out;
@@ -647,15 +647,22 @@
       if (href.startsWith('#')) return;
 
       const isDoc =
-        /\.(pdf|docx?|xlsx?|pptx?|txt|png|jpe?g|gif|webp|svg)($|\?)/i.test(href) ||
+        /\.(pdf|docx?|xlsx?|pptx?|txt|png|jpe?g|gif|webp|svg|html?)($|\?)/i.test(href) ||
         href.includes('/assets/locker_docs/') ||
-        href.includes('/assets/');
+        href.includes('/assets/') ||
+        href.includes('assets/locker_docs/');
 
       if (isDoc) {
         e.preventDefault();
         e.stopPropagation();
         const linkTitle = link.textContent?.trim() || link.getAttribute('title') || '';
-        onOpenDocument?.(href, linkTitle);
+        let targetUrl = href;
+        const relativeAssetMatch = href.match(/^(?:(?:\.{1,2}\/)+)?assets\/(.*)$/i);
+        if (relativeAssetMatch && courseId) {
+          const apiBase = getApiBaseUrl();
+          targetUrl = `${apiBase}/api/courses/${courseId}/assets/${relativeAssetMatch[1]}`;
+        }
+        onOpenDocument?.(targetUrl, linkTitle);
         return;
       }
 

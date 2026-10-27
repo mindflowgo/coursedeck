@@ -37,7 +37,9 @@ import { ArcSyncProvider } from './services/sync/arc.provider';
 import { getOrCreateMcpToken, rotateMcpToken } from './services/mcp.service';
 import { TeacherCheckinService, cleanImageReferences, type PopQuizQuestionResult, type PopQuizResultPayload, type UnitTestQuestionResult, type UnitTestResultPayload } from './services/teacherCheckin.service';
 import { QuestionParser } from '../parser/questionParser';
-import { formatUnitScopeId } from '../tabs';
+import { formatUnitScopeId, courseDocFileName } from '../tabs';
+import { NotFoundError } from './services/errors';
+import { CourseService as CourseManagerService } from './services/course.service';
 
 /**
  * Single source of truth for the entire HTTP API.
@@ -71,7 +73,7 @@ const MIME_TYPES: Record<string, string> = {
 type Tab = 'summary' | 'studysheet' | 'test';
 
 /** Course-level document types accepted by /api/courses/:id/course-docs. */
-const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'studysheet', 'test', 'schedule'];
+const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'studysheet', 'test', 'schedule', 'logs'];
 
 interface ActiveCourseDocJob {
   courseId: string;
@@ -89,7 +91,8 @@ interface ActiveCourseDocJob {
 
 const activeCourseDocJobs = new Map<string, ActiveCourseDocJob>();
 
-const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'studysheet'];
+const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'studysheet', 'test'];
+const BULK_SUPPORTED_TABS: readonly string[] = ['summary', 'studysheet', 'test', 'cheatsheet'];
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -360,6 +363,17 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               stripLessonMedia(userPrompt as string)
             );
             const repaired = repairMarkdownTables(result.completion);
+            const reqCourseId = (typeof body.courseId === 'string' && body.courseId.trim())
+              ? body.courseId.trim()
+              : (typeof sessionId === 'string' && sessionId.trim() ? sessionId.split('-')[0] : null);
+            if (reqCourseId && CourseService.getCourse(reqCourseId)) {
+              CourseService.recordLog({
+                courseId: reqCourseId,
+                lessonDoc: typeof body.lessonDoc === 'string' ? body.lessonDoc : (typeof body.tab === 'string' ? body.tab : 'prompt'),
+                chars: result.completion.length,
+                tokens: result.usage?.total_tokens ?? 0
+              });
+            }
             return json({ success: true, completion: repaired, usage: result.usage });
           } catch (err) {
             console.error('[LLM] Generation failed:', err);
@@ -717,31 +731,33 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           if (singleTab !== undefined) {
             // One tab for one lesson — any valid tab slug, custom tabs included.
             // The schedule is a queue-only pseudo-tab for the whole course.
+            const normalizedTab = singleTab.toLowerCase() === 'cheatsheet' ? 'studysheet' : singleTab;
             try {
-              assertTab(singleTab);
+              assertTab(normalizedTab);
             } catch {
               return error(400, `Invalid tab: ${JSON.stringify(singleTab)}`);
             }
             // 'lesson' is the ingested source document; regenerating it would
             // overwrite the course text, so only study-material tabs generate.
-            if (singleTab === 'lesson') {
+            if (normalizedTab === 'lesson') {
               return error(400, "Invalid tab: 'lesson' is the source lesson and cannot be generated");
             }
-            if (!lessonId && singleTab !== 'schedule') {
+            if (!lessonId && normalizedTab !== 'schedule') {
               return error(400, 'lessonId is required to generate a lesson tab');
             }
 
             const items = [
               {
                 courseId: String(courseId),
-                lessonId: singleTab === 'schedule' ? 'schedule' : String(lessonId),
+                lessonId: normalizedTab === 'schedule' ? 'schedule' : String(lessonId),
                 lessonTitle:
-                  singleTab === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
-                tab: singleTab,
+                  normalizedTab === 'schedule' ? 'Course Schedule' : String(lessonTitle || lessonId),
+                tab: normalizedTab,
                 customPrompt: (customPrompt || prompt) as string | undefined,
                 customContent: typeof body.customContent === 'string' ? body.customContent : undefined,
                 contextAttachment: typeof body.contextAttachment === 'string' ? body.contextAttachment : undefined,
-                preferences: body.preferences as SchedulePreferences | undefined
+                preferences: body.preferences as SchedulePreferences | undefined,
+                cardId: typeof body.cardId === 'string' && body.cardId.trim() ? body.cardId.trim() : undefined
               }
             ];
             const enqueued = queueManager.enqueue(items);
@@ -761,8 +777,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           const requested: unknown[] =
             bulkTabs && bulkTabs.length > 0 ? bulkTabs : [...DEFAULT_LESSON_TABS];
           const valid = requested.every(
-            (t): t is Tab =>
-              typeof t === 'string' && (DEFAULT_LESSON_TABS as readonly string[]).includes(t)
+            (t): t is string =>
+              typeof t === 'string' && (BULK_SUPPORTED_TABS as readonly string[]).includes(t.toLowerCase())
           );
           if (!valid) {
             return error(
@@ -770,7 +786,14 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               "Invalid tabs. Bulk generation supports 'summary', 'studysheet', and 'test'"
             );
           }
-          const lessonTabs = requested as Tab[];
+          // Normalize legacy 'cheatsheet' to 'studysheet' and deduplicate
+          const lessonTabs = Array.from(
+            new Set(
+              (requested as string[]).map((t) =>
+                t.toLowerCase() === 'cheatsheet' ? 'studysheet' : (t.toLowerCase() as Tab)
+              )
+            )
+          ) as Tab[];
 
           if (lessonId) {
             const items = lessonTabs.map((t) => ({
@@ -1047,8 +1070,54 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         'course_tests'
       ] as const;
 
-      const selectedCategories = rawCategories.filter((c): c is (typeof VALID_CATEGORIES)[number] =>
-        (VALID_CATEGORIES as readonly string[]).includes(c)
+      function normalizeCategory(cat: string): string {
+        const c = String(cat).toLowerCase().trim();
+        if (
+          c === 'lesson_cheatsheets' ||
+          c === 'lesson_cheatsheet' ||
+          c === 'lesson_studysheet' ||
+          c === 'lesson_studysheets' ||
+          c === 'studysheets' ||
+          c === 'studysheet' ||
+          c === 'cheatsheet' ||
+          c === 'cheatsheets'
+        ) {
+          return 'lesson_studysheets';
+        }
+        if (
+          c === 'course_cheatsheets' ||
+          c === 'course_cheatsheet' ||
+          c === 'course_studysheet' ||
+          c === 'course_studysheets'
+        ) {
+          return 'course_studysheets';
+        }
+        if (c === 'lesson_summary' || c === 'summary' || c === 'summaries' || c === 'lesson_summaries') {
+          return 'lesson_summaries';
+        }
+        if (c === 'course_summary' || c === 'course_summaries') {
+          return 'course_summaries';
+        }
+        if (c === 'unit_assignment' || c === 'unit_assignments' || c === 'assignments') {
+          return 'unit_assignments';
+        }
+        if (c === 'unit_test' || c === 'unit_tests') {
+          return 'unit_tests';
+        }
+        if (c === 'course_test' || c === 'course_tests') {
+          return 'course_tests';
+        }
+        return c;
+      }
+
+      const selectedCategories = Array.from(
+        new Set(
+          rawCategories
+            .map(normalizeCategory)
+            .filter((c): c is (typeof VALID_CATEGORIES)[number] =>
+              (VALID_CATEGORIES as readonly string[]).includes(c)
+            )
+        )
       );
 
       if (selectedCategories.length === 0) {
@@ -1400,7 +1469,22 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         );
 
         fs.writeFileSync(quizFilePath, content, 'utf8');
-        console.log(`[PopQuiz AI] Saved ${quizFileName} (${content.length} chars)`);
+
+        CourseService.recordLog({
+          courseId,
+          lessonDoc: `${lessonId}.popquiz.md`,
+          chars: result.completion.length,
+          tokens: result.usage?.total_tokens ?? 0
+        });
+
+        const tokensUsed = result.usage?.total_tokens;
+        const tokenBreakdown = result.usage?.prompt_tokens !== undefined
+          ? ` (prompt: ${result.usage.prompt_tokens.toLocaleString()}, completion: ${result.usage.completion_tokens?.toLocaleString() ?? '?'})`
+          : '';
+        const tokensInfo = tokensUsed !== undefined
+          ? ` | Total tokens used: ${tokensUsed.toLocaleString()}${tokenBreakdown}`
+          : '';
+        console.log(`[PopQuiz AI] Saved ${quizFileName} (${content.length} chars)${tokensInfo}`);
 
         return json({
           success: true,
@@ -1629,6 +1713,21 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         return json({ course });
       }
 
+      // DELETE /api/courses/:course_id
+      if (!subpath && method === 'DELETE') {
+        const permanentParam = url.searchParams.get('permanent');
+        const permanent = permanentParam !== null ? permanentParam === 'true' : true;
+        try {
+          const result = CourseManagerService.deleteCourse(courseId, permanent);
+          return json(result);
+        } catch (err) {
+          if (err instanceof NotFoundError) {
+            return error(404, `Course ${courseId} not found`);
+          }
+          throw err;
+        }
+      }
+
       // POST /api/courses/:course_id/open
       if (subpath === 'open' && method === 'POST') {
         const courseDir = safeJoin(CourseService.getCoursesDir(), courseId);
@@ -1751,17 +1850,23 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         const answers = (body.answers && typeof body.answers === 'object') ? (body.answers as Record<string, string>) : {};
 
         if (!rawUnitId) {
-          return error(400, 'unitId is required (e.g. "01.unit")');
+          return error(400, 'unitId is required (e.g. "01.unit" or "course")');
         }
+
+        const isCourseTest = rawUnitId === 'course';
 
         // Get test content if not passed
         let content = testMarkdown;
         if (!content || !content.trim()) {
-          const bundle = CourseService.getLessonContent(courseId, rawUnitId);
-          content = bundle?.tabs['test'] || '';
+          if (isCourseTest) {
+            content = CourseService.getCourseDocument(courseId, 'test') || '';
+          } else {
+            const bundle = CourseService.getLessonContent(courseId, rawUnitId);
+            content = bundle?.tabs['test'] || '';
+          }
         }
         if (!content || !content.trim()) {
-          return error(400, `Unit test for ${rawUnitId} is empty or not found.`);
+          return error(400, `${isCourseTest ? 'Course practice test' : `Unit test for ${rawUnitId}`} is empty or not found.`);
         }
 
         const parsedQuiz = QuestionParser.parseMarkdown(content);
@@ -1889,6 +1994,12 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
 `;
 
               const result = await LLMService.generateResult(config, systemPrompt, userPrompt, { timeoutMs });
+              CourseService.recordLog({
+                courseId,
+                lessonDoc: isCourseTest ? 'course.test.md' : `${rawUnitId}.test.md`,
+                chars: result.completion.length,
+                tokens: result.usage?.total_tokens ?? 0
+              });
               const rawJson = result.completion.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
               const parsedArray = JSON.parse(rawJson);
 
@@ -2023,7 +2134,11 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         delete updatedFrontmatter.studentAnswers;
 
         const updatedMarkdown = serializeWithFrontmatter(updatedFrontmatter, parsedDoc.body);
-        CourseService.saveLessonTab(courseId, rawUnitId, 'test', updatedMarkdown);
+        if (isCourseTest) {
+          CourseService.saveCourseDocument(courseId, 'test', updatedMarkdown);
+        } else {
+          CourseService.saveLessonTab(courseId, rawUnitId, 'test', updatedMarkdown);
+        }
 
         // 5. Construct evaluated question payload for supervisor email
         const evaluatedQuestions: UnitTestQuestionResult[] = parsedQuiz.questions.map((q) => {
@@ -2054,8 +2169,8 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
 
         const unitNumMatch = rawUnitId.match(/^(\d+)/);
         const unitNum = unitNumMatch ? parseInt(unitNumMatch[1], 10) : undefined;
-        const unitObj = course.units?.find((u) => u.number === unitNum);
-        const resolvedUnitTitle = cleanImageReferences(parsedQuiz.title) || (unitObj ? `Unit ${unitObj.number}: ${cleanImageReferences(unitObj.title)}` : `Unit ${rawUnitId}`);
+        const unitObj = !isCourseTest && unitNum !== undefined ? course.units?.find((u) => u.number === unitNum) : undefined;
+        const resolvedUnitTitle = cleanImageReferences(parsedQuiz.title) || (isCourseTest ? `${course.id.toUpperCase()} Practice Exam` : (unitObj ? `Unit ${unitObj.number}: ${cleanImageReferences(unitObj.title)}` : `Unit ${rawUnitId}`));
 
         try {
           await TeacherCheckinService.sendUnitTestResultEmail({
@@ -2089,6 +2204,39 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         });
       }
 
+      // GET|POST|DELETE /api/courses/:course_id/locker-docs
+      if (subpath === 'locker-docs') {
+        const course = CourseService.getCourse(courseId);
+        if (!course) return error(404, `Course '${courseId}' not found`);
+
+        if (method === 'GET') {
+          const files = CourseService.listLockerDocs(courseId);
+          return json({ success: true, courseId, files });
+        }
+
+        if (method === 'POST') {
+          try {
+            const formData = await req.formData();
+            const file = formData.get('file') as File | null;
+            if (!file) return error(400, 'A file is required');
+            const arrayBuffer = await file.arrayBuffer();
+            const buffer = Buffer.from(arrayBuffer);
+            const saved = CourseService.saveLockerDoc(courseId, file.name, buffer);
+            return json({ success: true, courseId, file: saved });
+          } catch (err) {
+            console.error(`Failed to upload locker doc for ${courseId}:`, err);
+            return error(500, err instanceof Error ? err.message : 'Failed to save locker document');
+          }
+        }
+
+        if (method === 'DELETE') {
+          const filename = url.searchParams.get('file');
+          if (!filename) return error(400, 'file query parameter required');
+          const removed = CourseService.deleteLockerDoc(courseId, filename);
+          return json({ success: removed });
+        }
+      }
+
       // GET /api/courses/:course_id/prompt-context
       if (subpath === 'prompt-context' && method === 'GET') {
         const course = CourseService.getCourse(courseId);
@@ -2096,7 +2244,7 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
 
         const attachment = url.searchParams.get('attachment') || 'lesson - lessons';
         const lessonId = url.searchParams.get('lessonId') || undefined;
-        const content = CourseService.getPromptContext(courseId, attachment, lessonId);
+        const content = await CourseService.getPromptContext(courseId, attachment, lessonId);
 
         return json({
           success: true,
@@ -2209,7 +2357,14 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
           const customPrompt = typeof body.customPrompt === 'string' ? body.customPrompt.trim() : undefined;
 
           if (!type || !(COURSE_DOC_TYPES as readonly string[]).includes(type)) {
-            return error(400, "Invalid type. Must be 'summary', 'studysheet', 'test', or 'schedule'");
+            return error(400, "Invalid type. Must be 'summary', 'studysheet', 'test', 'schedule', or 'logs'");
+          }
+
+          if (type === 'logs') {
+            return json({
+              success: true,
+              markdown: CourseService.getLogs(courseId) || '# Course Logs\n\n| Date | Type | Lesson | Tokens |\n| :--- | :--- | :--- | :--- |\n'
+            });
           }
 
           // 1. Cached document unless regeneration is forced
@@ -2234,8 +2389,9 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
             );
           }
 
-          // 3. Active LLM config
-          const config = LLMService.loadStoredConfig();
+          // 3. Active or requested LLM config
+          const requestedCardId = typeof body.cardId === 'string' && body.cardId.trim() ? body.cardId.trim() : undefined;
+          const config = LLMService.loadCardConfig(requestedCardId);
           if (!config || !config.baseUrl) {
             return error(400, 'Active LLM configuration is required. Please configure your LLM settings.');
           }
@@ -2249,7 +2405,8 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
                 lessonTitle: 'Course Study Schedule',
                 tab: 'schedule',
                 customPrompt: systemPrompt,
-                preferences: (body.preferences as SchedulePreferences) || undefined
+                preferences: (body.preferences as SchedulePreferences) || undefined,
+                cardId: requestedCardId
               }
             ]);
             return json({
@@ -2271,8 +2428,8 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
           const payload =
             customContent !== undefined
               ? customContent
-              : CourseService.getPromptContext(courseId, contextAttachment) ||
-                CourseService.buildAggregatedPayload(courseId, type);
+              : (await CourseService.getPromptContext(courseId, contextAttachment)) ||
+                CourseService.buildAggregatedPayload(courseId, type as 'summary' | 'studysheet' | 'test');
           if (!payload || payload.trim().length < 50) {
             return error(
               400,
@@ -2309,8 +2466,21 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
               parsed.body.trim()
             );
             CourseService.saveCourseDocument(courseId, type, content);
+            CourseService.recordLog({
+              courseId,
+              lessonDoc: courseDocFileName(type),
+              chars: result.completion.length,
+              tokens: result.usage?.total_tokens ?? 0
+            });
+            const tokensUsed = result.usage?.total_tokens;
+            const tokenBreakdown = result.usage?.prompt_tokens !== undefined
+              ? ` (prompt: ${result.usage.prompt_tokens.toLocaleString()}, completion: ${result.usage.completion_tokens?.toLocaleString() ?? '?'})`
+              : '';
+            const tokensInfo = tokensUsed !== undefined
+              ? ` | Total tokens used: ${tokensUsed.toLocaleString()}${tokenBreakdown}`
+              : '';
             console.log(
-              `[Course AI] Saved course.${type}.md for ${courseId.toUpperCase()} (${content.length.toLocaleString()} chars)`
+              `[Course AI] Saved course.${type}.md for ${courseId.toUpperCase()} (${content.length.toLocaleString()} chars)${tokensInfo}`
             );
 
             return {
@@ -2390,9 +2560,9 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         }
       }
 
-      // GET /api/courses/:course_id/assets/**
+      // GET|HEAD /api/courses/:course_id/assets/**
       const assetsMatch = subpath.match(/^assets\/(.+)$/);
-      if (assetsMatch && method === 'GET') {
+      if (assetsMatch && (method === 'GET' || method === 'HEAD')) {
         // Already decoded once at the top of handleApiRequest — decoding here
         // again would corrupt asset names containing a literal '%'.
         const assetRelativePath = assetsMatch[1];

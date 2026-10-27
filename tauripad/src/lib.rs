@@ -75,10 +75,12 @@ fn save_course_files(
     }
 
     if let Some(cp_json) = checkpoints_json {
-        let cp_path1 = course_dir.join("checkpoints.json");
-        let _ = std::fs::write(&cp_path1, &cp_json);
-        let cp_path2 = course_dir.join("checkpoint.json");
-        let _ = std::fs::write(&cp_path2, &cp_json);
+        let cp_path = course_dir.join("checkpoints.json");
+        let _ = std::fs::write(&cp_path, &cp_json);
+        let legacy = course_dir.join("checkpoint.json");
+        if legacy.exists() {
+            let _ = std::fs::remove_file(&legacy);
+        }
     }
 
     eprintln!(
@@ -219,6 +221,45 @@ fn save_course_doc(
 }
 
 #[tauri::command]
+fn delete_course_doc(
+    app: tauri::AppHandle,
+    course_id: String,
+    filename: String,
+) -> Result<bool, String> {
+    let courses_dir = get_courses_dir(&app)?;
+    let course_dir = courses_dir.join(course_id.to_lowercase());
+    if !course_dir.exists() {
+        return Ok(false);
+    }
+
+    // 1. Direct path check
+    let direct_path = course_dir.join(&filename);
+    if direct_path.exists() {
+        std::fs::remove_file(&direct_path)
+            .map_err(|e| format!("Failed to delete {:?}: {e}", direct_path))?;
+        eprintln!("[tauripad-fs] delete_course_doc: deleted {:?}", direct_path);
+        return Ok(true);
+    }
+
+    // 2. If filename has lesson prefix like 1.1.tab.md, check normalized candidate
+    if let Some(last_dot) = filename[..filename.len().saturating_sub(3)].rfind('.') {
+        let file_lesson = &filename[..last_dot];
+        let file_tab = &filename[last_dot + 1..filename.len().saturating_sub(3)];
+        let norm_lesson = normalize_lesson_id(file_lesson);
+        let norm_filename = format!("{norm_lesson}.{file_tab}.md");
+        let norm_path = course_dir.join(&norm_filename);
+        if norm_path.exists() {
+            std::fs::remove_file(&norm_path)
+                .map_err(|e| format!("Failed to delete {:?}: {e}", norm_path))?;
+            eprintln!("[tauripad-fs] delete_course_doc: deleted {:?}", norm_path);
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+#[tauri::command]
 fn list_cached_courses(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
     let courses_dir = get_courses_dir(&app)?;
     let mut courses = Vec::new();
@@ -273,16 +314,33 @@ fn get_cached_course(
 }
 
 #[tauri::command]
+fn delete_course(
+    app: tauri::AppHandle,
+    course_id: String,
+) -> Result<bool, String> {
+    let courses_dir = get_courses_dir(&app)?;
+    let course_dir = courses_dir.join(course_id.to_lowercase());
+    if course_dir.exists() {
+        std::fs::remove_dir_all(&course_dir)
+            .map_err(|e| format!("Failed to delete course directory {:?}: {e}", course_dir))?;
+        eprintln!("[tauripad-fs] delete_course: deleted course '{:?}'", course_dir);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
 fn get_cached_checkpoints(
     app: tauri::AppHandle,
     course_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
     let courses_dir = get_courses_dir(&app)?;
     let course_dir = courses_dir.join(course_id.to_lowercase());
-    let cp_path = if course_dir.join("checkpoint.json").exists() {
-        course_dir.join("checkpoint.json")
-    } else {
+    let cp_path = if course_dir.join("checkpoints.json").exists() {
         course_dir.join("checkpoints.json")
+    } else {
+        course_dir.join("checkpoint.json")
     };
     if cp_path.exists() {
         let raw = std::fs::read_to_string(&cp_path).unwrap_or_default();
@@ -304,13 +362,13 @@ fn save_checkpoint(
     let course_dir = courses_dir.join(course_id.to_lowercase());
     std::fs::create_dir_all(&course_dir)
         .map_err(|e| format!("Failed to create dir {:?}: {e}", course_dir))?;
-    let cp_path = if course_dir.join("checkpoint.json").exists() {
-        course_dir.join("checkpoint.json")
-    } else {
-        course_dir.join("checkpoints.json")
-    };
+    let cp_path = course_dir.join("checkpoints.json");
+    let legacy_path = course_dir.join("checkpoint.json");
     let mut list = if cp_path.exists() {
         let raw = std::fs::read_to_string(&cp_path).unwrap_or_default();
+        serde_json::from_str::<Vec<serde_json::Value>>(&raw).unwrap_or_default()
+    } else if legacy_path.exists() {
+        let raw = std::fs::read_to_string(&legacy_path).unwrap_or_default();
         serde_json::from_str::<Vec<serde_json::Value>>(&raw).unwrap_or_default()
     } else {
         Vec::new()
@@ -330,12 +388,9 @@ fn save_checkpoint(
         .map_err(|e| format!("Serialization error: {e}"))?;
     std::fs::write(&cp_path, &json)
         .map_err(|e| format!("Failed to write checkpoints: {e}"))?;
-    let other_path = if cp_path.ends_with("checkpoint.json") {
-        course_dir.join("checkpoints.json")
-    } else {
-        course_dir.join("checkpoint.json")
-    };
-    let _ = std::fs::write(&other_path, json);
+    if legacy_path.exists() {
+        let _ = std::fs::remove_file(&legacy_path);
+    }
     Ok(())
 }
 
@@ -347,28 +402,28 @@ fn delete_checkpoint(
 ) -> Result<(), String> {
     let courses_dir = get_courses_dir(&app)?;
     let course_dir = courses_dir.join(course_id.to_lowercase());
-    let cp_path = if course_dir.join("checkpoint.json").exists() {
-        course_dir.join("checkpoint.json")
-    } else {
-        course_dir.join("checkpoints.json")
-    };
-    if cp_path.exists() {
+    let cp_path = course_dir.join("checkpoints.json");
+    let legacy_path = course_dir.join("checkpoint.json");
+    let list_opt = if cp_path.exists() {
         let raw = std::fs::read_to_string(&cp_path).unwrap_or_default();
-        if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) {
-            let filtered: Vec<_> = list
-                .into_iter()
-                .filter(|c| c.get("id").and_then(|v| v.as_str()) != Some(&checkpoint_id))
-                .collect();
-            let json = serde_json::to_string_pretty(&filtered)
-                .map_err(|e| format!("Serialization error: {e}"))?;
-            std::fs::write(&cp_path, &json)
-                .map_err(|e| format!("Failed to write checkpoints: {e}"))?;
-            let other_path = if cp_path.ends_with("checkpoint.json") {
-                course_dir.join("checkpoints.json")
-            } else {
-                course_dir.join("checkpoint.json")
-            };
-            let _ = std::fs::write(&other_path, json);
+        serde_json::from_str::<Vec<serde_json::Value>>(&raw).ok()
+    } else if legacy_path.exists() {
+        let raw = std::fs::read_to_string(&legacy_path).unwrap_or_default();
+        serde_json::from_str::<Vec<serde_json::Value>>(&raw).ok()
+    } else {
+        None
+    };
+    if let Some(list) = list_opt {
+        let filtered: Vec<_> = list
+            .into_iter()
+            .filter(|c| c.get("id").and_then(|v| v.as_str()) != Some(&checkpoint_id))
+            .collect();
+        let json = serde_json::to_string_pretty(&filtered)
+            .map_err(|e| format!("Serialization error: {e}"))?;
+        std::fs::write(&cp_path, &json)
+            .map_err(|e| format!("Failed to write checkpoints: {e}"))?;
+        if legacy_path.exists() {
+            let _ = std::fs::remove_file(&legacy_path);
         }
     }
     Ok(())
@@ -438,12 +493,17 @@ fn list_prompts(app: tauri::AppHandle) -> Result<Vec<PromptItem>, String> {
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let dir = app_data.join("prompts");
     let mut list = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
                 let filename = entry.file_name().to_string_lossy().to_string();
                 let id = filename.trim_end_matches(".md").to_string();
+                if seen_ids.contains(&id) {
+                    continue;
+                }
+                seen_ids.insert(id.clone());
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     let title = content
                         .lines()
@@ -462,6 +522,37 @@ fn list_prompts(app: tauri::AppHandle) -> Result<Vec<PromptItem>, String> {
     }
     eprintln!("[tauripad-fs] list_prompts: found {} prompts in {:?}", list.len(), dir);
     Ok(list)
+}
+
+#[tauri::command]
+fn save_prompt(app: tauri::AppHandle, id: String, content: String) -> Result<(), String> {
+    let clean_id = id.trim().trim_end_matches(".md");
+    if clean_id.is_empty() || clean_id.contains('/') || clean_id.contains('\\') || clean_id.contains("..") {
+        return Err(format!("Invalid prompt ID: {}", clean_id));
+    }
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = app_data.join("prompts");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}.md", clean_id));
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    eprintln!("[tauripad-fs] save_prompt: saved {:?}", path);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_prompt(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let clean_id = id.trim().trim_end_matches(".md");
+    if clean_id.is_empty() || clean_id.contains('/') || clean_id.contains('\\') || clean_id.contains("..") {
+        return Err(format!("Invalid prompt ID: {}", clean_id));
+    }
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = app_data.join("prompts");
+    let path = dir.join(format!("{}.md", clean_id));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    eprintln!("[tauripad-fs] delete_prompt: deleted {:?}", path);
+    Ok(())
 }
 
 #[tauri::command]
@@ -488,8 +579,10 @@ pub fn run() {
             get_lesson_bundle,
             read_course_doc,
             save_course_doc,
+            delete_course_doc,
             list_cached_courses,
             get_cached_course,
+            delete_course,
             get_cached_checkpoints,
             save_checkpoint,
             delete_checkpoint,
@@ -498,6 +591,8 @@ pub fn run() {
             get_storage_path,
             save_prompts,
             list_prompts,
+            save_prompt,
+            delete_prompt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running CourseDeck iPad application");

@@ -21,6 +21,7 @@ describe('resolveSettingsTab', () => {
 
   it('resolves "llm" and aliases to llm tab', () => {
     expect(resolveSettingsTab('llm')).toBe('llm');
+    expect(resolveSettingsTab('llms')).toBe('llm');
     expect(resolveSettingsTab('ai')).toBe('llm');
     expect(resolveSettingsTab('models')).toBe('llm');
   });

@@ -250,23 +250,23 @@ describe('CourseService tab file helpers', () => {
       fs.writeFileSync(path.join(pcDir, '02.01.studysheet.md'), '---\ntype: studysheet\n---\nCheatsheet 2.1 content');
     });
 
-    it('resolves lesson - lessons', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'lesson - lessons', '01.01');
+    it('resolves lesson - lessons', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'lesson - lessons', '01.01');
       expect(res).toBe('Lesson 1.1 content here');
     });
 
-    it('resolves lesson - summaries', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'lesson - summaries', '01.01');
+    it('resolves lesson - summaries', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'lesson - summaries', '01.01');
       expect(res).toBe('Summary 1.1 content');
     });
 
-    it('resolves lesson - studysheets', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'lesson - studysheets', '01.01');
+    it('resolves lesson - studysheets', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'lesson - studysheets', '01.01');
       expect(res).toBe('Cheatsheet 1.1 content');
     });
 
-    it('resolves unit - lessons for the unit containing the lesson', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'unit - lessons', '01.01');
+    it('resolves unit - lessons for the unit containing the lesson', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'unit - lessons', '01.01');
       expect(res).toContain('Lesson 01.01 - Lesson 1.1');
       expect(res).toContain('Lesson 1.1 content here');
       expect(res).toContain('Lesson 01.02 - Lesson 1.2');
@@ -274,23 +274,31 @@ describe('CourseService tab file helpers', () => {
       expect(res).not.toContain('Lesson 2.1');
     });
 
-    it('resolves course - lessons across all units', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'course - lessons');
+    it('resolves course - lessons across all units', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'course - lessons');
       expect(res).toContain('Lesson 1.1 content here');
       expect(res).toContain('Lesson 1.2 content here');
       expect(res).toContain('Lesson 2.1 content here');
     });
 
-    it('resolves course - summaries across all units', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'course - summaries');
+    it('resolves course - summaries across all units', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'course - summaries');
       expect(res).toContain('Summary 1.1 content');
       expect(res).toContain('Summary 2.1 content');
     });
 
-    it('resolves course - studysheets across all units', () => {
-      const res = CourseService.getPromptContext(pcCourse, 'course - studysheets');
+    it('resolves course - studysheets across all units', async () => {
+      const res = await CourseService.getPromptContext(pcCourse, 'course - studysheets');
       expect(res).toContain('Cheatsheet 1.1 content');
       expect(res).toContain('Cheatsheet 2.1 content');
+    });
+
+    it('resolves locker - <filename>', async () => {
+      const lockerDir = path.join(pcDir, 'assets', 'locker_docs');
+      fs.mkdirSync(lockerDir, { recursive: true });
+      fs.writeFileSync(path.join(lockerDir, 'notes.txt'), 'Locker notes content');
+      const res = await CourseService.getPromptContext(pcCourse, 'locker - notes.txt');
+      expect(res).toBe('Locker notes content');
     });
   });
 });

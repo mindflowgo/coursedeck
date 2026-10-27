@@ -9,11 +9,12 @@
 
   interface Props {
     isOpen: boolean;
+    initialCategory?: string;
     onClose: () => void;
     onSuccess: (result: { enqueuedCount: number; coursesCount: number }) => void;
   }
 
-  let { isOpen, onClose, onSuccess }: Props = $props();
+  let { isOpen, initialCategory, onClose, onSuccess }: Props = $props();
 
   const CATEGORIES = [
     {
@@ -87,8 +88,12 @@
     if (isOpen) {
       errorMessage = null;
       isSubmitting = false;
-      // Default all selected
-      selectedCategories = new Set(CATEGORIES.map((c) => c.id));
+      const validCategory = CATEGORIES.find((c) => c.id === initialCategory);
+      if (validCategory) {
+        selectedCategories = new Set([validCategory.id]);
+      } else {
+        selectedCategories = new Set(CATEGORIES.map((c) => c.id));
+      }
       loadCourses();
     }
   });
@@ -139,13 +144,19 @@
     isSubmitting = true;
     errorMessage = null;
 
+    const categoriesToSend = Array.from(selectedCategories).flatMap((cat) => {
+      if (cat === 'lesson_studysheets') return ['lesson_studysheets', 'lesson_cheatsheets'];
+      if (cat === 'course_studysheets') return ['course_studysheets', 'course_cheatsheets'];
+      return [cat];
+    });
+
     try {
       const res = await apiFetch('/api/maintenance/reparse-prompts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           courseId: selectedCourse,
-          categories: Array.from(selectedCategories)
+          categories: categoriesToSend
         })
       });
 

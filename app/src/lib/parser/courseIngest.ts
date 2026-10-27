@@ -40,15 +40,16 @@ export interface CourseManifest {
   courseDocs?: CourseDocsFlags;
 }
 
-/** Course-level documents stored as `course.<type>.md` in the course folder. */
-export type CourseDocType = 'summary' | 'studysheet' | 'test' | 'schedule';
+/** Course-level documents stored as `course.<type>.md` (or `logs.md`) in the course folder. */
+export type CourseDocType = 'summary' | 'studysheet' | 'test' | 'schedule' | 'logs';
 
 export interface CourseDocsFlags {
   summary: boolean;
   studysheet: boolean;
   test: boolean;
   schedule: boolean;
-  [key: string]: boolean;
+  logs?: boolean;
+  [key: string]: boolean | undefined;
 }
 
 export interface IngestOptions {
@@ -231,12 +232,12 @@ export class CourseIngest {
         fs.writeFileSync(summaryFilePath, finalContent, 'utf8');
       }
 
-      // 3. Generate Initial Cheatsheet with YAML frontmatter
+      // 3. Generate Initial Studysheet with YAML frontmatter
       const studysheetFilename = `${lessonId}.studysheet.md`;
       const studysheetFilePath = path.join(courseDir, studysheetFilename);
       if (!fs.existsSync(studysheetFilePath) || shouldOverwrite) {
         const studysheetPrompt = this.loadGenericPrompt('studysheet');
-        const studysheetBody = this.generateInitialCheatsheet(
+        const studysheetBody = this.generateInitialStudysheet(
           courseId,
           extracted.unitNumber,
           extracted.lessonNumber,
@@ -368,14 +369,14 @@ export class CourseIngest {
 `;
   }
 
-  private generateInitialCheatsheet(
+  private generateInitialStudysheet(
     courseId: string,
     unit: number,
     lesson: number,
     title: string,
     isAssignment: boolean
   ): string {
-    return `# Cheatsheet: ${title}
+    return `# Studysheet: ${title}
 
 *Not yet generated. This studysheet can be generated using the AI button above or automatically in the background.*
 `;

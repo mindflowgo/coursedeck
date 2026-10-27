@@ -207,30 +207,47 @@ export function repairMarkdownTables(markdown: string): string {
           let rowPipes = (stripped.match(/\|/g) || []).length;
           let k = i + 1;
 
-          // Only accumulate nextLine if the current row is NOT already closed by a pipe,
-          // OR if next line is clearly a continuation (does not start with a pipe |).
-          const isRowClosed = stripped.startsWith('|') && stripped.endsWith('|') && !stripped.endsWith('\\|');
+          // A row is considered self-contained and closed on its single line if:
+          // 1. It starts with '|' and ends with '|' (and not an escaped pipe)
+          // 2. It has at least 2 pipes (an opening and closing pipe)
+          // 3. It has some non-whitespace content between pipes (not just bare delimiters)
+          const isRowClosed =
+            rowPipes >= 2 &&
+            stripped.length > 1 &&
+            stripped.startsWith('|') &&
+            stripped.endsWith('|') &&
+            !stripped.endsWith('\\|') &&
+            stripped.replace(/\|/g, '').trim().length > 0;
 
-          if (!isRowClosed || rowPipes < 2) {
-            while (k < lines.length && rowPipes < colCount + 1) {
-              const nextLine = lines[k];
-              const nextStripped = nextLine.replace(/^\s*(?:>\s*)+/, '').trim();
-              if (
-                DELIM_REGEX.test(nextLine) ||
-                nextLine.includes('%%%TABLE_CODE_') ||
-                /^\s*#{1,6}\s/.test(nextLine) ||
-                /^\s*---\s*$/.test(nextLine)
-              ) {
-                break;
-              }
-              // If next line starts with a pipe, it's a new row, not a continuation
-              if (nextStripped.startsWith('|')) {
-                break;
-              }
-              rowLines.push(nextLine);
-              rowPipes += (nextStripped.match(/\|/g) || []).length;
-              k++;
+          while (k < lines.length && rowPipes < colCount + 1) {
+            const nextLine = lines[k];
+            const nextStripped = nextLine.replace(/^\s*(?:>\s*)+/, '').trim();
+            if (
+              DELIM_REGEX.test(nextLine) ||
+              nextLine.includes('%%%TABLE_CODE_') ||
+              /^\s*#{1,6}\s/.test(nextLine) ||
+              /^\s*---\s*$/.test(nextLine)
+            ) {
+              break;
             }
+
+            const nextPipes = (nextStripped.match(/\|/g) || []).length;
+            const isNextBarePipe = nextStripped.replace(/\|/g, '').trim().length === 0;
+
+            // If the current row is already closed on its line and next line starts with '|',
+            // or if the next line is itself a fully formed row (at least colCount + 1 pipes),
+            // then next line is a new row, not a continuation.
+            if (
+              !isNextBarePipe &&
+              nextStripped.startsWith('|') &&
+              (isRowClosed || nextPipes >= colCount + 1)
+            ) {
+              break;
+            }
+
+            rowLines.push(nextLine);
+            rowPipes += nextPipes;
+            k++;
           }
 
           if (rowPipes >= 1) {

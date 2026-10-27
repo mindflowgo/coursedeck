@@ -267,7 +267,7 @@
           <div class="flex items-center space-x-1.5 flex-1 min-w-0">
             <Sparkles class="w-3.5 h-3.5 text-amber-500 shrink-0" />
             <span class="font-medium text-stone-900 dark:text-stone-100">Auto-queue AI Study Materials</span>
-            <span class="text-[10px] text-stone-500 dark:text-stone-400 hidden sm:inline">(Summary, Cheatsheet, Test)</span>
+            <span class="text-[10px] text-stone-500 dark:text-stone-400 hidden sm:inline">(Summary, Studysheet, Test)</span>
           </div>
         </label>
       </div>

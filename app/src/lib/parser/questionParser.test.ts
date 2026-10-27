@@ -246,7 +246,7 @@ describe('QuestionParser', () => {
       for (const q of quiz.questions) {
         if (q.type === 'multiple-choice') {
           expect(['A', 'B', 'C', 'D']).toContain(q.correctAnswer);
-        } else {
+        } else if (q.type === 'fill-in-the-blank') {
           expect(q.correctAnswer.length).toBeGreaterThan(0);
         }
       }

@@ -125,7 +125,8 @@ if (typeof window !== 'undefined') {
  */
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method || 'GET').toUpperCase();
-  const [pathname] = path.split('?');
+  const [pathname, search] = path.split('?');
+  const searchParams = new URLSearchParams(search || '');
 
   // Direct file routes: courses, lessons, tabs, schedules, checkpoints, prompts, theme
   const isDirectFileRoute =
@@ -137,7 +138,11 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     (pathname.startsWith('/api/courses/') &&
       !pathname.endsWith('/open') &&
       !pathname.includes('/unit-test/') &&
-      !pathname.endsWith('/export-pdf'));
+      !pathname.endsWith('/export-pdf') &&
+      !pathname.includes('/prompt-context') &&
+      !pathname.includes('/locker-docs') &&
+      !pathname.includes('/schedule/mark-lesson-done') &&
+      !(pathname.endsWith('/course-docs') && (method === 'POST' || searchParams.has('status'))));
 
   // On Tauri (both Desktop and Mobile), ALWAYS perform direct file fetches from the filesystem natively!
   if (isTauriEnvironment() && isDirectFileRoute) {
@@ -224,30 +229,45 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
 
   // GET /api/schedules
   if (method === 'GET' && pathname === '/api/schedules') {
-    const courses = await store.listCachedCourses();
+    const courses = (await store.listCachedCourses()).filter((c) => !c.archived);
     const schedules: any[] = [];
     for (const c of courses) {
-      const md = await store.getDocument(c.id, 'course.schedule.md');
-      if (md) {
-        schedules.push({
-          courseId: c.id,
-          courseTitle: c.title,
-          markdown: md
-        });
-      }
+      const md = (await store.getDocument(c.id, 'course.schedule.md')) || '';
+      schedules.push({
+        courseId: c.id,
+        courseTitle: c.title || c.id.toUpperCase(),
+        exists: Boolean(md && md.trim().length > 0),
+        markdown: md
+      });
     }
     return jsonRes({ schedules });
   }
 
-  const reservedSubpaths = ['course-docs', 'checkpoints', 'annotations', 'open', 'meta', 'unit-test', 'export-pdf'];
+  const reservedSubpaths = ['course-docs', 'checkpoints', 'annotations', 'open', 'meta', 'unit-test', 'export-pdf', 'locker-docs'];
 
-  // GET /api/courses/:id
+  // GET|DELETE /api/courses/:id
   const courseGetMatch = pathname.match(/^\/api\/courses\/([^/]+)$/);
-  if (method === 'GET' && courseGetMatch) {
+  if (courseGetMatch) {
     const courseId = decodeURIComponent(courseGetMatch[1]);
-    const course = await store.getCachedCourse(courseId);
-    if (!course) return jsonRes({ message: 'Course not found in offline storage' }, 404);
-    return jsonRes({ course });
+    if (method === 'GET') {
+      const course = await store.getCachedCourse(courseId);
+      if (!course) return jsonRes({ message: 'Course not found in offline storage' }, 404);
+      return jsonRes({ course });
+    }
+    if (method === 'DELETE') {
+      const permanentParam = searchParams.get('permanent');
+      const permanent = permanentParam !== null ? permanentParam === 'true' : true;
+      if (!permanent) {
+        const course = await store.getCachedCourse(courseId);
+        if (course) {
+          course.archived = true;
+          await store.saveCourseManifestLocally(courseId, course);
+          return jsonRes({ success: true, courseId, action: 'archived', permanent: false });
+        }
+      }
+      await store.deleteCourseLocally(courseId);
+      return jsonRes({ success: true, courseId, action: 'deleted', permanent: true });
+    }
   }
 
   // GET|PUT /api/courses/:id/meta
@@ -291,12 +311,24 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     return jsonRes({ success: true });
   }
 
+  // DELETE /api/courses/:id/:lessonId (delete tab offline)
+  if (method === 'DELETE' && lessonGetMatch && !reservedSubpaths.includes(lessonGetMatch[2])) {
+    const courseId = decodeURIComponent(lessonGetMatch[1]);
+    const lessonId = decodeURIComponent(lessonGetMatch[2]);
+    const tab = searchParams.get('tab');
+    if (!tab) return jsonRes({ message: 'tab parameter required' }, 400);
+    const filename = `${lessonId}.${tab.toLowerCase().trim()}.md`;
+    const removed = await store.deleteDocumentLocally(courseId, filename);
+    return jsonRes({ success: true, removed });
+  }
+
   // GET /api/courses/:id/course-docs?type=xxx
   const courseDocMatch = pathname.match(/^\/api\/courses\/([^/]+)\/course-docs$/);
   if (method === 'GET' && courseDocMatch) {
     const courseId = decodeURIComponent(courseDocMatch[1]);
     const type = searchParams.get('type') || 'summary';
-    const md = await store.getDocument(courseId, `course.${type}.md`);
+    const filename = type === 'logs' ? 'logs.md' : `course.${type}.md`;
+    const md = await store.getDocument(courseId, filename);
     return jsonRes({ exists: Boolean(md), markdown: md || '' });
   }
 
@@ -304,10 +336,21 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   if (method === 'PUT' && courseDocMatch) {
     const courseId = decodeURIComponent(courseDocMatch[1]);
     const body = JSON.parse((init?.body as string) || '{}');
-    const tab = body.tab || 'schedule';
+    const tab = body.tab || body.type || 'schedule';
     const content = body.content || '';
-    await store.saveDocumentLocally(courseId, `course.${tab}.md`, content);
+    const filename = tab === 'logs' ? 'logs.md' : `course.${tab}.md`;
+    await store.saveDocumentLocally(courseId, filename, content);
     return jsonRes({ success: true });
+  }
+
+  // DELETE /api/courses/:id/course-docs (delete course doc offline)
+  if (method === 'DELETE' && courseDocMatch) {
+    const courseId = decodeURIComponent(courseDocMatch[1]);
+    const type = searchParams.get('type') || searchParams.get('tab') || '';
+    if (!type) return jsonRes({ message: 'type parameter required' }, 400);
+    const filename = type === 'logs' ? 'logs.md' : `course.${type.toLowerCase().trim()}.md`;
+    const removed = await store.deleteDocumentLocally(courseId, filename);
+    return jsonRes({ success: true, removed });
   }
 
   // GET /api/courses/:id/annotations
@@ -376,6 +419,33 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   if (method === 'GET' && pathname === '/api/prompts') {
     const prompts = await store.listPrompts();
     return jsonRes({ prompts });
+  }
+
+  // POST /api/prompts
+  if (method === 'POST' && pathname === '/api/prompts') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const { id, content } = body;
+    if (!id || typeof content !== 'string') {
+      return new Response(JSON.stringify({ message: 'id and content required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    await store.savePromptLocally(id, content);
+    return jsonRes({ success: true });
+  }
+
+  // DELETE /api/prompts
+  if (method === 'DELETE' && pathname === '/api/prompts') {
+    const targetId = searchParams.get('id');
+    if (!targetId) {
+      return new Response(JSON.stringify({ message: 'id parameter required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    await store.deletePromptLocally(targetId);
+    return jsonRes({ success: true });
   }
 
   // GET /api/settings/theme

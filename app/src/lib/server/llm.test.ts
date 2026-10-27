@@ -2,7 +2,16 @@ import { describe, it, expect, afterAll, afterEach, beforeAll } from 'bun:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LLMService, timeoutMessage, resolveLlamaCppUrl, resolveCompletionsUrl, type LLMConfig, type LLMLogSink } from './llm';
+import {
+  LLMService,
+  timeoutMessage,
+  resolveLlamaCppUrl,
+  resolveCompletionsUrl,
+  resolveResponsesUrl,
+  type LLMConfig,
+  type LLMLogSink
+} from './llm';
+import { doesModelSupportTemperature, isTemperatureUnsupportedError } from '../llmProviders';
 
 type SinkCall = Array<{ level: 'info' | 'warn' | 'error'; message: string }>;
 
@@ -25,6 +34,59 @@ describe('resolveLlamaCppUrl', () => {
     expect(resolveLlamaCppUrl('http://localhost:9931/completion', 'completion')).toBe('http://localhost:9931/completion');
     expect(resolveLlamaCppUrl('http://localhost:9931/apply-template', 'completion')).toBe(
       'http://localhost:9931/completion'
+    );
+  });
+});
+
+describe('resolveCompletionsUrl', () => {
+  it('resolves standard /v1 OpenAI base URLs', () => {
+    expect(resolveCompletionsUrl('https://api.openai.com/v1')).toBe('https://api.openai.com/v1/chat/completions');
+    expect(resolveCompletionsUrl('http://localhost:1234/v1/')).toBe('http://localhost:1234/v1/chat/completions');
+  });
+
+  it('preserves full /chat/completions endpoints without double-appending', () => {
+    expect(resolveCompletionsUrl('https://api.z.ai/api/paas/v4/chat/completions')).toBe(
+      'https://api.z.ai/api/paas/v4/chat/completions'
+    );
+  });
+
+  it('resolves ZCode / Z.ai / BigModel /paas/v4 base URLs directly to chat completions', () => {
+    expect(resolveCompletionsUrl('https://api.z.ai/api/paas/v4')).toBe(
+      'https://api.z.ai/api/paas/v4/chat/completions'
+    );
+    expect(resolveCompletionsUrl('https://open.bigmodel.cn/api/paas/v4/')).toBe(
+      'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+    );
+  });
+
+  it('appends /chat/completions directly to baseUrl without injecting /v1', () => {
+    expect(resolveCompletionsUrl('https://api.deepseek.com')).toBe(
+      'https://api.deepseek.com/chat/completions'
+    );
+    expect(resolveCompletionsUrl('https://api.openai.com/v1')).toBe(
+      'https://api.openai.com/v1/chat/completions'
+    );
+    expect(resolveCompletionsUrl('https://custom.host/v4')).toBe(
+      'https://custom.host/v4/chat/completions'
+    );
+  });
+});
+
+describe('resolveResponsesUrl', () => {
+  it('appends /responses to base URL', () => {
+    expect(resolveResponsesUrl('https://opencode.ai/zen/go/v1')).toBe('https://opencode.ai/zen/go/v1/responses');
+    expect(resolveResponsesUrl('https://opencode.ai/zen/go/v1/')).toBe('https://opencode.ai/zen/go/v1/responses');
+  });
+
+  it('replaces /chat/completions with /responses', () => {
+    expect(resolveResponsesUrl('https://opencode.ai/zen/go/v1/chat/completions')).toBe(
+      'https://opencode.ai/zen/go/v1/responses'
+    );
+  });
+
+  it('preserves existing /responses path', () => {
+    expect(resolveResponsesUrl('https://opencode.ai/zen/go/v1/responses')).toBe(
+      'https://opencode.ai/zen/go/v1/responses'
     );
   });
 });
@@ -95,7 +157,7 @@ describe('multi-card store', () => {
 
     const resolved = LLMService.loadStoredConfig();
     expect(resolved).toMatchObject({ model: 'deepseek-flash', authHeaderType: 'api_key' });
-    expect(resolveCompletionsUrl(resolved!.baseUrl)).toBe('https://api.deepseek.com/v1/chat/completions');
+    expect(resolveCompletionsUrl(resolved!.baseUrl)).toBe('https://api.deepseek.com/chat/completions');
   });
 
   it('normalizeCards exposes what would actually survive a save', () => {
@@ -234,6 +296,27 @@ describe('multi-card store', () => {
       { timeoutMs: 5_000, heartbeatMs: 3_600_000 }
     );
     expect(authHeaders[1]).toBe('Bearer sk-secret');
+  });
+
+  it('automatically adds x-opencode-session header for opencode.ai endpoints', async () => {
+    let capturedSessionHeader: string | undefined;
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      const headers = init.headers as Record<string, string>;
+      capturedSessionHeader = headers['x-opencode-session'];
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }) as unknown as typeof fetch;
+
+    await LLMService.generateResult(
+      { provider: 'opencode', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: 'oc_sk_test' },
+      's',
+      'u',
+      { timeoutMs: 5_000, heartbeatMs: 3_600_000 }
+    );
+    expect(capturedSessionHeader).toBeDefined();
+    expect(capturedSessionHeader).toMatch(/^session_/);
   });
 
   it('persists and migrates the sendSessionId setting', () => {
@@ -511,6 +594,209 @@ describe('LLM lifecycle logging (onLog sink)', () => {
     const success = calls.find((c) => c.level === 'info' && /Response received/.test(c.message));
     expect(success?.message).toMatch(/Response received in \d+s/);
     expect(success?.message).toMatch(/total_tokens":15/);
+  });
+
+  it('indicates clearly when HTTP 429 occurs that the plan/quota is exhausted', async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          error: { code: '1308', message: 'Usage limit reached for 5 hour. Your limit will reset at 2026-10-27 06:04:36' }
+        }),
+        { status: 429, headers: { 'content-type': 'application/json' } }
+      )) as unknown as typeof fetch;
+
+    const { sink, calls } = collectSink();
+
+    await expect(
+      LLMService.generateResult(
+        { provider: 'zcode', baseUrl: 'https://api.z.ai/api/paas/v4' },
+        'system',
+        'user',
+        { timeoutMs: 5_000, onLog: sink }
+      )
+    ).rejects.toThrow(/Plan quota or rate limit exhausted \(HTTP 429\)/);
+
+    const errorCall = calls.find((c) => c.level === 'error');
+    expect(errorCall?.message).toMatch(/Plan quota or rate limit exhausted \(HTTP 429\)/);
+    expect(errorCall?.message).toMatch(/Usage limit reached for 5 hour/);
+    expect(errorCall?.message).toMatch(/Our plan is exhausted for now/);
+  });
+});
+
+describe('openai_responses transport', () => {
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('routes models like gpt-6-luna to /responses with instructions and input payload and parses SSE deltas', async () => {
+    const calls: Array<{ url: string; body: any; headers: any }> = [];
+    const sse =
+      'event: response.output_text.delta\ndata: {"delta":"Hello "}\n\n' +
+      'event: response.output_text.delta\ndata: {"delta":"world!"}\n\n' +
+      'event: response.completed\ndata: {"response":{"usage":{"input_tokens":8,"output_tokens":2,"total_tokens":10}}}\n\n';
+
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init.body)),
+        headers: init.headers
+      });
+      return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as unknown as typeof fetch;
+
+    const result = await LLMService.generateResult(
+      { provider: 'opencode', baseUrl: 'https://opencode.ai/zen/go/v1', model: 'gpt-6-luna', apiKey: 'oc_sk_test' },
+      'You are a helpful assistant.',
+      'Say hello.',
+      { timeoutMs: 5_000, heartbeatMs: 3_600_000 }
+    );
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].url).toBe('https://opencode.ai/zen/go/v1/responses');
+    expect(calls[0].body.model).toBe('gpt-6-luna');
+    expect(calls[0].body.instructions).toBe('You are a helpful assistant.');
+    expect(calls[0].body.input).toBe('Say hello.');
+    expect(calls[0].body.messages).toBeUndefined();
+    expect(calls[0].headers['x-opencode-session']).toMatch(/^session_/);
+
+    expect(result.completion).toBe('Hello world!');
+    expect(result.usage).toEqual({ prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 });
+  });
+
+  it('automatically falls back from chat/completions to responses when receiving ModelProtocolUnsupported error', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    const unsupportedErrorBody = JSON.stringify({
+      type: 'error',
+      error: { type: 'ModelProtocolUnsupported', message: 'Model does not support this protocol.' }
+    });
+
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init.body)) });
+      if (calls.length === 1) {
+        return new Response(unsupportedErrorBody, { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(
+        JSON.stringify({
+          output: [{ content: [{ type: 'output_text', text: 'Fallback response working!' }] }],
+          usage: { input_tokens: 5, output_tokens: 4, total_tokens: 9 }
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    // Notice protocol is default openai_compatible without auto-detection trigger model name:
+    const result = await LLMService.generateResult(
+      { provider: 'opencode', baseUrl: 'https://opencode.ai/zen/go/v1', model: 'custom-future-model' },
+      'Sys instructions',
+      'User input',
+      { timeoutMs: 5_000, heartbeatMs: 3_600_000 }
+    );
+
+    expect(calls.length).toBe(2);
+    expect(calls[0].url).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+    expect(calls[1].url).toBe('https://opencode.ai/zen/go/v1/responses');
+    expect(calls[1].body.instructions).toBe('Sys instructions');
+    expect(calls[1].body.input).toBe('User input');
+    expect(result.completion).toBe('Fallback response working!');
+  });
+
+  it('omits temperature parameter for gpt-6-luna and reasoning models', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init.body)) });
+      return new Response(
+        JSON.stringify({
+          output: [{ content: [{ type: 'output_text', text: 'Luna response!' }] }],
+          usage: { input_tokens: 5, output_tokens: 3, total_tokens: 8 }
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await LLMService.generateResult(
+      { provider: 'opencode', baseUrl: 'https://opencode.ai/zen/go/v1', model: 'gpt-6-luna', temperature: 0.3 },
+      'Sys',
+      'User',
+      { timeoutMs: 5_000, heartbeatMs: 3_600_000 }
+    );
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].body.model).toBe('gpt-6-luna');
+    expect(calls[0].body.temperature).toBeUndefined();
+    expect(result.completion).toBe('Luna response!');
+  });
+
+  it('automatically retries without temperature when provider returns Unsupported parameter error', async () => {
+    const calls: Array<{ url: string; body: any }> = [];
+    const lunaErrorBody = JSON.stringify({
+      model: 'unknown-luna-variant',
+      error: {
+        message: "Unsupported parameter: 'temperature' is not supported with this model.",
+        type: 'invalid_request_error',
+        param: 'temperature',
+        code: null
+      }
+    });
+
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      calls.push({ url: String(url), body: JSON.parse(String(init.body)) });
+      if (calls.length === 1) {
+        return new Response(lunaErrorBody, { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'Success on retry!' } }],
+          usage: { prompt_tokens: 4, completion_tokens: 3, total_tokens: 7 }
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }) as unknown as typeof fetch;
+
+    const result = await LLMService.generateResult(
+      { provider: 'openai_compatible', baseUrl: 'https://api.example.com/v1', model: 'unknown-model', temperature: 0.7 },
+      'Sys',
+      'User',
+      { timeoutMs: 5_000, heartbeatMs: 3_600_000 }
+    );
+
+    expect(calls.length).toBe(2);
+    expect(calls[0].body.temperature).toBe(0.7);
+    expect(calls[1].body.temperature).toBeUndefined();
+    expect(result.completion).toBe('Success on retry!');
+  });
+});
+
+describe('doesModelSupportTemperature and isTemperatureUnsupportedError helpers', () => {
+  it('correctly identifies models that disallow temperature', () => {
+    expect(doesModelSupportTemperature('gpt-6-luna')).toBe(false);
+    expect(doesModelSupportTemperature('gpt-6')).toBe(false);
+    expect(doesModelSupportTemperature('o1')).toBe(false);
+    expect(doesModelSupportTemperature('o1-mini')).toBe(false);
+    expect(doesModelSupportTemperature('o3-mini')).toBe(false);
+    expect(doesModelSupportTemperature('o4-preview')).toBe(false);
+    expect(doesModelSupportTemperature('deepseek-reasoning')).toBe(false);
+    expect(doesModelSupportTemperature('luna-chat')).toBe(false);
+
+    expect(doesModelSupportTemperature('gpt-4o')).toBe(true);
+    expect(doesModelSupportTemperature('gpt-4o-mini')).toBe(true);
+    expect(doesModelSupportTemperature('claude-3-5-sonnet')).toBe(true);
+    expect(doesModelSupportTemperature('glm-5.3-flash')).toBe(true);
+    expect(doesModelSupportTemperature('')).toBe(true);
+    expect(doesModelSupportTemperature(undefined)).toBe(true);
+  });
+
+  it('correctly detects unsupported temperature error messages', () => {
+    expect(
+      isTemperatureUnsupportedError(
+        '{"model":"gpt-6-luna","error":{"message":"Unsupported parameter: \'temperature\' is not supported with this model.","type":"invalid_request_error","param":"temperature","code":null}}'
+      )
+    ).toBe(true);
+    expect(isTemperatureUnsupportedError("temperature is not supported for this model")).toBe(true);
+    expect(isTemperatureUnsupportedError("Unsupported parameter: temperature")).toBe(true);
+    expect(isTemperatureUnsupportedError("model does not support temperature")).toBe(true);
+
+    expect(isTemperatureUnsupportedError("Rate limit exceeded")).toBe(false);
+    expect(isTemperatureUnsupportedError("Invalid API key")).toBe(false);
   });
 });
 

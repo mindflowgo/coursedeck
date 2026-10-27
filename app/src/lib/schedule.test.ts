@@ -174,6 +174,33 @@ describe('buildSchedulePrompt', () => {
     expect(result).toContain('- Daily session times: Mon: 09:00; Wed: 09:00; Fri: 09:00');
     expect(result).toContain('- Total calendar days: 25');
   });
+
+  it('parses schedule events with CRLF line endings seamlessly', async () => {
+    const { ScheduleParser, toggleEventDone } = await import('./parser/scheduleParser');
+    const crlfMarkdown = [
+      '# Study Schedule',
+      '',
+      '### 2026-10-26 · Mon',
+      '- [ ] **Study** 01.01 — Introducing Functions (90m)',
+      '  Core notes about functions.',
+      '',
+      '### 2026-10-28 · Wed',
+      '- [x] **Study** 01.02 — Inverse of a Function (90m)',
+      ''
+    ].join('\r\n');
+
+    const parsed = ScheduleParser.parseMarkdown(crlfMarkdown);
+    expect(parsed.events.length).toBe(2);
+    expect(parsed.events[0].date).toBe('2026-10-26');
+    expect(parsed.events[0].title).toBe('Introducing Functions');
+    expect(parsed.events[0].done).toBe(false);
+    expect(parsed.events[1].date).toBe('2026-10-28');
+    expect(parsed.events[1].done).toBe(true);
+
+    const toggled = toggleEventDone(crlfMarkdown, parsed.events[0].lineIndex);
+    expect(toggled).toContain('- [x] **Study** 01.01 — Introducing Functions (90m)');
+    expect(toggled).toContain('\r\n');
+  });
 });
 
 

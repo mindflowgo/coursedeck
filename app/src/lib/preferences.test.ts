@@ -138,7 +138,26 @@ describe('User Preferences - Course Position Resume', () => {
     expect(target?.href).toBe('/courses/clm3u/02.03/summary');
   });
 
-  it('resolveLastAccessedCourseRoute resolves course-scoped files', () => {
+  it('resolveLastAccessedCourseRoute resolves course practice test', () => {
+    const checkpoints: Checkpoint[] = [
+      {
+        id: 'pos_1',
+        file: 'course.test.md',
+        verticalPosition: 500,
+        type: 'position',
+        date: '2026-10-16T19:00:00Z'
+      }
+    ];
+    const lessons = [{ id: '01.01' }];
+
+    const target = resolveLastAccessedCourseRoute('clm3u', checkpoints, lessons);
+    expect(target).not.toBeNull();
+    expect(target?.isCourseScope).toBe(true);
+    expect(target?.tab).toBe('test');
+    expect(target?.href).toBe('/courses/clm3u/course/test');
+  });
+
+  it('resolveLastAccessedCourseRoute ignores obsolete course summary/lesson checkpoints', () => {
     const checkpoints: Checkpoint[] = [
       {
         id: 'pos_1',
@@ -151,10 +170,7 @@ describe('User Preferences - Course Position Resume', () => {
     const lessons = [{ id: '01.01' }];
 
     const target = resolveLastAccessedCourseRoute('clm3u', checkpoints, lessons);
-    expect(target).not.toBeNull();
-    expect(target?.isCourseScope).toBe(true);
-    expect(target?.tab).toBe('summary');
-    expect(target?.href).toBe('/courses/clm3u/course/summary');
+    expect(target).toBeNull();
   });
 
   it('resolveLastAccessedCourseRoute returns null if referenced lesson is not in manifest', () => {

@@ -52,24 +52,26 @@
   let status = $derived(queueStatus.status);
   let reachable = $derived(queueStatus.reachable);
 
-  // Scope counts to this course when the popover is mounted inside a course page.
-  let scopedTasks = $derived.by(() => {
-    if (!courseId) return status.tasks;
-    const wanted = courseId.toLowerCase();
-    return status.tasks.filter((t) => t.courseId === wanted);
-  });
-
   let activeTask = $derived<GenerationTask | null>(status.activeTask);
-  let pendingCount = $derived(scopedTasks.filter((t) => t.status === 'pending').length);
-  let completedCount = $derived(scopedTasks.filter((t) => t.status === 'completed').length);
-  let failedCount = $derived(scopedTasks.filter((t) => t.status === 'failed').length);
+
+  function formatTabLabel(tab: string): string {
+    const clean = tab.replace(/-\d+$/, '').toLowerCase();
+    if (clean === 'cheatsheet' || clean === 'studysheet') return 'STUDYSHEET';
+    return clean.toUpperCase();
+  }
+
+  // Always show total global counts regardless of current course
+  let pendingCount = $derived(status.pendingCount);
+  let completedCount = $derived(status.completedCount);
+  let failedCount = $derived(status.failedCount);
   let isGenerating = $derived(activeTask !== null);
-  let totalGeneratingCount = $derived.by(() => {
-    const activeCount = activeTask ? (courseId ? (activeTask.courseId === courseId.toLowerCase() ? 1 : 0) : 1) : 0;
-    const total = activeCount + pendingCount;
-    return total > 0 ? total : (activeTask ? 1 : 0);
-  });
-  let isBusy = $derived(status.pendingCount > 0 || activeTask !== null);
+
+  // Total active + pending tasks in the queue
+  let totalGeneratingCount = $derived(
+    (activeTask ? 1 : 0) + pendingCount
+  );
+
+  let isBusy = $derived(pendingCount > 0 || activeTask !== null);
 
   let progressPercent = $derived.by(() => {
     const total = pendingCount + completedCount + (activeTask ? 1 : 0);
@@ -82,7 +84,7 @@
       await apiFetch('/api/queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, courseId })
+        body: JSON.stringify({ action })
       });
       await queueStatus.refresh();
     } catch (e) {
@@ -188,14 +190,14 @@
           <div class="flex items-center justify-between text-[11px] font-medium text-amber-800 dark:text-amber-300">
             <div class="flex items-center space-x-1.5">
               <Loader2 class="w-3.5 h-3.5 animate-spin text-amber-600 dark:text-amber-400" />
-              <span>Generating {activeTask.tab.replace(/-\d+$/, '').toUpperCase()}</span>
+              <span>Generating {formatTabLabel(activeTask.tab)}</span>
             </div>
             <span class="text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded bg-amber-200/60 dark:bg-amber-900/60 text-amber-900 dark:text-amber-200">
               Active
             </span>
           </div>
           <p class="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
-            {#if !courseId}{activeTask.courseId.toUpperCase()} · {/if}{activeTask.tab === 'schedule' ? 'Course Schedule' : `${activeTask.lessonId} — ${activeTask.lessonTitle}`}
+            {activeTask.courseId.toUpperCase()} · {activeTask.tab === 'schedule' ? 'Course Schedule' : `${activeTask.lessonId} — ${activeTask.lessonTitle}`}
           </p>
         </div>
       {/if}
@@ -265,15 +267,15 @@
             class="flex items-center space-x-1 text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 font-medium cursor-pointer"
           >
             <Sparkles class="w-3 h-3" />
-            <span>Generate Missing</span>
+            <span>Generate Missing ({courseId.toUpperCase()})</span>
           </button>
         {/if}
       </div>
 
       <!-- Recent / Queued Tasks List -->
-      {#if scopedTasks.length > 0}
+      {#if status.tasks.length > 0}
         <div class="max-h-48 overflow-y-auto divide-y divide-stone-100 dark:divide-stone-800 border-t border-stone-100 dark:border-stone-800 pt-2 space-y-1">
-          {#each scopedTasks.slice(0, 15) as task (task.id)}
+          {#each status.tasks.slice(0, 20) as task (task.id)}
             <div class="py-1.5 px-1 text-[11px]">
               <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-2 min-w-0 pr-2">
@@ -288,11 +290,11 @@
                   {/if}
 
                   <span class="truncate font-medium text-stone-700 dark:text-stone-300">
-                    {#if !courseId}{task.courseId.toUpperCase()} · {/if}{task.tab === 'schedule' ? 'Course Schedule' : task.lessonId}
+                    {task.courseId.toUpperCase()} · {task.tab === 'schedule' ? 'Course Schedule' : task.lessonId}
                   </span>
 
                   <span class="uppercase text-[9px] font-semibold px-1 py-0.2 rounded bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 shrink-0">
-                    {task.tab.replace(/-\d+$/, '')}
+                    {formatTabLabel(task.tab)}
                   </span>
                   {#if /-\d+$/.test(task.tab)}
                     <span class="text-[9px] font-semibold px-1 py-0.2 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 shrink-0">
@@ -307,6 +309,9 @@
                     <Elapsed since={task.startedAt} />
                   {:else if task.status === 'completed'}
                     <span class="text-emerald-600 dark:text-emerald-400 font-medium">Done</span>
+                    {#if task.tokensUsed !== undefined}
+                      <span class="text-[9px] text-stone-400 dark:text-stone-500 font-mono">({task.tokensUsed.toLocaleString()} tokens)</span>
+                    {/if}
                   {:else if task.status === 'failed'}
                     <span class="text-rose-600 dark:text-rose-400 font-medium">Failed</span>
                   {:else}
