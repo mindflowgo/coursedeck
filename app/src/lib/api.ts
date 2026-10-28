@@ -115,90 +115,117 @@ if (typeof window !== 'undefined') {
 }
 
 /**
+ * ── Endpoint routing model ────────────────────────────────────────────────────
+ *
+ * Everything is LOCAL-FIRST: course/lesson/tab reads and writes, checkpoints,
+ * annotations, prompts, schedules, theme and cached assets are served from the
+ * device's own store — NativeStore on Tauri (the same course files the backend
+ * reads from disk) and IndexedDB in browsers. The app keeps working with no
+ * connectivity at all.
+ *
+ * ONLINE_ONLY is the short list of endpoints that cannot work without the
+ * backend server or external services: AI/LLM generation and grading, course
+ * creation & ingest, attachment uploads, device pairing/sync, e-mail, backup
+ * and maintenance. They always go through smartFetch and surface errors when
+ * the server is unreachable.
+ */
+const ONLINE_ONLY: Array<{ methods?: string[]; pattern: RegExp }> = [
+  // AI / LLM generation & grading (config reads stay local)
+  { methods: ['POST'], pattern: /^\/api\/llm$/ },
+  { pattern: /^\/api\/queue/ },
+  { pattern: /^\/api\/pop-quiz\// },
+  { pattern: /^\/api\/builder\// },
+  { pattern: /^\/api\/parse$/ },
+  { pattern: /^\/api\/courses\/[^/]+\/unit-test\// },
+  { pattern: /^\/api\/courses\/[^/]+\/prompt-context/ },
+  { methods: ['POST'], pattern: /^\/api\/courses\/[^/]+\/course-docs$/ },
+  // Course lifecycle & backend-managed files
+  { methods: ['POST'], pattern: /^\/api\/courses$/ },
+  { pattern: /^\/api\/courses\/[^/]+\/locker-docs/ },
+  { pattern: /^\/api\/courses\/[^/]+\/open$/ },
+  { pattern: /^\/api\/courses\/[^/]+\/schedule\/mark-lesson-done$/ },
+  // Server & external services
+  { pattern: /^\/api\/sync\// },
+  { pattern: /^\/api\/pairing\// },
+  { pattern: /^\/api\/backup\// },
+  { pattern: /^\/api\/maintenance\// },
+  { pattern: /^\/api\/settings\/(storage|open-folder|mcp|emailserver)/ },
+  { pattern: /^\/api\/network-ip$/ }
+];
+
+function isOnlineOnlyRoute(pathname: string, searchParams: URLSearchParams, method: string): boolean {
+  // Generation-status polling (?status=true) reads the server's live job
+  // registry, which only the backend knows about.
+  if (/^\/api\/courses\/[^/]+\/course-docs$/.test(pathname) && searchParams.has('status')) {
+    return true;
+  }
+  return ONLINE_ONLY.some(
+    (rule) => (!rule.methods || rule.methods.includes(method)) && rule.pattern.test(pathname)
+  );
+}
+
+/**
  * Typed fetch for the backend API.
  *
- * In desktop Tauri or dev: normal fetch against the local backend.
- * On iPad Tauri / Web client:
- *   - If desktop server is reachable: fetches directly via smartFetch.
- *   - If offline or server unreachable: falls back to IndexedDB for reads
- *     and queues local changes (checkpoints) for later push.
+ * Local-first everywhere: only the ONLINE_ONLY endpoints above require the
+ * server. Reading, writing, checkpoints, annotations, prompts and schedules
+ * all keep working offline from the device's own store.
  */
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const method = (init?.method || 'GET').toUpperCase();
   const [pathname, search] = path.split('?');
   const searchParams = new URLSearchParams(search || '');
 
-  // Direct file routes: courses, lessons, tabs, schedules, checkpoints, prompts, theme
-  const isDirectFileRoute =
-    (pathname === '/api/courses' && method === 'GET') ||
-    (pathname === '/api/schedules' && method === 'GET') ||
-    (pathname === '/api/checkpoints' && method === 'GET') ||
-    (pathname === '/api/prompts' && method === 'GET') ||
-    pathname === '/api/settings/theme' ||
-    (pathname.startsWith('/api/courses/') &&
-      !pathname.endsWith('/open') &&
-      !pathname.includes('/unit-test/') &&
-      !pathname.endsWith('/export-pdf') &&
-      !pathname.includes('/prompt-context') &&
-      !pathname.includes('/locker-docs') &&
-      !pathname.includes('/schedule/mark-lesson-done') &&
-      !(pathname.endsWith('/course-docs') && (method === 'POST' || searchParams.has('status'))));
+  // 1. Online-only endpoints always hit the backend server.
+  if (isOnlineOnlyRoute(pathname, searchParams, method)) {
+    return smartFetch(`${getApiBaseUrl()}${path}`, init);
+  }
 
-  // On Tauri (both Desktop and Mobile), ALWAYS perform direct file fetches from the filesystem natively!
-  if (isTauriEnvironment() && isDirectFileRoute) {
+  // 2. Desktop Tauri: NativeStore reads/writes the very course files the
+  //    local backend serves — going direct is faster and works even if the
+  //    backend process is down.
+  if (isTauriDesktop()) {
     return offlineFetch(path, method, init);
   }
 
-  // If the mobile device is explicitly offline (Airplane mode / disconnected), use local store
+  // 3. Vite dev browser: the dev server IS the backend.
+  if (typeof window !== 'undefined' && window.location.port === '5173') {
+    return smartFetch(path, init);
+  }
+
+  // 4. iPad / paired browser: the desktop is the sync master — try it first
+  //    (3.5s timeout, 15s reachability cache) and serve from the local synced
+  //    store when it cannot be reached. Offline devices skip straight to the
+  //    local store.
   if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    console.log(`[OfflineFetch] Device offline (navigator.onLine=false), serving ${method} ${path} from native filesystem`);
     return offlineFetch(path, method, init);
   }
-
-  // For mobile: fast-fail if the desktop server is known unreachable within the last 15s
   const now = Date.now();
-  if (isTauriMobile() && _serverReachable === false && now - _lastReachabilityCheck < 15000) {
-    console.log(`[OfflineFetch] Desktop server unreachable, serving ${method} ${path} from native filesystem`);
-    return offlineFetch(path, method, init);
-  }
-
-  // Non-file endpoints (e.g. AI queue, LLM proxy, sync bundle, folder opener, course creation):
-  // Fetch via smartFetch to the backend server
-  const baseUrl = getApiBaseUrl();
-  const isDevBrowser = typeof window !== 'undefined' && window.location.port === '5173';
-  if (baseUrl || isTauriDesktop() || isDevBrowser) {
+  if (!(_serverReachable === false && now - _lastReachabilityCheck < 15_000)) {
+    const baseUrl = getApiBaseUrl();
     try {
       let res: Response;
-      if (isTauriMobile() && !init?.signal) {
+      if (init?.signal) {
+        res = await smartFetch(`${baseUrl}${path}`, init);
+      } else {
         const ctrl = new AbortController();
-        const timeout = setTimeout(() => ctrl.abort(), 3500);
+        const timer = setTimeout(() => ctrl.abort(), 3500);
         try {
           res = await smartFetch(`${baseUrl}${path}`, { ...init, signal: ctrl.signal });
         } finally {
-          clearTimeout(timeout);
+          clearTimeout(timer);
         }
-      } else {
-        res = await smartFetch(`${baseUrl}${path}`, init);
       }
-
-      if (isTauriMobile()) {
-        _serverReachable = true;
-        _lastReachabilityCheck = now;
-      }
-
+      _serverReachable = true;
+      _lastReachabilityCheck = now;
       return res;
-    } catch (netErr) {
-      if (isTauriMobile()) {
-        console.warn(`[OfflineFetch] Mobile network fetch to ${baseUrl}${path} failed (${netErr}), serving from native filesystem`);
-        _serverReachable = false;
-        _lastReachabilityCheck = now;
-        return offlineFetch(path, method, init);
-      }
-      // On desktop, report error directly without poisoning file routes
-      throw netErr;
+    } catch {
+      _serverReachable = false;
+      _lastReachabilityCheck = now;
+      console.warn(`[apiFetch] server unreachable — serving ${method} ${path} from local store`);
+      return offlineFetch(path, method, init);
     }
   }
-
   return offlineFetch(path, method, init);
 }
 
@@ -536,6 +563,23 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
       })),
       config: active ? { ...active, hasApiKey: Boolean(active.apiKey) } : null
     });
+  }
+
+  // GET /api/courses/:id/assets/** (offline: serve cached binary assets, e.g. course.pdf)
+  const assetGetMatch = pathname.match(/^\/api\/courses\/([^/]+)\/assets\/(.+)$/);
+  if (method === 'GET' && assetGetMatch) {
+    const buffer = await store.getCachedPdfAsset(pathname);
+    if (buffer) {
+      console.log(`[OfflineFetch] GET asset ${pathname} from pdf cache (${Math.round(buffer.byteLength / 1024)} KB)`);
+      return new Response(buffer, {
+        status: 200,
+        headers: {
+          'Content-Type': pathname.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream',
+          'Cache-Control': 'public, max-age=86400'
+        }
+      });
+    }
+    return jsonRes({ message: 'Offline: document not cached on this device yet.' }, 503);
   }
 
   // Fallback for unhandled offline actions

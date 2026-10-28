@@ -3,7 +3,8 @@
 
 export const modalState = $state({
   isConnectIpadOpen: false,
-  isScanDesktopOpen: false
+  isScanDesktopOpen: false,
+  isInitialSyncOpen: false
 });
 
 export function openConnectIpadModal(): void {
@@ -20,4 +21,12 @@ export function openScanDesktopModal(): void {
 
 export function closeScanDesktopModal(): void {
   modalState.isScanDesktopOpen = false;
+}
+
+export function openInitialSyncModal(): void {
+  modalState.isInitialSyncOpen = true;
+}
+
+export function closeInitialSyncModal(): void {
+  modalState.isInitialSyncOpen = false;
 }

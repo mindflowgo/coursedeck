@@ -1844,7 +1844,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           title,
           grade,
           level,
-          description
+          description,
+          coursePDF: Boolean(body.coursePDF)
         });
 
         // If units or lessons are provided, inject them
@@ -1856,6 +1857,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           lessonNumber?: number;
           type?: 'lesson' | 'assignment';
           content?: string;
+          pageRange?: string;
+          readingDescription?: string;
         }> = [];
 
         if (Array.isArray(body.units)) {
@@ -1874,7 +1877,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                   unitTitle: uTitle,
                   lessonNumber: lNum,
                   type: l.type === 'assignment' ? 'assignment' : 'lesson',
-                  content: l.content || `# ${l.title || `Lesson ${lNum}`}\n\n### Overview\nLesson content.`
+                  content: l.content || `# ${l.title || `Lesson ${lNum}`}\n\n### Overview\nLesson content.`,
+                  pageRange: typeof l.pageRange === 'string' ? l.pageRange.trim() : undefined,
+                  readingDescription: typeof l.readingDescription === 'string' ? l.readingDescription.trim() : undefined
                 });
               }
             }
@@ -1888,7 +1893,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               unitTitle: l.unitTitle,
               lessonNumber: l.lessonNumber,
               type: l.type === 'assignment' ? 'assignment' : 'lesson',
-              content: l.content
+              content: l.content,
+              pageRange: typeof l.pageRange === 'string' ? l.pageRange.trim() : undefined,
+              readingDescription: typeof l.readingDescription === 'string' ? l.readingDescription.trim() : undefined
             });
           }
         }
@@ -2137,7 +2144,7 @@ Grade/Level: ${grade || 'High School'}`;
       if (subpath === 'meta' && method === 'PUT') {
         const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
-        const patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived'>> = {};
+        const patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF'>> = {};
         if (body.title !== undefined) {
           if (typeof body.title !== 'string' || !body.title.trim()) {
             return error(400, 'title must be a non-empty string');
@@ -2156,8 +2163,14 @@ Grade/Level: ${grade || 'High School'}`;
           }
           patch.archived = body.archived;
         }
+        if (body.coursePDF !== undefined) {
+          if (typeof body.coursePDF !== 'boolean') {
+            return error(400, 'coursePDF must be a boolean');
+          }
+          patch.coursePDF = body.coursePDF;
+        }
         if (Object.keys(patch).length === 0) {
-          return error(400, "Nothing to update — provide 'title', 'description', or 'archived'");
+          return error(400, "Nothing to update — provide 'title', 'description', 'archived', or 'coursePDF'");
         }
 
         if (!CourseService.getCourse(courseId)) {

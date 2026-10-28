@@ -7,16 +7,17 @@
   import InitialSyncModal from '$lib/components/InitialSyncModal.svelte';
   import ConnectIpadModal from '$lib/components/ConnectIpadModal.svelte';
   import ScanDesktopModal from '$lib/components/ScanDesktopModal.svelte';
-  import { modalState, closeConnectIpadModal, closeScanDesktopModal } from '$lib/modalState.svelte';
+  import {
+    modalState,
+    closeConnectIpadModal,
+    closeScanDesktopModal,
+    closeInitialSyncModal
+  } from '$lib/modalState.svelte';
   import { initNavHistory } from '$lib/navHistory';
   import { isTauriDesktop } from '$lib/api';
-  import { initSyncState, syncState } from '$lib/syncState.svelte';
-  import { hasCachedData } from '$lib/storage/clientStore';
+  import { initSyncState } from '$lib/syncState.svelte';
 
-  let showInitialSync = $state(false);
-  let syncCompleted = $state(false);
-
-  onMount(async () => {
+  onMount(() => {
     // Skip app initialization and modal prompts when rendered inside an iframe
     if (typeof window !== 'undefined' && window.self !== window.top) {
       return;
@@ -26,36 +27,26 @@
     zoom.init();
     initNavHistory();
 
+    // The InitialSyncModal ("Scan QR-code on your desktop") must NEVER open on
+    // its own — it is only shown when the user explicitly presses the tablet
+    // (Connect iPad) icon on a non-desktop client.
     if (!isTauriDesktop()) {
-      await initSyncState();
-      try {
-        const hasData = await hasCachedData();
-        const dismissed = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('initial_sync_dismissed') === 'true';
-        if (!hasData && !dismissed) {
-          showInitialSync = true;
-        }
-      } catch (e) {
-        console.warn('Failed to check cached data:', e);
-      }
+      void initSyncState();
     }
   });
 
   let { children } = $props();
 </script>
 
-{#if showInitialSync && !syncCompleted}
+{#if modalState.isInitialSyncOpen}
   <InitialSyncModal
     onDone={() => {
-      showInitialSync = false;
-      syncCompleted = true;
+      closeInitialSyncModal();
       // Reload or trigger route re-evaluation after initial sync
       window.location.reload();
     }}
     onSkip={() => {
-      showInitialSync = false;
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem('initial_sync_dismissed', 'true');
-      }
+      closeInitialSyncModal();
     }}
   />
 {/if}

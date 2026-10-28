@@ -199,10 +199,17 @@ describe('Reparse with Updated Prompts API', () => {
   it('executing a course-level task in queue saves course.<tab>.md with updated frontmatter', async () => {
     const { LLMService } = await import('./llm');
     const origLoad = LLMService.loadStoredConfig;
+    const origCardLoad = LLMService.loadCardConfig;
     const origGen = LLMService.generateResult;
 
     try {
       LLMService.loadStoredConfig = () =>
+        ({
+          baseUrl: 'http://mock-llm',
+          apiKey: 'test-key',
+          model: 'test-model'
+        }) as any;
+      LLMService.loadCardConfig = () =>
         ({
           baseUrl: 'http://mock-llm',
           apiKey: 'test-key',
@@ -237,6 +244,7 @@ describe('Reparse with Updated Prompts API', () => {
       expect(savedDoc).toContain('type: course_summary');
     } finally {
       LLMService.loadStoredConfig = origLoad;
+      LLMService.loadCardConfig = origCardLoad;
       LLMService.generateResult = origGen;
     }
   });

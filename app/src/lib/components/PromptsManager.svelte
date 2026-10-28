@@ -111,6 +111,9 @@
 
   function getPromptTitle(p: PromptItem): string {
     if (p.id === 'mcp_prompt_instructions') return 'MCP Instructions';
+    if (p.id === 'course_builder') {
+      return p.title || 'Automatic Lesson Builder';
+    }
     return p.title || p.id;
   }
 

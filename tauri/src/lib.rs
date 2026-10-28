@@ -8,6 +8,7 @@ use tauri::Manager;
 mod settings;
 mod window_state;
 mod courses_fs;
+pub mod pdf;
 
 /// Writes a base64-encoded file (e.g. an exported PDF) to a user-chosen path
 /// coming from the save dialog. Runs with extension and destination validation.
@@ -554,10 +555,20 @@ pub fn run() {
             courses_fs::list_prompts,
             courses_fs::save_prompt,
             courses_fs::delete_prompt,
+            pdf::pdf_get_info,
+            pdf::pdf_render_page,
+            pdf::pdf_render_thumbnail,
+            pdf::pdf_get_page_text,
+            pdf::pdf_search,
+            pdf::pdf_close_document,
         ]);
 
     builder
         .setup(|app| {
+            // Initialize native PDFium engine state
+            let pdf_state = pdf::PdfEngineState(pdf::PdfEngine::new().map(std::sync::Arc::new));
+            app.manage(pdf_state);
+
             // Start local backend server for packaged app
             let child = start_backend_process(app);
             let backend_spawned = child.is_some();

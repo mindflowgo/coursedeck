@@ -189,6 +189,13 @@ function main(): void {
 
   fs.copyFileSync(mainExePath, path.join(unpackedAppDir, `${productName}.exe`));
   fs.copyFileSync(serverBinaryPath, path.join(unpackedAppDir, serverBinaryName));
+
+  const pdfiumDllPath = path.join(TAURI_DIR, 'bin', 'pdfium.dll');
+  if (fs.existsSync(pdfiumDllPath)) {
+    fs.copyFileSync(pdfiumDllPath, path.join(unpackedAppDir, 'pdfium.dll'));
+    console.log('[Portable Build] Bundled pdfium.dll into portable directory');
+  }
+
   fs.writeFileSync(path.join(unpackedAppDir, 'README-Portable.txt'), portableReadmeText(productName, version), 'utf-8');
 
   // 7. Zip + checksum (primary distribution artifact)

@@ -28,11 +28,30 @@ export function isUnitTab(slug: string): slug is UnitTab {
   return (UNIT_TABS as readonly string[]).includes(slug);
 }
 
+/**
+ * Parses all 1-based page numbers out of a page range string (e.g. "14-28" -> [14, 28], "14, 22-25" -> [14, 22, 25], "p. 42" -> [42]).
+ */
+export function parsePageNumbers(rangeStr?: string | null): number[] {
+  if (!rangeStr) return [];
+  const matches = rangeStr.match(/\b\d+\b/g);
+  if (!matches) return [];
+  const nums = matches.map((m) => parseInt(m, 10)).filter((n) => Number.isFinite(n) && n > 0);
+  return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
+/**
+ * Parses the 1-based start page from a page range string (e.g. "14-28" -> 14).
+ */
+export function parseStartPage(rangeStr?: string | null): number | null {
+  const nums = parsePageNumbers(rangeStr);
+  return nums.length > 0 ? nums[0] : null;
+}
+
 /** Names users may not give a custom tab because the app already uses them. */
 export const RESERVED_TABS = [
   'lesson',
+  'book',
   'notes',
-  'summary',
   'studysheet',
   'test',
   'schedule',

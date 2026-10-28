@@ -142,6 +142,9 @@ export class CourseService {
           const manifest: CourseManifest = JSON.parse(content);
           manifest.path = courseFolder;
           manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
+          if (!manifest.coursePDF && fs.existsSync(safeJoin(courseFolder, 'assets', 'locker_docs', 'course.pdf'))) {
+            manifest.coursePDF = true;
+          }
           manifests.push(manifest);
         } catch (e) {
           console.error(`Failed to read manifest for ${dirName}:`, e);
@@ -164,6 +167,9 @@ export class CourseService {
       const manifest: CourseManifest = JSON.parse(content);
       manifest.path = courseFolder;
       manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
+      if (!manifest.coursePDF && fs.existsSync(safeJoin(courseFolder, 'assets', 'locker_docs', 'course.pdf'))) {
+        manifest.coursePDF = true;
+      }
       return manifest;
     } catch {
       return null;
@@ -183,7 +189,7 @@ export class CourseService {
    */
   static updateCourseMeta(
     courseId: string,
-    patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived'>>
+    patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF'>>
   ): CourseManifest | null {
     const courseFolder = this.courseDir(courseId);
     const metaPath = safeJoin(courseFolder, 'meta.json');
@@ -198,6 +204,13 @@ export class CourseService {
           manifest.archived = true;
         } else {
           delete manifest.archived;
+        }
+      }
+      if (patch.coursePDF !== undefined) {
+        if (patch.coursePDF) {
+          manifest.coursePDF = true;
+        } else {
+          delete manifest.coursePDF;
         }
       }
       fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');
@@ -351,6 +364,13 @@ export class CourseService {
     const safeName = path.basename(filename);
     const dest = safeJoin(lockerDir, safeName);
     fs.writeFileSync(dest, buffer);
+    if (safeName.toLowerCase() === 'course.pdf') {
+      try {
+        this.updateCourseMeta(courseId, { coursePDF: true });
+      } catch (err) {
+        console.warn(`Failed to update coursePDF in meta.json for ${courseId}:`, err);
+      }
+    }
     const ext = path.extname(safeName).replace(/^\./, '').toLowerCase();
     return {
       filename: safeName,
@@ -369,6 +389,13 @@ export class CourseService {
     if (fs.existsSync(dest)) {
       try {
         fs.unlinkSync(dest);
+        if (safeName.toLowerCase() === 'course.pdf') {
+          try {
+            this.updateCourseMeta(courseId, { coursePDF: false });
+          } catch (err) {
+            console.warn(`Failed to clear coursePDF in meta.json for ${courseId}:`, err);
+          }
+        }
         return true;
       } catch (err) {
         console.error(`Failed to delete locker doc ${dest}:`, err);

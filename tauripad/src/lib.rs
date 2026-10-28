@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tauri::Manager;
 
+pub mod pdf;
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct LessonBundleResponse {
     pub course_id: String,
@@ -593,7 +595,18 @@ pub fn run() {
             list_prompts,
             save_prompt,
             delete_prompt,
+            pdf::pdf_get_info,
+            pdf::pdf_render_page,
+            pdf::pdf_render_thumbnail,
+            pdf::pdf_get_page_text,
+            pdf::pdf_search,
+            pdf::pdf_close_document,
         ])
+        .setup(|app| {
+            let pdf_state = pdf::PdfEngineState(pdf::PdfEngine::new().map(std::sync::Arc::new));
+            app.manage(pdf_state);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running CourseDeck iPad application");
 }

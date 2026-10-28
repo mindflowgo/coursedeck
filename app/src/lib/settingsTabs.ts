@@ -24,7 +24,13 @@ export function resolveSettingsTab(tabParam?: string | null): SettingsTab {
 
 export type PromptGroupKey = 'course' | 'unit' | 'lessons' | 'custom';
 
-export const COURSE_PROMPT_ORDER = ['course_summary', 'course_studysheet', 'course_schedule', 'course_test'] as const;
+export const COURSE_PROMPT_ORDER = [
+  'course_summary',
+  'course_studysheet',
+  'course_schedule',
+  'course_test',
+  'course_builder'
+] as const;
 export const UNIT_PROMPT_ORDER = ['unit_assignments', 'unit_test'] as const;
 export const LESSON_PROMPT_ORDER = ['summary', 'studysheet', 'popquiz', 'lesson'] as const;
 
@@ -37,6 +43,7 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
     id === 'course_studysheet' ||
     id === 'course_schedule' ||
     id === 'course_test' ||
+    id === 'course_builder' ||
     id === 'course'
   ) {
     return 'course';

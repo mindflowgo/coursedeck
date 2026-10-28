@@ -19,6 +19,8 @@
   import SyncScheduleModal from '$lib/components/SyncScheduleModal.svelte';
   import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
+  import PDFViewer from '$lib/components/pdf/PDFViewer.svelte';
+  import { pdfCloseDocument, prewarmCourseBook, recordCourseBookOpened } from '$lib/pdfClient';
   import MarkupMenu from '$lib/components/MarkupMenu.svelte';
   import {
     exitMarkupMode,
@@ -53,6 +55,7 @@
     ArrowUp,
     ArrowRight,
     Bookmark,
+    Book,
     BookOpen,
     FileText,
     ListCollapse,
@@ -114,7 +117,34 @@
   let quizRunnerKey: number = $state(0);
   let isMobileTabDropdownOpen: boolean = $state(false);
 
+  // Persistent PDF Book state: keeps PDFium mounted while switching tabs within the course,
+  // but destroys and frees native memory when navigating to a different course.
+  let hasLoadedBookOnce: boolean = $state(false);
+  let lastLoadedBookCourseId: string | null = $state(null);
+
+  $effect(() => {
+    if (activeTab === 'book' && course?.id) {
+      hasLoadedBookOnce = true;
+      lastLoadedBookCourseId = course.id;
+      recordCourseBookOpened(course.id);
+    }
+  });
+
+  $effect(() => {
+    const currentCId = courseId;
+    if (currentCId) {
+      prewarmCourseBook(currentCId);
+    }
+    if (lastLoadedBookCourseId && currentCId && lastLoadedBookCourseId.toLowerCase() !== currentCId.toLowerCase()) {
+      // Unmount viewer to free webview blobs, but let the Rust MAX_OPEN_DOCUMENTS=4 LRU
+      // maintain the document handle so A -> B -> A course round trips remain instant!
+      hasLoadedBookOnce = false;
+      lastLoadedBookCourseId = null;
+    }
+  });
+
   let activeTabLabel = $derived.by(() => {
+    if (activeTab === 'book') return 'Book';
     if (isCourseScope) {
       if (activeTab === 'logs') return 'Logs';
       return 'Practice Test';
@@ -154,6 +184,10 @@
     allCourseLessons.findIndex((l) => l.id.toLowerCase() === (selectedLessonId || '').toLowerCase())
   );
 
+  let currentLessonItem: CourseManifestLesson | null = $derived(
+    currentLessonIndex !== -1 ? allCourseLessons[currentLessonIndex] : null
+  );
+
   let nextLessonItem: CourseManifestLesson | null = $derived(
     currentLessonIndex !== -1 && currentLessonIndex < allCourseLessons.length - 1
       ? allCourseLessons[currentLessonIndex + 1]
@@ -186,17 +220,21 @@
   let lessonBundle: LessonContentBundle | null = $state(null);
   let genericPrompts: Record<string, string> = $state({});
 
-  // Custom tabs discovered from this lesson's tab files on disk
+  // Custom tabs discovered from this lesson's tab files on disk (excluding summary, which has dedicated position)
   let customTabs = $derived.by(() => {
     if (!lessonBundle?.tabs) return [];
     return Object.keys(lessonBundle.tabs)
-      .filter((slug) => isCustomTabSlug(slug))
+      .filter((slug) => isCustomTabSlug(slug) && slug !== 'summary')
       .sort();
   });
 
-  // Custom tabs are lesson-only; overall course scope only has built-in course tabs.
+  let hasSummaryTab = $derived.by(() => {
+    return Boolean(lessonBundle?.tabs && 'summary' in lessonBundle.tabs);
+  });
+
+  // Custom tabs are lesson-only; overall course scope only has built-in course tabs or course book.
   function hasCourseDoc(tab: string): boolean {
-    return isCourseTab(tab);
+    return isCourseTab(tab) || (tab === 'book' && Boolean(course?.coursePDF));
   }
 
   // New-tab modal state
@@ -594,12 +632,10 @@
   }
 
   async function loadCourseDocument(tab: PageTab) {
-    if (tab === 'lesson') {
-      // Course-level lesson view is the Course Navigation Page.
-      // Do NOT attempt to gather all lessons together here.
+    if (tab === 'lesson' || tab === 'book') {
       isLoadingCourseDoc = false;
-      tabContents.lesson = '';
-      originalContents.lesson = '';
+      tabContents[tab] = '';
+      originalContents[tab] = '';
       return;
     }
     isLoadingCourseDoc = true;
@@ -911,7 +947,7 @@
       showPromptCard = false;
       isLessonActionsOpen = false;
       isMobileTabDropdownOpen = false;
-      if (activeTab !== 'test' && activeTab !== 'logs') {
+      if (activeTab !== 'test' && activeTab !== 'logs' && activeTab !== 'book') {
         activeTab = 'test';
       }
       await loadCourseDocument(activeTab);
@@ -1116,11 +1152,8 @@
       }
       const wasActive = activeTab === slug;
       await loadLesson(selectedLessonId);
-      if (wasActive && activeTab === 'lesson') {
-        const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(selectedLessonId)}`;
-        if ($page.url.pathname !== targetUrl) {
-          nav(targetUrl);
-        }
+      if (wasActive) {
+        switchTab('lesson');
       }
       saveSuccessMessage = `Deleted ${name} tab`;
       setTimeout(() => {
@@ -1855,7 +1888,7 @@
     if (!t) return null;
     const clean = t.toLowerCase().trim();
     if (clean === 'notes') return 'lesson';
-    if (['lesson', 'summary', 'studysheet', 'test', 'schedule', 'assignments'].includes(clean)) {
+    if (['lesson', 'summary', 'studysheet', 'test', 'schedule', 'assignments', 'book'].includes(clean)) {
       return clean;
     }
     // Custom tabs: any valid slug (created on visit if the lesson lacks it)
@@ -1957,12 +1990,16 @@
       }
 
       const isTargetCourse =
-        (resumeTarget?.isCourseScope && (resumeTarget.tab === 'test' || resumeTarget.tab === 'logs')) ||
-        (pLesson === 'course' && (pTab === 'test' || pTab === 'logs' || qTab === 'test' || qTab === 'logs')) ||
-        (qScope === 'course' && (pTab === 'test' || pTab === 'logs' || qTab === 'test' || qTab === 'logs'));
+        (resumeTarget?.isCourseScope && (resumeTarget.tab === 'test' || resumeTarget.tab === 'logs' || resumeTarget.tab === 'book')) ||
+        (pLesson === 'course' && (pTab === 'test' || pTab === 'logs' || pTab === 'book' || qTab === 'test' || qTab === 'logs' || qTab === 'book')) ||
+        (qScope === 'course' && (pTab === 'test' || pTab === 'logs' || pTab === 'book' || qTab === 'test' || qTab === 'logs' || qTab === 'book'));
 
       if (isTargetCourse) {
-        const targetTab: PageTab = (pTab === 'logs' || qTab === 'logs' || resumeTarget?.tab === 'logs') ? 'logs' : 'test';
+        const targetTab: PageTab = (pTab === 'logs' || qTab === 'logs' || resumeTarget?.tab === 'logs')
+          ? 'logs'
+          : (pTab === 'book' || qTab === 'book' || resumeTarget?.tab === 'book')
+            ? 'book'
+            : 'test';
 
         const scopeChanged = !isCourseScope;
         const tabChanged = activeTab !== targetTab;
@@ -2135,6 +2172,10 @@
     }
     flushPendingScroll();
     stopQueueFeedback();
+    if (lastLoadedBookCourseId) {
+      const oldPath = `/api/courses/${lastLoadedBookCourseId}/assets/locker_docs/course.pdf`;
+      void pdfCloseDocument(oldPath);
+    }
   });
 
   // Current lesson title
@@ -2340,6 +2381,18 @@
       <div class="hidden xs:block max-w-full overflow-x-auto scrollbar-none py-0.5">
         <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium shrink-0">
         {#if isCourseScope}
+          {#if course?.coursePDF}
+            <button
+              type="button"
+              onclick={() => switchTab('book')}
+              class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition cursor-pointer {activeTab === 'book' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+              title="Accompanying Course Book (PDF)"
+            >
+              <Book class="w-3.5 h-3.5 text-amber-500" />
+              <span>Book</span>
+            </button>
+          {/if}
+
           <button
             type="button"
             onclick={() => switchTab('test')}
@@ -2403,19 +2456,46 @@
         {:else}
           <button
             onclick={() => switchTab('lesson')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition cursor-pointer {activeTab === 'lesson' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
           >
             <BookOpen class="w-3.5 h-3.5" />
             <span>Lesson</span>
           </button>
 
-          <button
-            onclick={() => switchTab('summary')}
-            class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'summary' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
-          >
-            <Sparkles class="w-3.5 h-3.5" />
-            <span>Summary</span>
-          </button>
+          {#if course?.coursePDF}
+            <button
+              onclick={() => switchTab('book')}
+              class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition cursor-pointer {activeTab === 'book' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+              title="Course Book (PDF)"
+            >
+              <Book class="w-3.5 h-3.5 text-amber-500" />
+              <span>Book</span>
+              {#if currentLessonItem?.pageRange}
+                <span class="text-3xs px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 font-mono">
+                  p.{currentLessonItem.pageRange}
+                </span>
+              {/if}
+            </button>
+          {/if}
+
+          {#if hasSummaryTab || activeTab === 'summary'}
+            <div class="relative group/tab">
+              <button
+                onclick={() => switchTab('summary')}
+                class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition cursor-pointer {activeTab === 'summary' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
+              >
+                <Sparkles class="w-3.5 h-3.5 text-amber-500" />
+                <span>Summary</span>
+              </button>
+              <button
+                onclick={() => handleDeleteCustomTab('summary')}
+                class="absolute -top-1 -right-1 hidden group-hover/tab:flex items-center justify-center w-3.5 h-3.5 rounded-full bg-stone-300 dark:bg-stone-600 text-stone-700 dark:text-stone-200 hover:bg-red-400 dark:hover:bg-red-500 hover:text-white transition cursor-pointer"
+                title="Delete Summary tab for this lesson"
+              >
+                <X class="w-2 h-2" />
+              </button>
+            </div>
+          {/if}
 
           <button
             onclick={() => switchTab('studysheet')}
@@ -2466,6 +2546,8 @@
         >
           {#if activeTab === 'lesson'}
             <BookOpen class="w-3.5 h-3.5 shrink-0 text-stone-600 dark:text-stone-300" />
+          {:else if activeTab === 'book'}
+            <Book class="w-3.5 h-3.5 shrink-0 text-amber-500" />
           {:else if activeTab === 'summary'}
             <Sparkles class="w-3.5 h-3.5 shrink-0 text-amber-500" />
           {:else if activeTab === 'studysheet'}
@@ -2498,6 +2580,23 @@
           >
             <div class="py-1">
               {#if isCourseScope}
+                {#if course?.coursePDF}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => switchTab('book')}
+                    class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'book' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                  >
+                    <div class="flex items-center space-x-2 truncate">
+                      <Book class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span class="truncate">Course Book</span>
+                    </div>
+                    {#if activeTab === 'book'}
+                      <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    {/if}
+                  </button>
+                {/if}
+
                 <button
                   type="button"
                   role="menuitem"
@@ -2592,20 +2691,42 @@
                   {/if}
                 </button>
 
-                <button
-                  type="button"
-                  role="menuitem"
-                  onclick={() => switchTab('summary')}
-                  class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'summary' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
-                >
-                  <div class="flex items-center space-x-2 truncate">
-                    <Sparkles class="w-3.5 h-3.5 text-stone-500 shrink-0" />
-                    <span class="truncate">Summary</span>
-                  </div>
-                  {#if activeTab === 'summary'}
-                    <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  {/if}
-                </button>
+                {#if course?.coursePDF}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => switchTab('book')}
+                    class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'book' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                  >
+                    <div class="flex items-center space-x-2 truncate">
+                      <Book class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span class="truncate">Book</span>
+                      {#if currentLessonItem?.pageRange}
+                        <span class="text-3xs font-mono text-stone-400">p.{currentLessonItem.pageRange}</span>
+                      {/if}
+                    </div>
+                    {#if activeTab === 'book'}
+                      <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    {/if}
+                  </button>
+                {/if}
+
+                {#if hasSummaryTab || activeTab === 'summary'}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onclick={() => switchTab('summary')}
+                    class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'summary' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
+                  >
+                    <div class="flex items-center space-x-2 truncate">
+                      <Sparkles class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                      <span class="truncate">Summary</span>
+                    </div>
+                    {#if activeTab === 'summary'}
+                      <Check class="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                    {/if}
+                  </button>
+                {/if}
 
                 <button
                   type="button"
@@ -2664,13 +2785,34 @@
 
     <!-- Main Workspace Content Area (with checkpoints support). -->
     <div class="relative flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0">
-      <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
-        <FloatingCheckpointTrigger
-          containerEl={contentScroller}
-          disabled={activeTab === 'schedule' || isEditing}
-          onTrigger={handleTriggerAddCheckpoint}
-        />
-      </div>
+      <!-- Full-viewport PDF Book View: kept mounted per course so PDFium engine, blobs & scroll position stay hot -->
+      {#if hasLoadedBookOnce}
+        <div
+          class="relative flex-1 w-full h-full min-h-0 overflow-hidden flex flex-col"
+          class:hidden={activeTab !== 'book'}
+        >
+          <PDFViewer
+            url={`/api/courses/${course.id}/assets/locker_docs/course.pdf`}
+            title={`${course.title} - Book`}
+            lessonTitle={isCourseScope ? 'Course Overview' : (currentLessonItem?.title || '')}
+            pageRange={isCourseScope ? '' : (currentLessonItem?.pageRange || '')}
+            readingDescription={isCourseScope ? 'Accompanying course textbook' : (currentLessonItem?.readingDescription || '')}
+          />
+        </div>
+      {/if}
+
+      <!-- Markdown Workspace View: hidden when PDF book view is active -->
+      <div
+        class="relative flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0"
+        class:hidden={activeTab === 'book'}
+      >
+        <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
+          <FloatingCheckpointTrigger
+            containerEl={contentScroller}
+            disabled={activeTab === 'schedule' || isEditing}
+            onTrigger={handleTriggerAddCheckpoint}
+          />
+        </div>
 
       <div
         class="relative flex-1 overflow-y-auto overflow-x-hidden p-0 sm:p-8 max-w-5xl mx-auto w-full min-w-0 [overflow-anchor:none]"
@@ -2776,11 +2918,12 @@
                 </span>
               {/if}
 
-              {#if activeTab !== 'test'}
+              {#if activeTab !== 'test' && activeTab !== 'book'}
                 <MarkupMenu courseId={course.id} file={currentFile} />
               {/if}
 
               <!-- More actions menu ([...]): Edit, Prompt, PDF -->
+              {#if activeTab !== 'book'}
               <div class="relative inline-flex items-center">
                 <button
                   type="button"
@@ -2873,12 +3016,13 @@
                   </div>
                 {/if}
               </div>
+              {/if}
             {/if}
           </div>
         </div>
 
         <!-- Prompt Card for generated tabs (when revealed and not editing raw markdown) -->
-        {#if showPromptCard && activeTab !== 'lesson' && activeTab !== 'schedule' && activeTab !== 'logs' && !isEditing}
+        {#if showPromptCard && activeTab !== 'lesson' && activeTab !== 'book' && activeTab !== 'schedule' && activeTab !== 'logs' && !isEditing}
           <div class="pt-6 sm:pt-10 px-1.5 sm:px-0 mb-2 sm:mb-4">
             <PromptCard
               prompt={parsedActiveTab.frontmatter.prompt || defaultPromptForActiveTab}
@@ -2981,6 +3125,7 @@
           {/if}
         </div>
       {/if}
+    </div>
     </div>
   </div>
 </div>

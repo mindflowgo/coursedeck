@@ -80,6 +80,66 @@ describe('Course Builder Endpoints', () => {
       expect(fs.readFileSync(lessonPath, 'utf8')).toContain('Variables and Expressions');
     });
 
+    it('creates a course with coursePDF and lesson pageRange metadata', async () => {
+      const pdfTestCourseId = 'test_cs_pdf_builder';
+      const pdfTestDir = path.join(CourseService.getCoursesDir(), pdfTestCourseId);
+      if (fs.existsSync(pdfTestDir)) fs.rmSync(pdfTestDir, { recursive: true, force: true });
+
+      const payload = {
+        id: pdfTestCourseId,
+        title: 'Computer Science with Textbook',
+        coursePDF: true,
+        units: [
+          {
+            number: 1,
+            title: 'Unit 1: Programming Basics',
+            lessons: [
+              {
+                id: '01.01',
+                title: 'Introduction',
+                pageRange: '14-28',
+                readingDescription: 'Chapter 1: Foundations',
+                content: '# Intro\nNotes.'
+              }
+            ]
+          }
+        ]
+      };
+
+      const req = new Request('http://127.0.0.1:3182/api/courses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(201);
+
+      const data = await res.json();
+      expect(data.course.coursePDF).toBe(true);
+      expect(data.course.units[0].lessons[0].pageRange).toBe('14-28');
+      expect(data.course.units[0].lessons[0].readingDescription).toBe('Chapter 1: Foundations');
+
+      const meta = JSON.parse(fs.readFileSync(path.join(pdfTestDir, 'meta.json'), 'utf8'));
+      expect(meta.coursePDF).toBe(true);
+      expect(meta.units[0].lessons[0].pageRange).toBe('14-28');
+
+      // Test dynamically detecting coursePDF if locker_docs/course.pdf exists on disk
+      delete meta.coursePDF;
+      fs.writeFileSync(path.join(pdfTestDir, 'meta.json'), JSON.stringify(meta), 'utf8');
+      expect(CourseService.getCourse(pdfTestCourseId)?.coursePDF).toBeFalsy();
+
+      // Create locker_docs/course.pdf
+      const lockerDir = path.join(pdfTestDir, 'assets', 'locker_docs');
+      fs.mkdirSync(lockerDir, { recursive: true });
+      fs.writeFileSync(path.join(lockerDir, 'course.pdf'), 'dummy pdf content', 'utf8');
+
+      // Now getCourse must detect coursePDF as true
+      expect(CourseService.getCourse(pdfTestCourseId)?.coursePDF).toBe(true);
+
+      fs.rmSync(pdfTestDir, { recursive: true, force: true });
+    });
+
     it('returns 409 Conflict if course already exists', async () => {
       fs.mkdirSync(testCourseDir, { recursive: true });
       fs.writeFileSync(path.join(testCourseDir, 'meta.json'), '{}', 'utf8');

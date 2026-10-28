@@ -18,6 +18,8 @@ export interface CourseManifestLesson {
   hasSummary: boolean;
   hasCheatsheet: boolean;
   hasTest: boolean;
+  pageRange?: string;
+  readingDescription?: string;
 }
 
 export interface CourseManifestUnit {
@@ -34,6 +36,8 @@ export interface CourseManifest {
   description: string;
   units: CourseManifestUnit[];
   updatedAt: string;
+  /** True when the course has an accompanying course PDF book in assets/locker_docs/course.pdf */
+  coursePDF?: boolean;
   /** True when the course is archived — hidden from listings, still openable. */
   archived?: boolean;
   path?: string;

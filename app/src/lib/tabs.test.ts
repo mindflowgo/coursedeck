@@ -11,6 +11,8 @@ import {
   unitDocFileName,
   customTabDisplayName,
   validateTabName,
+  parsePageNumbers,
+  parseStartPage,
   starterPromptForTab,
   tabFileName,
   courseDocFileName,
@@ -55,7 +57,7 @@ describe('isTabSlug', () => {
 describe('isCustomTabSlug', () => {
   it('is false for built-in and reserved tabs', () => {
     expect(isCustomTabSlug('lesson')).toBe(false);
-    expect(isCustomTabSlug('summary')).toBe(false);
+    expect(isCustomTabSlug('book')).toBe(false);
     expect(isCustomTabSlug('studysheet')).toBe(false);
     expect(isCustomTabSlug('test')).toBe(false);
     expect(isCustomTabSlug('schedule')).toBe(false);
@@ -63,7 +65,8 @@ describe('isCustomTabSlug', () => {
     expect(isCustomTabSlug('notes')).toBe(false);
   });
 
-  it('is true for other valid slugs', () => {
+  it('is true for other valid slugs, including summary', () => {
+    expect(isCustomTabSlug('summary')).toBe(true);
     expect(isCustomTabSlug('assignment')).toBe(true);
     expect(isCustomTabSlug('research_notes')).toBe(true);
   });
@@ -115,13 +118,40 @@ describe('validateTabName', () => {
   });
 
   it('rejects reserved built-in names', () => {
-    const result = validateTabName('Summary', existing);
+    const result = validateTabName('Book', existing);
     expect(result.ok).toBe(false);
+  });
+
+  it('allows Summary when not already present in existing slugs', () => {
+    const withoutSummary = ['lesson', 'studysheet'];
+    const result = validateTabName('Summary', withoutSummary);
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.slug).toBe('summary');
   });
 
   it('rejects tabs that already exist for the lesson', () => {
     const result = validateTabName('Assignment', existing);
     expect(result.ok).toBe(false);
+  });
+});
+
+describe('page range parsing helpers', () => {
+  it('parses hyphenated and comma ranges', () => {
+    expect(parsePageNumbers('14-28')).toEqual([14, 28]);
+    expect(parsePageNumbers('14, 22-25, 30')).toEqual([14, 22, 25, 30]);
+    expect(parsePageNumbers('pp. 45-50')).toEqual([45, 50]);
+  });
+
+  it('returns empty array for invalid or empty inputs', () => {
+    expect(parsePageNumbers('')).toEqual([]);
+    expect(parsePageNumbers(null)).toEqual([]);
+    expect(parsePageNumbers('no numbers here')).toEqual([]);
+  });
+
+  it('extracts start page', () => {
+    expect(parseStartPage('14-28')).toBe(14);
+    expect(parseStartPage('Page 42')).toBe(42);
+    expect(parseStartPage(null)).toBeNull();
   });
 });
 

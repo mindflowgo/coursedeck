@@ -45,6 +45,8 @@ describe('classifyPrompt', () => {
     expect(classifyPrompt({ id: 'course_summary' })).toBe('course');
     expect(classifyPrompt({ id: 'course_schedule' })).toBe('course');
     expect(classifyPrompt({ id: 'course_test' })).toBe('course');
+    expect(classifyPrompt({ id: 'course_builder' })).toBe('course');
+    expect(classifyPrompt({ id: 'course_builder.md' })).toBe('course');
     expect(classifyPrompt({ id: 'course.summary.md' })).toBe('course');
   });
 
@@ -77,6 +79,7 @@ describe('prompt order constants', () => {
     expect(COURSE_PROMPT_ORDER).toContain('course_summary');
     expect(COURSE_PROMPT_ORDER).toContain('course_schedule');
     expect(COURSE_PROMPT_ORDER).toContain('course_test');
+    expect(COURSE_PROMPT_ORDER).toContain('course_builder');
     expect(UNIT_PROMPT_ORDER).toContain('unit_assignments');
     expect(UNIT_PROMPT_ORDER).toContain('unit_test');
     expect(LESSON_PROMPT_ORDER).toContain('summary');

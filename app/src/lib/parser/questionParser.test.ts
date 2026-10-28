@@ -218,7 +218,7 @@ describe('QuestionParser', () => {
       'data/courses/clu3m/04.02.test.md',
       'data/courses/clu3m/04.05.test.md',
       'data/courses/baf3m/01.02.test.md',
-      'data/courses/mcr3u/04.02.test.md',
+      'data/courses/mcr3u/02.01.test.md',
       'data/courses/mcr3u/02.03.test.md'
     ];
 

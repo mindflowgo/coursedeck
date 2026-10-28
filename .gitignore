@@ -20,3 +20,8 @@ tauri/gen/schemas
 tauripad/gen/schemas
 *.data.zip
 data/**/*.zip
+tauri/bin/
+tauri/*.dylib
+tauri/*.dll
+tauri/*.so
+tauripad/gen/apple/Frameworks/

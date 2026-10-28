@@ -16,6 +16,7 @@ export interface CreateCourseInput {
   grade?: string;
   level?: string;
   description?: string;
+  coursePDF?: boolean;
 }
 
 export interface DeleteCourseResult {
@@ -100,6 +101,9 @@ export class CourseService {
       archived: false,
       updatedAt: now
     };
+    if (input.coursePDF) {
+      manifest.coursePDF = true;
+    }
 
     const metaPath = path.join(courseDir, 'meta.json');
     atomicWriteFileSync(metaPath, JSON.stringify(manifest, null, 2) + '\n');
@@ -194,6 +198,8 @@ export class CourseService {
       type?: 'lesson' | 'assignment';
       content?: string;
       tabs?: Record<string, string>;
+      pageRange?: string;
+      readingDescription?: string;
     }>
   ): { success: boolean; courseId: string; injectedCount: number; message: string } {
     const course = this.getCourse(courseId);
@@ -240,7 +246,9 @@ export class CourseService {
           hasFull: false,
           hasSummary: false,
           hasCheatsheet: false,
-          hasTest: false
+          hasTest: false,
+          pageRange: item.pageRange,
+          readingDescription: item.readingDescription
         };
         unit.lessons.push(newLesson);
         unit.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
@@ -248,6 +256,8 @@ export class CourseService {
       } else {
         lesson.title = item.title;
         if (item.type) lesson.type = item.type;
+        if (item.pageRange !== undefined) lesson.pageRange = item.pageRange;
+        if (item.readingDescription !== undefined) lesson.readingDescription = item.readingDescription;
       }
 
       const activeLesson: CourseManifestLesson = lesson;

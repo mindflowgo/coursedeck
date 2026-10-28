@@ -1,5 +1,6 @@
 <script lang="ts">
   import { X, Download, FileText, ArrowLeft, Loader2, ExternalLink } from 'lucide-svelte';
+  import PDFViewer from './pdf/PDFViewer.svelte';
 
   interface Props {
     url: string;
@@ -12,10 +13,13 @@
 
   let isLoading = $state(true);
   let isImage = $derived(/\.(png|jpe?g|gif|webp|svg)($|\?)/i.test(url));
+  // PDFs render through the embedPDF viewer — WKWebView (Tauri) cannot display
+  // PDFs inside an <iframe>, and even where it works the browser chrome differs.
+  let isPdf = $derived(/\.pdf($|\?)/i.test(url));
   let docType = $derived.by(() => {
     if (isImage) return 'Image';
     if (/\.html?($|\?)/i.test(url)) return 'HTML Document';
-    if (/\.pdf($|\?)/i.test(url)) return 'PDF Document';
+    if (isPdf) return 'PDF Document';
     return 'Document';
   });
 
@@ -114,7 +118,7 @@
 
   <!-- Document Canvas Area -->
   <main class="flex-1 w-full relative bg-stone-950 overflow-hidden flex items-center justify-center">
-    {#if isLoading}
+    {#if isLoading && !isPdf}
       <div class="absolute inset-0 z-10 flex flex-col items-center justify-center space-y-3 bg-stone-950 text-stone-400">
         <Loader2 class="w-7 h-7 animate-spin text-amber-500" />
         <span class="text-xs text-stone-400 font-medium">Loading document...</span>
@@ -137,6 +141,11 @@
           onload={handleContentLoad}
           class="max-w-full max-h-full object-contain rounded shadow-lg cursor-default"
         />
+      </div>
+    {:else if isPdf}
+      <!-- embedPDF viewer handles its own loading & error states -->
+      <div class="w-full h-full">
+        <PDFViewer {url} title={displayTitle} />
       </div>
     {:else}
       <iframe

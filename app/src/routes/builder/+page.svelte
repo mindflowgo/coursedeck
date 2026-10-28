@@ -5,6 +5,7 @@
   import { apiFetch } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import {
+    Book,
     BookOpen,
     Sparkles,
     FileArchive,
@@ -40,6 +41,8 @@
     title: string;
     type: 'lesson' | 'assignment';
     content: string;
+    pageRange?: string;
+    readingDescription?: string;
     expanded?: boolean;
     preview?: boolean;
     generatingContent?: boolean;
@@ -92,7 +95,35 @@
   let grade = $state('11');
   let level = $state('University');
   let description = $state('');
+  let hasCourseBook = $state(false);
+  let bookFile = $state<File | null>(null);
   let queueStudyMaterials = $state(true);
+
+  $effect(() => {
+    if (!hasCourseBook && bookFile) {
+      bookFile = null;
+    }
+  });
+
+  function handleBookFileSelect(e: Event) {
+    const input = e.target as HTMLInputElement;
+    if (input.files && input.files[0]) {
+      const file = input.files[0];
+      if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+        bookFile = file;
+      }
+    }
+  }
+
+  function handleBookDrop(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer?.files && e.dataTransfer.files[0]) {
+      const file = e.dataTransfer.files[0];
+      if (file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf') {
+        bookFile = file;
+      }
+    }
+  }
 
   // --- Mode A (Archive) State ---
   let archiveFiles = $state<File[]>([]);
@@ -486,7 +517,14 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
 
     for (const line of lines) {
       const isAssignment = /assignment|project|quiz|test|lab/i.test(line);
-      const cleanTitle = line.replace(/^(\d+(\.\d+)?|\*|-|•|\[assignment\]|\[lesson\])\s*/i, '').trim();
+      let pageRange: string | undefined;
+      let cleanLine = line;
+      const pageMatch = cleanLine.match(/\[(?:p\.?|pages?\.?)?\s*([\d\s,\-]+)\]|\((?:p\.?|pages?\.?)?\s*([\d\s,\-]+)\)/i);
+      if (pageMatch) {
+        pageRange = (pageMatch[1] || pageMatch[2]).trim();
+        cleanLine = cleanLine.replace(pageMatch[0], '').trim();
+      }
+      const cleanTitle = cleanLine.replace(/^(\d+(\.\d+)?|\*|-|•|\[assignment\]|\[lesson\])\s*/i, '').trim();
 
       const uNum = unit.number;
       const lNum = unit.lessons.length + 1;
@@ -497,6 +535,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         title: cleanTitle || `Lesson ${lNum}`,
         type: isAssignment ? 'assignment' : 'lesson',
         content: '',
+        pageRange,
         expanded: false
       });
     }
@@ -726,6 +765,8 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
             title: l.title || `Lesson ${lIdx + 1}`,
             type: l.type === 'assignment' ? 'assignment' : 'lesson',
             content: l.content || '',
+            pageRange: l.pageRange || '',
+            readingDescription: l.readingDescription || '',
             expanded: false
           }))
         }));
@@ -789,6 +830,24 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         }).catch(() => {});
       }
 
+      if (hasCourseBook && bookFile) {
+        try {
+          const form = new FormData();
+          form.append('file', new File([bookFile], 'course.pdf', { type: 'application/pdf' }));
+          await apiFetch(`/api/courses/${finalCourseId}/locker-docs`, {
+            method: 'POST',
+            body: form
+          });
+          await apiFetch(`/api/courses/${finalCourseId}/meta`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ coursePDF: true })
+          }).catch(() => {});
+        } catch (uploadErr) {
+          console.warn('Failed to upload course book PDF for archive:', uploadErr);
+        }
+      }
+
       if (queueStudyMaterials) {
         await apiFetch('/api/queue', {
           method: 'POST',
@@ -845,6 +904,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         grade,
         level,
         description: description.trim(),
+        coursePDF: Boolean(hasCourseBook && bookFile),
         units: units.map((u) => ({
           number: u.number,
           title: u.title,
@@ -852,6 +912,8 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
             id: l.id,
             title: l.title,
             type: l.type,
+            pageRange: l.pageRange?.trim() || undefined,
+            readingDescription: l.readingDescription?.trim() || undefined,
             content: l.content.trim() ? l.content : `# ${l.title}\n\n### Learning Goals\n- Understand key topics\n\n### Overview\nLesson content.`
           }))
         })),
@@ -869,14 +931,35 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         throw new Error(data.message || 'Failed to create course.');
       }
 
-      const data = await res.json().catch(() => ({}));
-      if (data.course) {
+      if (hasCourseBook && bookFile) {
         try {
-          const store = await import('$lib/storage/clientStore');
-          await store.saveCourseManifestLocally(finalCourseId, data.course);
-        } catch (e) {
-          console.warn('Could not cache course locally:', e);
+          const form = new FormData();
+          form.append('file', new File([bookFile], 'course.pdf', { type: 'application/pdf' }));
+          await apiFetch(`/api/courses/${finalCourseId}/locker-docs`, {
+            method: 'POST',
+            body: form
+          });
+          await apiFetch(`/api/courses/${finalCourseId}/meta`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ coursePDF: true })
+          }).catch(() => {});
+        } catch (uploadErr) {
+          console.warn('Failed to upload course book PDF:', uploadErr);
         }
+      }
+
+      try {
+        const freshRes = await apiFetch(`/api/courses/${finalCourseId}`);
+        if (freshRes.ok) {
+          const freshData = await freshRes.json();
+          if (freshData.course) {
+            const store = await import('$lib/storage/clientStore');
+            await store.saveCourseManifestLocally(finalCourseId, freshData.course);
+          }
+        }
+      } catch (e) {
+        console.warn('Could not cache course locally:', e);
       }
 
       goto(`/courses/${finalCourseId}`);
@@ -1117,6 +1200,96 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                 placeholder="Brief 1-3 sentence summary of core learning goals and scope..."
                 class="w-full px-3.5 py-2 text-sm rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-950/50 focus:outline-hidden focus:ring-2 focus:ring-amber-500/50"
               ></textarea>
+            </div>
+
+            <!-- Course Book (Accompanying PDF) Toggle -->
+            <div class="md:col-span-12 pt-2 border-t border-stone-100 dark:border-stone-800/60">
+              <div class="flex items-center justify-between">
+                <label for="has-course-book" class="inline-flex items-center space-x-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    id="has-course-book"
+                    bind:checked={hasCourseBook}
+                    class="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-stone-900 cursor-pointer"
+                  />
+                  <span class="text-xs font-semibold text-stone-700 dark:text-stone-300 flex items-center space-x-1.5">
+                    <Book class="w-3.5 h-3.5 text-amber-500" />
+                    <span>Accompanying Course Book (PDF)</span>
+                    <span class="text-2xs font-normal text-stone-400 dark:text-stone-500">(Optional)</span>
+                  </span>
+                </label>
+                {#if hasCourseBook && bookFile}
+                  <button
+                    type="button"
+                    onclick={() => (bookFile = null)}
+                    class="text-2xs text-rose-600 dark:text-rose-400 hover:underline flex items-center space-x-1 cursor-pointer shrink-0 ml-3"
+                  >
+                    <Trash2 class="w-3 h-3" />
+                    <span>Remove PDF</span>
+                  </button>
+                {/if}
+              </div>
+
+              {#if hasCourseBook}
+                <div class="mt-3 space-y-2">
+                  <p class="text-2xs text-stone-500 dark:text-stone-400">
+                    Attach a textbook, reader, or manual. It will be viewable in the course under the <strong>Book</strong> tab.
+                  </p>
+
+                  {#if bookFile}
+                    <div class="flex items-center justify-between p-3 rounded-xl border border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20 text-stone-900 dark:text-stone-100">
+                      <div class="flex items-center space-x-3 min-w-0">
+                        <div class="w-8 h-8 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                          <BookOpen class="w-4 h-4" />
+                        </div>
+                        <div class="min-w-0">
+                          <div class="text-xs font-semibold truncate font-mono">{bookFile.name}</div>
+                          <div class="text-3xs text-stone-500 dark:text-stone-400">
+                            {(bookFile.size / (1024 * 1024)).toFixed(2)} MB • Added to assets/locker_docs/course.pdf
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onclick={() => (bookFile = null)}
+                        class="p-1 rounded-md text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition cursor-pointer"
+                        title="Remove file"
+                      >
+                        <X class="w-4 h-4" />
+                      </button>
+                    </div>
+                  {:else}
+                    <label
+                      for="course-book-input"
+                      class="flex items-center justify-between px-4 py-3 rounded-xl border border-dashed border-stone-300 dark:border-stone-700 hover:border-amber-500 dark:hover:border-amber-500 bg-stone-50/50 dark:bg-stone-950/50 hover:bg-amber-500/5 transition cursor-pointer group"
+                      ondragover={(e) => e.preventDefault()}
+                      ondrop={handleBookDrop}
+                    >
+                      <div class="flex items-center space-x-3">
+                        <div class="p-2 rounded-lg bg-stone-200/60 dark:bg-stone-800 text-stone-600 dark:text-stone-400 group-hover:text-amber-500 group-hover:bg-amber-500/10 transition">
+                          <Upload class="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div class="text-xs font-medium text-stone-700 dark:text-stone-300 group-hover:text-amber-600 dark:group-hover:text-amber-400">
+                            Choose course book PDF or drag & drop here
+                          </div>
+                          <div class="text-3xs text-stone-400">Course PDF will be attached to locker_docs/course.pdf</div>
+                        </div>
+                      </div>
+                      <input
+                        id="course-book-input"
+                        type="file"
+                        accept=".pdf,application/pdf"
+                        class="hidden"
+                        onchange={handleBookFileSelect}
+                      />
+                      <span class="text-2xs font-semibold px-2.5 py-1 rounded-md bg-stone-200/70 dark:bg-stone-800 text-stone-700 dark:text-stone-300 group-hover:bg-amber-500 group-hover:text-white transition">
+                        Browse
+                      </span>
+                    </label>
+                  {/if}
+                </div>
+              {/if}
             </div>
           </div>
         </div>
@@ -1876,6 +2049,17 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                             placeholder="Lesson or Assignment Topic"
                             class="flex-1 px-3 py-1 text-sm rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 focus:outline-hidden focus:ring-1 focus:ring-amber-500 min-w-0"
                           />
+
+                          <!-- Book Page Range -->
+                          <div class="flex items-center space-x-1 shrink-0" title="Course book page range for this lesson (e.g. 14-28)">
+                            <span class="text-3xs font-semibold text-stone-400 dark:text-stone-500">p.</span>
+                            <input
+                              type="text"
+                              bind:value={lesson.pageRange}
+                              placeholder="14-28"
+                              class="w-20 px-2 py-1 text-xs font-mono rounded-md border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 focus:outline-hidden focus:ring-1 focus:ring-amber-500 placeholder:text-stone-400/50"
+                            />
+                          </div>
                         </div>
 
                         <!-- Type & Content Actions -->
@@ -1979,6 +2163,20 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                               class="w-full px-3 py-2 text-xs font-mono rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 focus:outline-hidden focus:ring-1 focus:ring-amber-500"
                             ></textarea>
                           {/if}
+
+                          <!-- Reading Guide Notes for Book Overlay -->
+                          <div class="space-y-1 pt-1 border-t border-stone-200/60 dark:border-stone-800/60">
+                            <label class="block text-2xs font-semibold text-stone-600 dark:text-stone-400 flex items-center space-x-1.5">
+                              <BookOpen class="w-3 h-3 text-amber-500" />
+                              <span>Book Reading Guide (Displayed in Top Overlay)</span>
+                            </label>
+                            <input
+                              type="text"
+                              bind:value={lesson.readingDescription}
+                              placeholder="e.g. Sections 2.1–2.3: Read vector definitions and worked examples 1–4"
+                              class="w-full px-3 py-1.5 text-xs rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 focus:outline-hidden focus:ring-1 focus:ring-amber-500 placeholder:text-stone-400/50"
+                            />
+                          </div>
                         </div>
                       {/if}
                     </div>

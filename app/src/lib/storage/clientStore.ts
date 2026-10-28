@@ -48,7 +48,7 @@ export function isTauri(): boolean {
 }
 
 const DB_NAME = 'coursedeck_v1';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 const STORES = [
   'meta',
@@ -59,7 +59,8 @@ const STORES = [
   'checkpoints',
   'annotations',
   'pending_push',
-  'pending_push_annotations'
+  'pending_push_annotations',
+  'pdf_assets'
 ] as const;
 
 let _db: IDBDatabase | null = null;
@@ -157,6 +158,41 @@ export async function getLastSyncedAt(): Promise<string | undefined> {
 
 export async function getDesktopUrl(): Promise<string | undefined> {
   return getMeta<string>('desktop_url');
+}
+
+// ── PDF Asset Cache (offline course books) ─────────────────────────────────────
+
+export async function getCachedPdfAsset(key: string): Promise<ArrayBuffer | undefined> {
+  try {
+    const hit = await get<ArrayBuffer>('pdf_assets', key);
+    return hit instanceof ArrayBuffer ? hit : undefined;
+  } catch (err) {
+    console.warn('[PdfAssetCache] read failed:', err);
+    return undefined;
+  }
+}
+
+export async function putCachedPdfAsset(key: string, buffer: ArrayBuffer): Promise<void> {
+  try {
+    await put('pdf_assets', key, buffer);
+  } catch (err) {
+    // Best-effort cache: quota errors must never block viewing the document.
+    console.warn('[PdfAssetCache] write failed (ignored):', err);
+  }
+}
+
+export async function deleteCachedPdfAsset(key: string): Promise<void> {
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('pdf_assets', 'readwrite');
+      tx.objectStore('pdf_assets').delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (err) {
+    console.warn('[PdfAssetCache] delete failed:', err);
+  }
 }
 
 // ── Course & Content Readers ───────────────────────────────────────────────────

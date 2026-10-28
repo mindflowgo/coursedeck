@@ -34,4 +34,13 @@ describe('PromptService and Studysheet', () => {
     expect(classifyPrompt({ id: 'course_studysheet.md' })).toBe('course');
     expect(COURSE_PROMPT_ORDER).toContain('course_studysheet');
   });
+
+  it('loads and classifies course_builder under course (Complete Course)', () => {
+    const courseBuilder = PromptService.getPrompt('course_builder');
+    expect(courseBuilder).toBeDefined();
+    expect(courseBuilder?.title).toBe('Automatic Lesson Builder');
+    expect(classifyPrompt({ id: 'course_builder' })).toBe('course');
+    expect(classifyPrompt({ id: 'course_builder.md' })).toBe('course');
+    expect(COURSE_PROMPT_ORDER).toContain('course_builder');
+  });
 });

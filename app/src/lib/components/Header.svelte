@@ -14,8 +14,8 @@
   } from 'lucide-svelte';
   import AIQueuePopover from './AIQueuePopover.svelte';
   import DeviceSyncDropdown from './DeviceSyncDropdown.svelte';
-  import { openConnectIpadModal } from '$lib/modalState.svelte';
-  import { isMobileDevice } from '$lib/api';
+  import { openConnectIpadModal, openInitialSyncModal } from '$lib/modalState.svelte';
+  import { isMobileDevice, isTauriDesktop } from '$lib/api';
   import { goBackOrHome } from '$lib/navHistory';
 
   interface Props {
@@ -148,7 +148,15 @@
     {#if !isMobile}
       <button
         type="button"
-        onclick={openConnectIpadModal}
+        onclick={() => {
+          // Desktop shows its own QR for iPads to scan; any other client
+          // (browser/PWA) gets the scan-or-download pairing flow instead.
+          if (isTauriDesktop()) {
+            openConnectIpadModal();
+          } else {
+            openInitialSyncModal();
+          }
+        }}
         aria-label="Connect iPad"
         title="Connect iPad"
         class="flex items-center justify-center w-8 h-8 rounded-md text-xs font-medium text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100 transition cursor-pointer shrink-0"
