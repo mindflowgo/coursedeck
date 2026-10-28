@@ -1,1 +1,0 @@
-import"../chunks/Bzak7iHL.js";import{i as t}from"../chunks/CGrUknPo.js";import{p as a,o as p,a as r}from"../chunks/35wfyFQ6.js";import{g as s}from"../chunks/CItiJn1X.js";function c(e,o){a(o,!1),p(()=>{s("/settings?tab=llm",{replaceState:!0})}),t(),r()}export{c as component};

@@ -12,8 +12,10 @@
 		30BB5B737E9C2816E27C31A3 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C67E5CC94CC79E52D95EAE34 /* AVFoundation.framework */; };
 		3A247A58DDA274DAF0DDAD10 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 3C799177D675476E8CF883D2 /* libapp.a */; };
 		48BA05F87F93FDF428450006 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 70B6AE2131FAF9F9CA92C102 /* UIKit.framework */; };
+		516EBAD18B1BA2B830F84053 /* pdfium.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE40B055582C4278A9B196F5 /* pdfium.xcframework */; };
 		5D67530C169197BE8C49C90E /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0FFE273A95F700621C4DC766 /* CoreGraphics.framework */; };
 		789E09A47C44DF0005C0AD7C /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 27CBF060EEA7CC1393A3894F /* WebKit.framework */; };
+		86DECCB29439A2246E4E6607 /* pdfium.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EE40B055582C4278A9B196F5 /* pdfium.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C87929C3C1DE3201810830E5 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 11438D81DE6F974D00B1B839 /* assets */; };
 		D57B02F9676F92AAB77E84C6 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 858825E8CAEFB225FA635A08 /* MetalKit.framework */; };
 		D7EFAB52906F5233021AE5B8 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = CEDBA86A0AEC2817B0CC87AA /* LaunchScreen.storyboard */; };
@@ -22,26 +24,42 @@
 		FE2C7860EEFE5706FE69EDAF /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 156A611132E9588B02A69EB4 /* main.mm */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		9E622902FC6FA7EF235485E0 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				86DECCB29439A2246E4E6607 /* pdfium.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		0C3FDBD8C2494AA151EAC2AD /* coursedeck-ipad_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "coursedeck-ipad_iOS.entitlements"; sourceTree = "<group>"; };
 		0FFE273A95F700621C4DC766 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		11438D81DE6F974D00B1B839 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
 		156A611132E9588B02A69EB4 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
-		1700E4EBED5D02126D5EDEC7 /* lib.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = lib.rs; sourceTree = "<group>"; };
+		1700E4EBED5D02126D5EDEC7 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
 		27CBF060EEA7CC1393A3894F /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		396657AD20C2CEE40BA003FE /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		3C799177D675476E8CF883D2 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
-		3CCD87336FC68EF09FAAA370 /* CourseDeck.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CourseDeck.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3CCD87336FC68EF09FAAA370 /* coursedeck-ipad_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "coursedeck-ipad_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		70B6AE2131FAF9F9CA92C102 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		77481B16A776E4E9EDD9E41D /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		858825E8CAEFB225FA635A08 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		A86A3C4C32126CE2B255A263 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
-		AAAFD474EE9893AEE8330806 /* main.rs */ = {isa = PBXFileReference; lastKnownFileType = text; path = main.rs; sourceTree = "<group>"; };
+		AAAFD474EE9893AEE8330806 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		B27BC6CC7D1B252EBD668B94 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
 		BD9546DE57D42D1D7016EEFA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		C67E5CC94CC79E52D95EAE34 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		C78BC7DB0187A226642BAC11 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		CA3B29CDB83DFA13BE1FBA77 /* pdf.rs */ = {isa = PBXFileReference; path = pdf.rs; sourceTree = "<group>"; };
 		CEDBA86A0AEC2817B0CC87AA /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		EE40B055582C4278A9B196F5 /* pdfium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = pdfium.xcframework; path = Frameworks/pdfium.xcframework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -50,6 +68,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3A247A58DDA274DAF0DDAD10 /* libapp.a in Frameworks */,
+				516EBAD18B1BA2B830F84053 /* pdfium.xcframework in Frameworks */,
 				30BB5B737E9C2816E27C31A3 /* AVFoundation.framework in Frameworks */,
 				5D67530C169197BE8C49C90E /* CoreGraphics.framework in Frameworks */,
 				02C2C69CBAD7DD4B62079808 /* Metal.framework in Frameworks */,
@@ -96,6 +115,7 @@
 				3C799177D675476E8CF883D2 /* libapp.a */,
 				A86A3C4C32126CE2B255A263 /* Metal.framework */,
 				858825E8CAEFB225FA635A08 /* MetalKit.framework */,
+				EE40B055582C4278A9B196F5 /* pdfium.xcframework */,
 				C78BC7DB0187A226642BAC11 /* QuartzCore.framework */,
 				77481B16A776E4E9EDD9E41D /* Security.framework */,
 				70B6AE2131FAF9F9CA92C102 /* UIKit.framework */,
@@ -109,6 +129,7 @@
 			children = (
 				1700E4EBED5D02126D5EDEC7 /* lib.rs */,
 				AAAFD474EE9893AEE8330806 /* main.rs */,
+				CA3B29CDB83DFA13BE1FBA77 /* pdf.rs */,
 			);
 			name = src;
 			path = ../../src;
@@ -142,7 +163,7 @@
 		CF319892B6EBFBDB74792DBF /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				3CCD87336FC68EF09FAAA370 /* CourseDeck.app */,
+				3CCD87336FC68EF09FAAA370 /* coursedeck-ipad_iOS.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -152,6 +173,20 @@
 			children = (
 			);
 			path = Externals;
+			sourceTree = "<group>";
+		};
+		"TEMP_0F2F9C0D-DA6A-48A2-8031-3337B53D2EEF" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
+			sourceTree = "<group>";
+		};
+		"TEMP_68544093-FF5C-4958-8C69-2D01CF9971FB" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -165,6 +200,7 @@
 				2E106834953D9B81649FD63D /* Sources */,
 				21C59826D51D4DCB185A1656 /* Resources */,
 				88FC0167537894958832BD01 /* Frameworks */,
+				9E622902FC6FA7EF235485E0 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -174,7 +210,7 @@
 			packageProductDependencies = (
 			);
 			productName = "coursedeck-ipad_iOS";
-			productReference = 3CCD87336FC68EF09FAAA370 /* CourseDeck.app */;
+			productReference = 3CCD87336FC68EF09FAAA370 /* coursedeck-ipad_iOS.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -389,35 +425,23 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "coursedeck-ipad_iOS/coursedeck-ipad_iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "U5492M2JQ5";
+				DEVELOPMENT_TEAM = U5492M2JQ5;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",
+					"\"Frameworks\"",
 				);
 				INFOPLIST_FILE = "coursedeck-ipad_iOS/Info.plist";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.rezox.coursedeck;
-				PRODUCT_NAME = "CourseDeck";
+				PRODUCT_NAME = CourseDeck;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = "arm64  x86_64";
@@ -435,35 +459,23 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = "coursedeck-ipad_iOS/coursedeck-ipad_iOS.entitlements";
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = "U5492M2JQ5";
+				DEVELOPMENT_TEAM = U5492M2JQ5;
 				ENABLE_BITCODE = NO;
 				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
 					"\".\"",
+					"\"Frameworks\"",
 				);
 				INFOPLIST_FILE = "coursedeck-ipad_iOS/Info.plist";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.education";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				"LIBRARY_SEARCH_PATHS[arch=arm64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
-				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION)",
-					"$(SDKROOT)/usr/lib/swift",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME)",
-					"$(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)",
-				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
 				PRODUCT_BUNDLE_IDENTIFIER = com.rezox.coursedeck;
-				PRODUCT_NAME = "CourseDeck";
+				PRODUCT_NAME = CourseDeck;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALID_ARCHS = "arm64  x86_64";
@@ -480,7 +492,7 @@
 				0F6606362410AD404CAD8746 /* release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = release;
+			defaultConfigurationName = debug;
 		};
 		4359E3326067F9B27D2920FB /* Build configuration list for PBXNativeTarget "coursedeck-ipad_iOS" */ = {
 			isa = XCConfigurationList;
@@ -489,7 +501,7 @@
 				6B225CC20D3844DB588B6E6F /* release */,
 			);
 			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = release;
+			defaultConfigurationName = debug;
 		};
 /* End XCConfigurationList section */
 	};

@@ -7,9 +7,11 @@ import {
   hasCachedData,
   getLastSyncedAt,
   getDesktopUrl,
-  importBundle,
   clearPendingPush,
-  type SyncBundle
+  isTauri,
+  saveLlmConfigLocally,
+  setMeta,
+  type SyncZipSummary
 } from './storage/clientStore';
 import { isServerReachable, isTauriDesktop, smartFetch } from './api';
 
@@ -82,7 +84,28 @@ export async function checkReachability(): Promise<boolean> {
   return reachable;
 }
 
-export async function syncFromDesktop(opts?: { includeLlmKeys?: boolean; customUrl?: string }): Promise<void> {
+export interface DesktopCourseSummary {
+  id: string;
+  title: string;
+  lessonCount: number;
+  coursePDF: boolean;
+}
+
+/** Course list from the desktop for the selective-sync picker. */
+export async function fetchDesktopCourses(customUrl?: string): Promise<DesktopCourseSummary[]> {
+  const { getApiBaseUrl } = await import('./api');
+  const baseUrl = customUrl ? customUrl.replace(/\/+$/, '') : getApiBaseUrl();
+  const res = await smartFetch(`${baseUrl}/api/sync/courses`);
+  if (!res.ok) {
+    throw new Error(`Desktop returned ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as { courses?: DesktopCourseSummary[] };
+  return data.courses ?? [];
+}
+
+export async function syncFromDesktop(
+  opts?: { includeLlmKeys?: boolean; customUrl?: string; since?: string; courseIds?: string[] }
+): Promise<void> {
   syncState.isSyncing = true;
   syncState.syncError = null;
 
@@ -95,30 +118,44 @@ export async function syncFromDesktop(opts?: { includeLlmKeys?: boolean; customU
     if (opts?.includeLlmKeys) {
       params.set('includeLlmKeys', 'true');
     }
+    // Incremental sync cursor: only files modified on the desktop after this
+    // ISO timestamp are sent. Omitted = full sync. getLastSyncedAt() is the
+    // natural cursor once selective sync UI exists.
+    if (opts?.since) {
+      params.set('since', opts.since);
+    }
+    // Selective sync: only these course ids are bundled. Omitted = all.
+    if (opts?.courseIds && opts.courseIds.length > 0) {
+      params.set('courseIds', opts.courseIds.join(','));
+    }
 
     const { getApiBaseUrl } = await import('./api');
     const baseUrl = opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : getApiBaseUrl();
-    const endpoint = `${baseUrl}/api/sync/bundle?${params.toString()}`;
-
-    let res: Response;
-    try {
-      res = await smartFetch(endpoint);
-    } catch (netErr: any) {
-      const detail = netErr instanceof Error ? netErr.message : String(netErr);
-      throw new Error(`Could not connect to desktop app at ${baseUrl} (${detail}). Please make sure your computer is open on the same Wi-Fi.`);
-    }
-
-    if (!res.ok) {
-      const errBody = await res.json().catch(() => ({}));
-      throw new Error(errBody.message || `Server returned ${res.status} ${res.statusText}`);
-    }
-
-    const bundle: SyncBundle = await res.json();
     const desktopUrl = baseUrl || (typeof window !== 'undefined' ? window.location.origin : '');
 
-    await importBundle(bundle, desktopUrl);
+    if (!isTauri()) {
+      throw new Error('Sync runs inside the CourseDeck app.');
+    }
 
-    syncState.lastSyncedAt = bundle.generatedAt;
+    // One zip archive downloaded and extracted natively in Rust — no JSON
+    // bundle, no base64 assets, nothing large passing through the webview.
+    const { invoke } = await import('@tauri-apps/api/core');
+    const summary = await invoke<SyncZipSummary>('sync_fetch_bundle_zip', {
+      url: `${baseUrl}/api/sync/bundle?${params.toString()}`
+    });
+
+    if (summary.llmConfig) {
+      await saveLlmConfigLocally(summary.llmConfig);
+    }
+    await setMeta('last_synced_at', summary.generatedAt);
+    await setMeta('desktop_url', desktopUrl);
+    try {
+      if (typeof localStorage !== 'undefined' && desktopUrl) {
+        localStorage.setItem('desktop_url', desktopUrl.replace(/\/+$/, ''));
+      }
+    } catch {}
+
+    syncState.lastSyncedAt = summary.generatedAt;
     syncState.hasCachedData = true;
     syncState.serverReachable = true;
     // On fresh sync, pending local writes are reset

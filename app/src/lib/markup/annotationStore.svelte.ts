@@ -1,5 +1,6 @@
 import { browser } from '$app/environment';
 import { apiFetch } from '$lib/api';
+import { indexStrokesByFile } from './pdfMarkup';
 import { mergeStrokes } from './render';
 import { isMarkupStroke, type MarkupColor, type MarkupStroke, type MarkupTool } from './types';
 
@@ -21,9 +22,16 @@ type UndoOp =
   | { type: 'erase'; prev: MarkupStroke[] };
 
 const cache = $state<Record<string, MarkupStroke[]>>({});
+// O(1) indexed lookup per course: courseId -> fileKey -> non-deleted strokes
+const fileIndex = $state<Record<string, Record<string, MarkupStroke[]>>>({});
 const undoStacks = $state<Record<string, UndoOp[]>>({});
 const redoStacks = $state<Record<string, UndoOp[]>>({});
 let revision = $state(0);
+
+function rebuildFileIndex(courseId: string): void {
+  const id = courseId.toLowerCase();
+  fileIndex[id] = indexStrokesByFile(cache[id] ?? []);
+}
 
 const loadedCourses = new Set<string>();
 const inflightLoads = new Map<string, Promise<void>>();
@@ -91,9 +99,10 @@ export function courseStrokes(courseId: string): MarkupStroke[] {
   return cache[courseId.toLowerCase()] ?? [];
 }
 
-/** Visible (non-deleted) strokes for one document. */
+/** Visible (non-deleted) strokes for one document (O(1) indexed lookup). */
 export function visibleStrokes(courseId: string, file: string): MarkupStroke[] {
-  return courseStrokes(courseId).filter((s) => s.file === file && !s.deleted);
+  void revision;
+  return fileIndex[courseId.toLowerCase()]?.[file] ?? [];
 }
 
 export function canUndo(courseId: string, file: string): boolean {
@@ -110,6 +119,7 @@ function applyLocalUpsert(courseId: string, upserts: MarkupStroke[]): void {
   const id = courseId.toLowerCase();
   const merged = mergeStrokes(cache[id] ?? [], upserts);
   cache[id] = merged.strokes;
+  rebuildFileIndex(courseId);
   revision += 1;
 }
 

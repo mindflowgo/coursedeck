@@ -18,8 +18,6 @@
 	<string>0.1.1</string>
 	<key>CFBundleVersion</key>
 	<string>0.1.1</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -38,6 +36,10 @@
 	<string>CourseDeck needs camera access to scan the desktop sync QR code.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>CourseDeck connects to your computer on the local network to download and synchronize your courses and notes.</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpenInPlace</key>
+	<true/>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIRequiredDeviceCapabilities</key>

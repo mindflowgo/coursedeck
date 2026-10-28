@@ -2243,7 +2243,7 @@
 {:else}
   <div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] w-full max-w-full min-w-0 overflow-hidden">
     <!-- Sub-Header: Lesson Selector & Tabs -->
-    <div class="relative z-20 border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-2 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-1.5 xs:gap-2 sm:gap-3 shrink-0 w-full max-w-full">
+    <div class="relative {isMobileTabDropdownOpen || isLessonActionsOpen ? 'z-40' : 'z-30'} border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-2 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-1.5 xs:gap-2 sm:gap-3 shrink-0 w-full max-w-full">
       <!-- Left: Lesson Selector & Add Chapters Button -->
       <div class="flex items-center space-x-1.5 sm:space-x-2 shrink min-w-0">
         <LessonSelector
@@ -2536,7 +2536,7 @@
       </div>
 
       <!-- Mobile Compact Tab Dropdown (< 480px) -->
-      <div class="block xs:hidden relative shrink-0">
+      <div class="block xs:hidden relative shrink-0 {isMobileTabDropdownOpen ? 'z-50' : ''}">
         <button
           type="button"
           onclick={() => (isMobileTabDropdownOpen = !isMobileTabDropdownOpen)}
@@ -2784,7 +2784,7 @@
     </div>
 
     <!-- Main Workspace Content Area (with checkpoints support). -->
-    <div class="relative flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0">
+    <div class="relative z-10 flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0">
       <!-- Full-viewport PDF Book View: kept mounted per course so PDFium engine, blobs & scroll position stay hot -->
       {#if hasLoadedBookOnce}
         <div
@@ -2793,6 +2793,7 @@
         >
           <PDFViewer
             url={`/api/courses/${course.id}/assets/locker_docs/course.pdf`}
+            courseId={course.id}
             title={`${course.title} - Book`}
             lessonTitle={isCourseScope ? 'Course Overview' : (currentLessonItem?.title || '')}
             pageRange={isCourseScope ? '' : (currentLessonItem?.pageRange || '')}
@@ -2842,7 +2843,7 @@
         <!-- Top-Right Action Controls (Sticky): direct child of the scroll
              container. Negative top offsets cancel the container's py padding on desktop
              while staying flush on mobile. -->
-        <div class="sticky top-1 sm:-top-[30px] z-10 flex justify-end px-2 sm:px-12 pt-0.5 mt-1 mb-2 sm:-mb-[30px] pointer-events-none max-w-full">
+        <div class="sticky top-1 sm:-top-[30px] z-20 flex justify-end px-2 sm:px-12 pt-0.5 mt-1 mb-2 sm:-mb-[30px] pointer-events-none max-w-full">
           <div class="pointer-events-auto flex items-center space-x-1.5 sm:space-x-2 max-w-full">
             {#if isEditing}
               {#if pageCharCount > 0}

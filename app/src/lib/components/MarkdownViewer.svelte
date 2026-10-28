@@ -4,7 +4,7 @@
   import { extractMathFromMarkdown, restoreMathTokens } from '$lib/markdown/mathRenderer';
   import { repairMarkdownTables } from '$lib/markdown/tableRepair';
   import DOMPurify from 'dompurify';
-  import { getApiBaseUrl } from '$lib/api';
+  import { courseAssetBase } from '$lib/api';
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
   import { confirmDialog } from '$lib/dialog';
   import { onMount } from 'svelte';
@@ -129,7 +129,7 @@
     const showCaption = cleanAlt && !/\.(jpe?g|png|gif|webp|svg)$/i.test(cleanAlt);
 
     const rawHref = (href || '').trim();
-    const isSafeHref = /^(?:(?:https?|file|asset|tauri):|\/|\.\/|\.\.\/|data:image\/|blob:)/i.test(rawHref);
+    const isSafeHref = /^(?:(?:https?|file|asset|courseasset|tauri):|\/|\.\/|\.\.\/|data:image\/|blob:)/i.test(rawHref);
     const safeHref = isSafeHref ? rawHref : '';
 
     return `<span class="image-container not-prose my-6 mx-auto block text-center group/img relative select-none">
@@ -234,18 +234,18 @@
         (match, alt, url, attr) => `![${alt}|${attr.trim()}](${url})`
       );
 
-      const apiBase = getApiBaseUrl();
+      const assetBase = courseAssetBase(courseId);
       out = out.replace(
         /(src|href)=["'](?:\.{1,2}\/|\/)*assets\/(.*?)["']/gi,
-        (match, attr, path) => `${attr}="${apiBase}/api/courses/${courseId}/assets/${path}"`
+        (match, attr, path) => `${attr}="${assetBase}/assets/${path}"`
       );
       out = out.replace(
         /!\[(.*?)\]\((?:\.{1,2}\/|\/)*assets\/(.*?)\)/gi,
-        `![$1](${apiBase}/api/courses/${courseId}/assets/$2)`
+        `![$1](${assetBase}/assets/$2)`
       );
       out = out.replace(
         /\[(.*?)\]\((?:\.{1,2}\/|\/)*assets\/(.*?)\)/gi,
-        `[$1](${apiBase}/api/courses/${courseId}/assets/$2)`
+        `[$1](${assetBase}/assets/$2)`
       );
       return out;
     });
@@ -659,8 +659,7 @@
         let targetUrl = href;
         const relativeAssetMatch = href.match(/^(?:(?:\.{1,2}\/)+|\/)?assets\/(.*)$/i);
         if (relativeAssetMatch && courseId) {
-          const apiBase = getApiBaseUrl();
-          targetUrl = `${apiBase}/api/courses/${courseId}/assets/${relativeAssetMatch[1]}`;
+          targetUrl = `${courseAssetBase(courseId)}/assets/${relativeAssetMatch[1]}`;
         }
         onOpenDocument?.(targetUrl, linkTitle);
         return;

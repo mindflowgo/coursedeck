@@ -16,12 +16,15 @@
   import { initNavHistory } from '$lib/navHistory';
   import { isTauriDesktop } from '$lib/api';
   import { initSyncState } from '$lib/syncState.svelte';
+  import { initWebviewGestures } from '$lib/webviewGestures';
 
   onMount(() => {
     // Skip app initialization and modal prompts when rendered inside an iframe
     if (typeof window !== 'undefined' && window.self !== window.top) {
       return;
     }
+
+    const cleanupGestures = initWebviewGestures();
 
     theme.init();
     zoom.init();
@@ -33,6 +36,10 @@
     if (!isTauriDesktop()) {
       void initSyncState();
     }
+
+    return () => {
+      cleanupGestures();
+    };
   });
 
   let { children } = $props();

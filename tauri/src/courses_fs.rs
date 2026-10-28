@@ -144,49 +144,6 @@ fn normalize_lesson_id(s: &str) -> String {
 }
 
 #[tauri::command]
-pub fn save_course_files(
-    app: tauri::AppHandle,
-    course_id: String,
-    manifest_json: String,
-    files: HashMap<String, String>,
-    checkpoints_json: Option<String>,
-) -> Result<usize, String> {
-    let course_dir = find_course_dir(&app, &course_id)
-        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
-    std::fs::create_dir_all(&course_dir)
-        .map_err(|e| format!("Failed to create course dir {:?}: {e}", course_dir))?;
-
-    let manifest_path = course_dir.join("manifest.json");
-    std::fs::write(&manifest_path, &manifest_json)
-        .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
-    let meta_path = course_dir.join("meta.json");
-    let _ = std::fs::write(&meta_path, &manifest_json);
-
-    let count = files.len();
-    for (filename, content) in files {
-        let file_path = course_dir.join(&filename);
-        std::fs::write(&file_path, content)
-            .map_err(|e| format!("Failed to write file {:?}: {e}", file_path))?;
-    }
-
-    if let Some(cp_json) = checkpoints_json {
-        let cp_path = course_dir.join("checkpoints.json");
-        let _ = std::fs::write(&cp_path, &cp_json);
-        let legacy = course_dir.join("checkpoint.json");
-        if legacy.exists() {
-            let _ = std::fs::remove_file(&legacy);
-        }
-    }
-
-    eprintln!(
-        "[Desktop-Native] save_course_files: wrote {} files for course {} to {:?}",
-        count, course_id, course_dir
-    );
-
-    Ok(count)
-}
-
-#[tauri::command]
 pub fn get_lesson_bundle(
     app: tauri::AppHandle,
     course_id: String,

@@ -1,5 +1,8 @@
 <script lang="ts">
   import { pdfGetPageText, type TextSpan } from '$lib/pdfClient';
+  import { getPdfPageFileKey } from '$lib/markup/pdfMarkup';
+  import { markupUi, visibleStrokes } from '$lib/markup/annotationStore.svelte';
+  import PdfMarkupLayer from './PdfMarkupLayer.svelte';
   import { Loader2 } from 'lucide-svelte';
 
   interface Props {
@@ -12,6 +15,9 @@
     isLoading?: boolean;
     searchRects?: [number, number, number, number][];
     isPanMode?: boolean;
+    courseId?: string;
+    scrollerEl?: HTMLElement | null;
+    onStrokeDrawn?: (file: string) => void;
   }
 
   let {
@@ -23,7 +29,10 @@
     imgUrl = null,
     isLoading = false,
     searchRects = [],
-    isPanMode = false
+    isPanMode = false,
+    courseId = '',
+    scrollerEl = null,
+    onStrokeDrawn
   }: Props = $props();
 
   let textSpans = $state<TextSpan[]>([]);
@@ -32,6 +41,16 @@
   // Calculate target display dimensions based on PDF point size and zoom scale
   const displayWidth = $derived(Math.round(pageWidth * zoomScale));
   const displayHeight = $derived(Math.round(pageHeight * zoomScale));
+
+  // Canonical file key for this page (e.g. "course.pdf:p14")
+  const pageFile = $derived(getPdfPageFileKey(docPath, pageIndex));
+  const strokes = $derived(courseId ? visibleStrokes(courseId, pageFile) : []);
+  const isMarkupActive = $derived(markupUi.mode && markupUi.show);
+
+  // Mount SVG only when markup mode is active or this page contains existing strokes
+  const shouldMountMarkup = $derived(
+    Boolean(courseId && markupUi.show && (markupUi.mode || strokes.length > 0))
+  );
 
   // Lazy text extraction: memoized on native backend, loaded once image is available
   $effect(() => {
@@ -61,7 +80,7 @@
     />
 
     <!-- Transparent Native Text Selection Layer -->
-    {#if !isPanMode && textSpans.length > 0}
+    {#if !isPanMode && !isMarkupActive && textSpans.length > 0}
       <div class="absolute inset-0 select-text overflow-hidden pointer-events-auto leading-none">
         {#each textSpans as span}
           <span
@@ -91,6 +110,20 @@
           ></div>
         {/each}
       </div>
+    {/if}
+
+    <!-- Free-hand PDF Markup Overlay -->
+    {#if shouldMountMarkup && courseId}
+      <PdfMarkupLayer
+        {courseId}
+        file={pageFile}
+        {pageWidth}
+        {pageHeight}
+        {displayWidth}
+        {displayHeight}
+        {scrollerEl}
+        {onStrokeDrawn}
+      />
     {/if}
   {:else}
     <!-- Lightweight skeleton placeholder with exact dimensions to eliminate layout shifts -->

@@ -4,12 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tauri ios dev",
-    "build": "tauri ios build",
-    "ios:init": "tauri ios init",
-    "ios:dev": "tauri ios dev",
-    "ios:open": "tauri ios dev --open --host",
-    "ios:build": "tauri ios build",
+    "build": "bun --cwd ../app build && cargo build --target aarch64-apple-ios --release && mkdir -p gen/apple/Externals/arm64/release gen/apple/Externals/arm64/debug && cp target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a gen/apple/Externals/arm64/release/libapp.a && cp target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a gen/apple/Externals/arm64/debug/libapp.a && rm -rf gen/apple/assets/* && cp -R ../app/build/* gen/apple/assets/",
+    "build:svelte": "bun --cwd ../app build && rm -rf gen/apple/assets/* && cp -R ../app/build/* gen/apple/assets/",
+    "build:rust": "cargo build --target aarch64-apple-ios --release && mkdir -p gen/apple/Externals/arm64/release gen/apple/Externals/arm64/debug && cp target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a gen/apple/Externals/arm64/release/libapp.a && cp target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a gen/apple/Externals/arm64/debug/libapp.a",
+    "xcode": "open gen/apple/coursedeck-ipad.xcodeproj",
+    "open": "bun run build && bun run xcode",
+    "install:xspot": "bun run build && xcodebuild -project gen/apple/coursedeck-ipad.xcodeproj -scheme coursedeck-ipad_iOS -configuration release -destination 'id=a0db1cb93df7b788df78d121301d97c4ba6c2888' -allowProvisioningUpdates build && ios-deploy -i a0db1cb93df7b788df78d121301d97c4ba6c2888 -b $(xcodebuild -project gen/apple/coursedeck-ipad.xcodeproj -scheme coursedeck-ipad_iOS -configuration release -showBuildSettings | grep -m 1 'TARGET_BUILD_DIR =' | awk '{print $3}')/CourseDeck.app",
     "cargo:check": "cargo check"
   },
   "devDependencies": {

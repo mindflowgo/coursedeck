@@ -7,6 +7,7 @@
     url?: string | null;
     buffer?: ArrayBuffer | null;
     title?: string;
+    courseId?: string;
     lessonTitle?: string;
     pageRange?: string;
     readingDescription?: string;
@@ -16,6 +17,7 @@
     url = null,
     buffer = null,
     title = 'Course Book',
+    courseId = '',
     lessonTitle = '',
     pageRange = '',
     readingDescription = ''
@@ -98,6 +100,7 @@
     docPath={url}
     {docInfo}
     {title}
+    {courseId}
     {lessonTitle}
     {pageRange}
     {readingDescription}

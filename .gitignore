@@ -12,7 +12,7 @@ data.old
 app/data
 tauri/target/
 tauripad/target/
-tauripad/gen/apple/assets/_app
+tauripad/gen/apple/assets
 tauri/server
 tauri/server.exe
 tauri/server-*.exe

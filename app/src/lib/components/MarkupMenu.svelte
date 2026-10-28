@@ -52,6 +52,63 @@
     );
     if (ok) clearFile(courseId, file);
   }
+
+  function ensureInViewport(node: HTMLElement) {
+    function adjust() {
+      node.style.transform = '';
+      node.style.maxWidth = '';
+      const rect = node.getBoundingClientRect();
+      const margin = 8;
+      const viewportWidth = window.innerWidth;
+
+      // Find any ancestor that clips horizontal overflow
+      let containerLeft = 0;
+      let containerRight = viewportWidth;
+      let parent: HTMLElement | null = node.parentElement;
+      while (parent && parent !== document.body) {
+        const style = window.getComputedStyle(parent);
+        if (style.overflowX === 'hidden' || style.overflow === 'hidden') {
+          const parentRect = parent.getBoundingClientRect();
+          containerLeft = Math.max(containerLeft, parentRect.left);
+          containerRight = Math.min(containerRight, parentRect.right);
+          break;
+        }
+        parent = parent.parentElement;
+      }
+
+      const safeLeft = containerLeft + margin;
+      const safeRight = containerRight - margin;
+      const maxAvailableWidth = Math.max(200, safeRight - safeLeft);
+
+      if (rect.width > maxAvailableWidth) {
+        node.style.maxWidth = `${maxAvailableWidth}px`;
+      }
+
+      // Re-measure with maxWidth applied
+      const updatedRect = node.getBoundingClientRect();
+      let shiftX = 0;
+
+      if (updatedRect.left < safeLeft) {
+        shiftX = safeLeft - updatedRect.left;
+      } else if (updatedRect.right > safeRight) {
+        shiftX = safeRight - updatedRect.right;
+      }
+
+      if (shiftX !== 0) {
+        node.style.transform = `translateX(${Math.round(shiftX)}px)`;
+      }
+    }
+
+    adjust();
+    const raf = requestAnimationFrame(adjust);
+    window.addEventListener('resize', adjust);
+    return {
+      destroy() {
+        cancelAnimationFrame(raf);
+        window.removeEventListener('resize', adjust);
+      }
+    };
+  }
 </script>
 
 <div class="relative">
@@ -89,11 +146,14 @@
   {#if isOpen}
     <div class="fixed inset-0 z-40" onclick={() => (isOpen = false)} role="presentation"></div>
 
-    <div class="absolute right-0 mt-1.5 w-72 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden">
+    <div
+      use:ensureInViewport
+      class="absolute right-0 mt-1.5 w-[264px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-5rem)] overflow-y-auto rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden"
+    >
       <!-- Markers -->
       <div class="px-3 pt-2.5 pb-1">
         <div class="text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500 mb-1.5">Markers</div>
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
           {#each MARKER_COLORS as color (color)}
             <button
               type="button"
@@ -120,7 +180,7 @@
       <!-- Highlighters -->
       <div class="px-3 pt-2 pb-1">
         <div class="text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500 mb-1.5">Highlighters</div>
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-1.5 flex-wrap sm:flex-nowrap">
           {#each HIGHLIGHTER_COLORS as color (color)}
             <button
               type="button"

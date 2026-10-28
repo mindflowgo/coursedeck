@@ -1,45 +1,24 @@
 <!-- app/src/lib/components/DeviceSyncDropdown.svelte -->
 <script lang="ts">
-  import { syncState, syncFromDesktop, pushToDesktop } from '$lib/syncState.svelte';
-  import { confirmDialog } from '$lib/dialog';
+  import { syncState, pushToDesktop } from '$lib/syncState.svelte';
+  import CourseSyncPickerModal from './CourseSyncPickerModal.svelte';
   import { openScanDesktopModal } from '$lib/modalState.svelte';
   import {
     Monitor,
     QrCode,
     RefreshCw,
-    ArrowDownToLine,
     ArrowUpToLine,
     Check
   } from 'lucide-svelte';
 
   let isOpen = $state(false);
-  let syncSuccessFlash = $state(false);
+  let showCoursePicker = $state(false);
   let pushSuccessFlash = $state(false);
 
-  async function handleSync() {
+  function handleSync() {
     if (syncState.isSyncing) return;
-    if (syncState.pendingPushCount > 0) {
-      const proceed = await confirmDialog(
-        `You have ${syncState.pendingPushCount} note or checkpoint change(s) that haven't been pushed to your computer yet.\n\nSyncing now will replace local data with the computer's current copy. Would you like to push your changes first?`,
-        'Sync Warning'
-      );
-      if (proceed) {
-        try {
-          await pushToDesktop();
-        } catch {
-          return;
-        }
-      }
-    }
-
-    try {
-      await syncFromDesktop();
-      syncSuccessFlash = true;
-      setTimeout(() => (syncSuccessFlash = false), 2500);
-      isOpen = false;
-    } catch (e) {
-      console.error('Sync failed:', e);
-    }
+    isOpen = false;
+    showCoursePicker = true;
   }
 
   async function handlePush() {
@@ -98,7 +77,7 @@
       class="absolute right-0 top-full mt-1.5 w-60 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 p-1 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100 select-none"
     >
       <div class="py-1">
-        <!-- 'Sync' Option -->
+        <!-- 'Sync' Option: opens the course picker -->
         <button
           type="button"
           onclick={handleSync}
@@ -111,17 +90,11 @@
               <span class="font-medium text-stone-900 dark:text-stone-100">Syncing...</span>
               <span class="text-[10px] text-stone-400">Updating course library</span>
             </div>
-          {:else if syncSuccessFlash}
-            <Check class="w-4 h-4 text-emerald-500 shrink-0" />
-            <div class="flex flex-col">
-              <span class="font-medium text-emerald-600 dark:text-emerald-400">Synced!</span>
-              <span class="text-[10px] text-stone-400">Content is up to date</span>
-            </div>
           {:else}
-            <ArrowDownToLine class="w-4 h-4 text-stone-500 dark:text-stone-400 shrink-0" />
+            <Monitor class="w-4 h-4 text-stone-500 dark:text-stone-400 shrink-0" />
             <div class="flex flex-col">
               <span class="font-medium text-stone-900 dark:text-stone-100">Sync</span>
-              <span class="text-[10px] text-stone-400">Fetch latest courses from computer</span>
+              <span class="text-[10px] text-stone-400">Choose courses to download</span>
             </div>
           {/if}
         </button>
@@ -174,5 +147,9 @@
         </button>
       </div>
     </div>
+  {/if}
+
+  {#if showCoursePicker}
+    <CourseSyncPickerModal onClose={() => (showCoursePicker = false)} />
   {/if}
 </div>

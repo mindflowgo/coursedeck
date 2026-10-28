@@ -74,8 +74,10 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        CFBundleShortVersionString: 0.1.0
-        CFBundleVersion: "0.1.0"
+        UIFileSharingEnabled: true
+        LSSupportsOpenInPlace: true
+        CFBundleShortVersionString: 0.1.1
+        CFBundleVersion: "0.1.1"
     entitlements:
       path: coursedeck-ipad_iOS/coursedeck-ipad_iOS.entitlements
     settings:

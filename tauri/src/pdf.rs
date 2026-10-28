@@ -350,7 +350,10 @@ impl PdfEngine {
 }
 
 fn document_fingerprint(path: &Path) -> Result<(u64, u64), String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("Cannot stat {path:?}: {e}"))?;
+    let meta = std::fs::metadata(path).map_err(|e| {
+        eprintln!("[PDFium] document_fingerprint ERROR: Cannot stat {:?}: {}", path, e);
+        format!("Cannot stat {path:?}: {e}")
+    })?;
     let mtime = meta
         .modified()
         .ok()
@@ -489,6 +492,18 @@ fn find_course_dir_any(app: &tauri::AppHandle, course_id: &str) -> Option<PathBu
         }
     }
 
+    // 2b. iPad builds keep synced courses in Documents/courses (Files-app
+    //     visible). Guarded to iOS so the desktop never matches an unrelated
+    //     ~/Documents/courses folder.
+    if cfg!(target_os = "ios") {
+        if let Ok(documents) = app.path().document_dir() {
+            let candidate = documents.join("courses").join(&lower_id);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
     // 3. Check current working dir data/courses/{course_id}
     if let Ok(cwd) = std::env::current_dir() {
         for base in &[
@@ -514,8 +529,51 @@ fn find_course_dir_any(app: &tauri::AppHandle, course_id: &str) -> Option<PathBu
     None
 }
 
+/// Parses `courseasset://localhost/{course_id}/assets/{rel}` into its parts,
+/// percent-decoding the path and rejecting traversal (`..`) or non-asset
+/// targets. Shared by the tauripad webview protocol handler and PDF path
+/// resolution here.
+pub fn parse_course_asset_uri(uri: &str) -> Option<(String, String)> {
+    use percent_encoding::percent_decode_str;
+
+    let rest = uri.strip_prefix("courseasset://")?;
+    // Custom protocols carry a `localhost` authority on iOS/macOS
+    // (`courseasset://localhost/...`); drop it if present.
+    let rest = rest.strip_prefix("localhost/").unwrap_or(rest);
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let decoded = percent_decode_str(path.trim_start_matches('/'))
+        .decode_utf8()
+        .ok()?;
+    let mut segments = decoded.split('/');
+    let course_id = segments.next()?;
+    if course_id.is_empty()
+        || !course_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+        || course_id.contains("..")
+    {
+        return None;
+    }
+    let rel = segments.collect::<Vec<_>>().join("/");
+    if !rel.starts_with("assets/") || rel.split('/').any(|s| s == ".." || s.is_empty()) {
+        return None;
+    }
+    Some((course_id.to_string(), rel))
+}
+
 pub fn resolve_pdf_path(app: &tauri::AppHandle, path_or_url: &str) -> PathBuf {
     let clean = path_or_url.trim();
+    eprintln!("[PDF-Resolve] Resolving path: '{}'", clean);
+
+    // courseasset://localhost/{course_id}/assets/{rel} — the tauripad webview
+    // protocol scheme; resolve it to disk so pdfium can open synced PDFs.
+    if let Some((course_id, rel)) = parse_course_asset_uri(clean) {
+        if let Some(course_dir) = find_course_dir_any(app, &course_id) {
+            let path = course_dir.join(&rel);
+            eprintln!("[PDF-Resolve] courseasset candidate: {:?} (exists: {})", path, path.exists());
+            return path;
+        }
+    }
 
     // Check if it's an API asset URL: /api/courses/{course_id}/assets/{asset_subpath}
     if let Some(stripped) = clean
@@ -526,13 +584,40 @@ pub fn resolve_pdf_path(app: &tauri::AppHandle, path_or_url: &str) -> PathBuf {
             if let Some(asset_rel) = rest.strip_prefix("assets/") {
                 if let Some(course_dir) = find_course_dir_any(app, course_id) {
                     let direct_path = course_dir.join("assets").join(asset_rel);
+                    eprintln!(
+                        "[PDF-Resolve] Direct candidate: {:?} (exists: {})",
+                        direct_path,
+                        direct_path.exists()
+                    );
                     if direct_path.exists() {
                         return direct_path;
                     }
                     let alt_path = course_dir.join(asset_rel);
+                    eprintln!(
+                        "[PDF-Resolve] Alt candidate: {:?} (exists: {})",
+                        alt_path,
+                        alt_path.exists()
+                    );
                     if alt_path.exists() {
                         return alt_path;
                     }
+                    eprintln!(
+                        "[PDF-Resolve] Neither exists yet, returning canonical direct path: {:?}",
+                        direct_path
+                    );
+                    return direct_path;
+                } else if let Ok(app_data) = app.path().app_data_dir() {
+                    let target = app_data
+                        .join("courses")
+                        .join(course_id.to_lowercase())
+                        .join("assets")
+                        .join(asset_rel);
+                    eprintln!(
+                        "[PDF-Resolve] Course dir not found, target path: {:?} (exists: {})",
+                        target,
+                        target.exists()
+                    );
+                    return target;
                 }
             }
         }

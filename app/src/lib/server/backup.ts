@@ -125,6 +125,178 @@ export function createDataBackupZipStream(options: BackupOptions = {}): BackupZi
   return { stream, filename, courseCount, fileCount: totalFiles };
 }
 
+export interface SyncBundleZipOptions {
+  /** Lowercase course ids to include; null/undefined = every course. */
+  courseIds?: string[] | null;
+  /**
+   * Incremental sync: only files whose modification time is after this ISO
+   * timestamp (or Date) are archived. Courses with no modified files are
+   * skipped entirely; when a course does have changes, its meta.json /
+   * manifest.json ride along regardless of mtime so the receiving device
+   * always ends up with a current course list.
+   */
+  since?: string | Date | null;
+  /** JSON-serialized into `_sync/meta.json` inside the archive. */
+  syncMeta?: unknown;
+}
+
+/**
+ * Streaming zip of the selected course folders — everything except `_backup`
+ * and dotfiles — plus a `_sync/meta.json` payload. This is the iPad sync
+ * bundle: the app downloads the single archive and extracts it straight into
+ * its Documents/courses folder. Entry names are normalized to
+ * `courses/<lowercase course id>/...` so the iPad's lowercase lookups match.
+ */
+export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
+  stream: ReadableStream<Uint8Array>;
+  courseCount: number;
+  fileCount: number;
+} {
+  const wanted =
+    options.courseIds && options.courseIds.length > 0
+      ? new Set(options.courseIds.map((id) => id.toLowerCase()))
+      : null;
+  const sinceMs =
+    options.since === null || options.since === undefined
+      ? NaN
+      : options.since instanceof Date
+        ? options.since.getTime()
+        : Date.parse(options.since);
+  const coursesDir = path.join(getDataDir(), 'courses');
+
+  const fileList: { absPath: string; relPath: string }[] = [];
+  let courseCount = 0;
+
+  const collectCourseFiles = (
+    absDir: string,
+    relPrefix: string,
+    entries: { absPath: string; relPath: string }[]
+  ): void => {
+    for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || entry.name === '_backup') continue;
+      const absPath = path.join(absDir, entry.name);
+      const relPath = `${relPrefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        collectCourseFiles(absPath, relPath, entries);
+      } else if (entry.isFile()) {
+        // Manifests are handled separately in incremental mode (included
+        // whenever the course has any real change, not by their own mtime).
+        if (Number.isFinite(sinceMs) && /(?:^|\/)(?:meta|manifest)\.json$/i.test(relPath)) {
+          continue;
+        }
+        if (Number.isFinite(sinceMs)) {
+          try {
+            if (fs.statSync(absPath).mtimeMs <= sinceMs) continue;
+          } catch {
+            continue;
+          }
+        }
+        entries.push({ absPath, relPath });
+      }
+    }
+  };
+
+  if (fs.existsSync(coursesDir)) {
+    for (const dir of fs.readdirSync(coursesDir, { withFileTypes: true })) {
+      if (!dir.isDirectory() || dir.name.startsWith('.') || dir.name === '_backup') continue;
+      const courseFolder = path.join(coursesDir, dir.name);
+
+      // Prefer the manifest id (lowercased) for the entry prefix.
+      let courseId = dir.name.toLowerCase();
+      for (const metaName of ['meta.json', 'manifest.json']) {
+        const metaPath = path.join(courseFolder, metaName);
+        if (fs.existsSync(metaPath)) {
+          try {
+            const id = JSON.parse(fs.readFileSync(metaPath, 'utf8'))?.id;
+            if (typeof id === 'string' && id.trim()) {
+              courseId = id.toLowerCase();
+              break;
+            }
+          } catch {}
+        }
+      }
+      if (wanted && !wanted.has(courseId)) continue;
+
+      const courseEntries: { absPath: string; relPath: string }[] = [];
+      collectCourseFiles(courseFolder, `courses/${courseId}`, courseEntries);
+      if (courseEntries.length === 0) {
+        continue; // incremental sync: nothing changed in this course
+      }
+      if (Number.isFinite(sinceMs)) {
+        for (const metaName of ['meta.json', 'manifest.json']) {
+          const metaPath = path.join(courseFolder, metaName);
+          if (fs.existsSync(metaPath)) {
+            courseEntries.unshift({
+              absPath: metaPath,
+              relPath: `courses/${courseId}/${metaName}`
+            });
+          }
+        }
+      }
+
+      courseCount++;
+      fileList.push(...courseEntries);
+    }
+  }
+
+  if (options.syncMeta !== undefined) {
+    fileList.push({
+      absPath: '',
+      relPath: '_sync/meta.json'
+    });
+  }
+
+  const totalFiles = fileList.length;
+  console.log(
+    `[SyncServer] Zip bundle: ${totalFiles} file(s) across ${courseCount} course(s)` +
+      (Number.isFinite(sinceMs) ? ` (incremental since ${new Date(sinceMs).toISOString()})` : '')
+  );
+
+  let zip: Zip;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      zip = new Zip((err, chunk, isLast) => {
+        if (err) {
+          console.error('[SyncServer] Zip bundle compression error:', err);
+          controller.error(err);
+          return;
+        }
+        if (chunk && chunk.length > 0) {
+          controller.enqueue(chunk);
+        }
+        if (isLast) {
+          controller.close();
+        }
+      });
+
+      (async () => {
+        try {
+          for (let i = 0; i < fileList.length; i++) {
+            const { absPath, relPath } = fileList[i];
+            const data =
+              relPath === '_sync/meta.json'
+                ? new TextEncoder().encode(JSON.stringify(options.syncMeta))
+                : new Uint8Array(fs.readFileSync(absPath));
+            const file = ALREADY_COMPRESSED.test(relPath)
+              ? new ZipPassThrough(relPath)
+              : new ZipDeflate(relPath, { level: 1 });
+            zip.add(file);
+            file.push(data, true);
+
+            // Yield regularly so concurrent server work is never blocked.
+            if (i % 20 === 0) await new Promise((r) => setTimeout(r, 0));
+          }
+          zip.end();
+        } catch (pumpErr) {
+          controller.error(pumpErr);
+        }
+      })();
+    }
+  });
+
+  return { stream, courseCount, fileCount: totalFiles };
+}
+
 /**
  * Synchronous backup generator maintained for legacy compatibility and offline scripts.
  * Uses smart pass-through for pre-compressed binaries to prevent slow CPU locks.

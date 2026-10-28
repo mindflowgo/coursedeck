@@ -3,10 +3,56 @@
 @tailwind utilities;
 
 @layer base {
+  /* Prevent callout popup, tap highlight flash, and long-press previews on iOS and Android */
+  *, *::before, *::after {
+    -webkit-touch-callout: none !important;
+    -webkit-tap-highlight-color: transparent;
+  }
+
   html, body {
     height: 100%;
     margin: 0;
     padding: 0;
+    /* Disable viewport pull-to-refresh on Android and root rubber-banding on iOS */
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    /* Disable viewport pinch-to-zoom and double-tap zoom while keeping natural scrolling */
+    touch-action: pan-x pan-y;
+  }
+
+  /* Internal scrollable panels: contain scroll to avoid chaining and rubber-banding */
+  .overflow-y-auto,
+  .overflow-auto,
+  .overflow-x-auto,
+  .overflow-y-scroll,
+  .overflow-scroll {
+    overscroll-behavior: contain;
+  }
+
+  /* Only suppress text selection by default on touch / tablet devices to prevent unwanted edit popups / action modes.
+     Desktop users (mouse & keyboard) retain normal text selection to copy definitions, notes, code, etc. */
+  @media (hover: none) and (pointer: coarse) {
+    html, body {
+      -webkit-user-select: none;
+      user-select: none;
+    }
+  }
+
+  /* Allow text selection in interactive input and editor fields across all devices */
+  input,
+  textarea,
+  [contenteditable="true"],
+  [contenteditable=""],
+  .cm-editor,
+  .cm-content {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+
+  /* Prevent drag ghosts for images and links (especially when drawing with pen / stylus) */
+  img, a {
+    -webkit-user-drag: none;
+    user-drag: none;
   }
 }
 

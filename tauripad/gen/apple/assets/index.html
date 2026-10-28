@@ -3,10 +3,14 @@
 	<head>
 		<meta charset="utf-8" />
 		<link rel="icon" href="/favicon.png" />
-		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 		<link rel="stylesheet" href="/fonts/fonts.css" />
 		<link rel="stylesheet" href="/vendor/katex/katex.min.css" />
 		<script>
+			// Disable viewport pinch-to-zoom gestures (iOS/iPadOS WebKit)
+			document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+			document.addEventListener('gesturechange', function (e) { e.preventDefault(); });
+			document.addEventListener('gestureend', function (e) { e.preventDefault(); });
 			try {
 				const theme = localStorage.getItem('app_theme') || 'system';
 				const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -31,38 +35,37 @@
 				}
 			} catch (_) {}
 		</script>
-		<link href="/_app/immutable/entry/start.BJiKzG6W.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/C-F_e07M.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/DfXaqJiX.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/DiVe2iqy.js" rel="modulepreload">
-		<link href="/_app/immutable/entry/app.DLRhvMAu.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/BEEuhB2y.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/-j40Cjhv.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/CMWTnCw7.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/start.BMuK6Gsk.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CwDMEzx3.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BZqR2eAD.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/9deilDnV.js" rel="modulepreload">
+		<link href="/_app/immutable/entry/app.BemgfiEt.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DW787Myz.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/BFBH8Qp3.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DRJ5Lj_8.js" rel="modulepreload">
 		<link href="/_app/immutable/chunks/Bzak7iHL.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/CVdCPbko.js" rel="modulepreload">
-		<link href="/_app/immutable/nodes/0.36uXdKPB.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/Bc1siAT-.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/DJib_wUI.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/wQLuAJi8.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/BgN_EYMq.js" rel="modulepreload">
-		<link href="/_app/immutable/chunks/DRSM8OfD.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/6srIcgJc.js" rel="modulepreload">
+		<link href="/_app/immutable/nodes/0.DUyw1lMS.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/C3JWDxa3.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/CdUjNjDD.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DNp9v8Gw.js" rel="modulepreload">
+		<link href="/_app/immutable/chunks/DABJVHZl.js" rel="modulepreload">
 		
-		<link href="/_app/immutable/assets/0.Do5PdXwq.css" rel="stylesheet">
+		<link href="/_app/immutable/assets/0.C3TlvZI1.css" rel="stylesheet">
 	</head>
 	<body data-sveltekit-preload-data="hover" class="h-full overflow-hidden bg-stone-50 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans selection:bg-stone-200 dark:selection:bg-stone-800 selection:text-stone-900 dark:selection:text-stone-100">
 		<div style="display: contents">
 			<script>
 				{
-					__sveltekit_wcgjp5 = {
+					__sveltekit_1s24alw = {
 						base: ""
 					};
 
 					const element = document.currentScript.parentElement;
 
 					Promise.all([
-						import("/_app/immutable/entry/start.BJiKzG6W.js"),
-						import("/_app/immutable/entry/app.DLRhvMAu.js")
+						import("/_app/immutable/entry/start.BMuK6Gsk.js"),
+						import("/_app/immutable/entry/app.BemgfiEt.js")
 					]).then(([kit, app]) => {
 						kit.start(app, element);
 					});

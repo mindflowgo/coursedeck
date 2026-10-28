@@ -25,19 +25,6 @@ export interface ClientLlmStore {
   cards: ClientLlmModelCard[];
 }
 
-export interface SyncBundle {
-  version: 1;
-  generatedAt: string;
-  courses: Array<{
-    manifest: CourseManifest;
-    files: Record<string, string>;
-    checkpoints: Checkpoint[];
-    annotations?: MarkupStroke[];
-  }>;
-  prompts: Array<{ id: string; content: string }>;
-  llmConfig?: ClientLlmStore;
-}
-
 export function isTauri(): boolean {
   if (typeof window === 'undefined') return false;
   return (
@@ -45,6 +32,17 @@ export function isTauri(): boolean {
     window.location.protocol === 'tauri:' ||
     window.location.hostname === 'tauri.localhost'
   );
+}
+
+/** Result of the iPad's native zip sync (`sync_fetch_bundle_zip`). */
+export interface SyncZipSummary {
+  generatedAt: string;
+  courses: Array<{ course_id: string; files: number; assets: number }>;
+  llmConfig?: ClientLlmStore;
+}
+
+export async function saveLlmConfigLocally(config: ClientLlmStore): Promise<void> {
+  await put('llm_config', 'store', config);
 }
 
 const DB_NAME = 'coursedeck_v1';
@@ -510,82 +508,6 @@ export async function hasCachedData(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-// ── Bundle Import (Direct to Native Filesystem) ──────────────────────────────
-
-export async function importBundle(bundle: SyncBundle, desktopUrl: string): Promise<void> {
-  console.log(`[NativeStore] importBundle: starting import of ${bundle.courses.length} courses from ${desktopUrl}`);
-
-  if (isTauri()) {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      for (const course of bundle.courses) {
-        const courseId = course.manifest.id.toLowerCase();
-        const fileCount = Object.keys(course.files).length;
-        console.log(`[NativeStore] Writing course "${courseId}" (${fileCount} markdown files) directly to filesystem...`);
-        await invoke('save_course_files', {
-          courseId,
-          manifestJson: JSON.stringify(course.manifest),
-          files: course.files,
-          checkpointsJson: course.checkpoints ? JSON.stringify(course.checkpoints) : null
-        });
-        console.log(`[NativeStore] Course "${courseId}" files successfully written to filesystem`);
-      }
-    } catch (err) {
-      console.error('[NativeStore] Error writing courses to filesystem:', err);
-    }
-  }
-
-  // Mirror into IndexedDB so both native and web readers stay in sync
-  for (const course of bundle.courses) {
-    const courseId = course.manifest.id.toLowerCase();
-    await put('courses', courseId, course.manifest);
-
-    const docEntries = Object.entries(course.files).map(([filename, markdown]) => [
-      `${courseId}:${filename}`,
-      markdown
-    ] as [string, unknown]);
-    await putMany('documents', docEntries);
-
-    if (Array.isArray(course.checkpoints)) {
-      await put('checkpoints', courseId, course.checkpoints);
-    }
-
-    if (Array.isArray(course.annotations) && course.annotations.length > 0) {
-      // Merge (never clobber local strokes not yet pushed; LWW on date)
-      const local = await getAnnotationsLocally(courseId);
-      const merged = mergeStrokes(local, course.annotations.filter(isMarkupStroke)).strokes;
-      await writeAnnotationsNative(courseId, merged);
-      await put('annotations', courseId, merged);
-    }
-  }
-
-  if (Array.isArray(bundle.prompts)) {
-    if (isTauri()) {
-      try {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invoke('save_prompts', { prompts: bundle.prompts });
-      } catch {}
-    }
-    const promptEntries = bundle.prompts.map((p) => [p.id, p] as [string, unknown]);
-    await putMany('prompts', promptEntries);
-  }
-
-  if (bundle.llmConfig) {
-    await put('llm_config', 'store', bundle.llmConfig);
-  }
-
-  await setMeta('last_synced_at', bundle.generatedAt);
-  await setMeta('desktop_url', desktopUrl);
-
-  try {
-    if (typeof localStorage !== 'undefined' && desktopUrl) {
-      localStorage.setItem('desktop_url', desktopUrl.replace(/\/+$/, ''));
-    }
-  } catch {}
-
-  console.log(`[NativeStore] importBundle: completed import at ${bundle.generatedAt}`);
 }
 
 // ── Checkpoint writes (iPad-local, queued for push) ──────────────────────────

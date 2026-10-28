@@ -15,6 +15,9 @@
   } from 'lucide-svelte';
   import type { PdfDocumentInfo } from '$lib/pdfClient';
   import { pdfRenderPage, pdfRenderThumbnail, getCoursePdfState, setCoursePdfState } from '$lib/pdfClient';
+  import { canUndo, flushNow, loadAnnotations } from '$lib/markup/annotationStore.svelte';
+  import { getPdfPageFileKey } from '$lib/markup/pdfMarkup';
+  import MarkupMenu from '$lib/components/MarkupMenu.svelte';
   import PageRenderer from './PageRenderer.svelte';
   import Search from './Search.svelte';
   import ReadingGuideOverlay from './ReadingGuideOverlay.svelte';
@@ -23,6 +26,7 @@
     docPath: string;
     docInfo: PdfDocumentInfo;
     title?: string;
+    courseId?: string;
     lessonTitle?: string;
     pageRange?: string;
     readingDescription?: string;
@@ -34,6 +38,7 @@
     docPath,
     docInfo,
     title = 'Course Book',
+    courseId = '',
     lessonTitle = '',
     pageRange = '',
     readingDescription = '',
@@ -45,6 +50,27 @@
   let pageInputValue = $state('1');
   let zoomScale = $state(1.0);
   let isPanMode = $state(false);
+
+  // Resolve courseId from prop or path fallback
+  const resolvedCourseId = $derived(
+    courseId || docPath?.match(/\/api\/courses\/([^/]+)\//)?.[1] || ''
+  );
+
+  // Active markup file tracking for Undo/Redo/Clear scope
+  let lastDrawnFile = $state<string | null>(null);
+  const currentFile = $derived(getPdfPageFileKey(docPath, currentPage - 1));
+  const activeMarkupFile = $derived(
+    lastDrawnFile && resolvedCourseId && canUndo(resolvedCourseId, lastDrawnFile)
+      ? lastDrawnFile
+      : currentFile
+  );
+
+  // Load annotations on mount or when resolvedCourseId changes
+  $effect(() => {
+    if (resolvedCourseId) {
+      void loadAnnotations(resolvedCourseId);
+    }
+  });
 
   let viewerRootEl: HTMLDivElement | undefined;
   let isZoomMenuOpen = $state(false);
@@ -68,7 +94,7 @@
   let activeSearchPage = $state<number | null>(null);
   let activeSearchRects = $state<[number, number, number, number][]>([]);
 
-  let viewportContainerEl: HTMLDivElement | undefined;
+  let viewportContainerEl = $state<HTMLDivElement>();
   let pageElements = new Map<number, HTMLDivElement>();
   let thumbnailUrls = $state<Record<number, string>>({});
 
@@ -644,6 +670,7 @@
   });
 
   onDestroy(() => {
+    flushNow();
     if (typeof document !== 'undefined') {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     }
@@ -663,13 +690,15 @@
   });
 </script>
 
+<svelte:window
+  onbeforeunload={flushNow}
+  onvisibilitychange={() => (document.hidden ? flushNow() : undefined)}
+/>
+
 <div bind:this={viewerRootEl} class="relative h-full w-full flex overflow-hidden bg-stone-100 dark:bg-stone-950 select-none">
   <!-- Left Thumbnails Sidebar (Slides out from left edge) -->
   {#if sideBarThumbnails}
     <div class="h-full w-[140px] flex-shrink-0 border-r border-stone-200 dark:border-stone-800 bg-white/95 dark:bg-stone-900/95 backdrop-blur-md z-30 overflow-y-auto p-2.5 space-y-3 shadow-md select-none">
-      <div class="text-3xs font-semibold uppercase tracking-wider text-stone-400 px-1 mb-1">
-        Thumbnails ({totalPages})
-      </div>
       {#each docInfo.pages as page, idx}
         {@const isCurrent = currentPage === idx + 1}
         <button
@@ -730,9 +759,15 @@
         <PanelRightOpen class="w-3.5 h-3.5" />
       </button>
 
+      <!-- 2. Free-hand Markup Widget (squeezed immediately after thumbnail toggle) -->
+      {#if resolvedCourseId}
+        <div class="h-4 w-px bg-stone-200 dark:bg-stone-700/80"></div>
+        <MarkupMenu courseId={resolvedCourseId} file={activeMarkupFile} />
+      {/if}
+
       <div class="h-4 w-px bg-stone-200 dark:bg-stone-700/80"></div>
 
-      <!-- 2. Zoom Dropdown -->
+      <!-- 3. Zoom Dropdown -->
       <div class="relative">
         <button
           type="button"
@@ -905,6 +940,9 @@
               imgUrl={pageBlobUrls[idx]}
               isLoading={Boolean(pageLoading[idx])}
               searchRects={activeSearchPage === idx ? activeSearchRects : []}
+              courseId={resolvedCourseId}
+              scrollerEl={viewportContainerEl}
+              onStrokeDrawn={(f) => (lastDrawnFile = f)}
             />
           </div>
         {/each}

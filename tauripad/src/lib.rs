@@ -13,16 +13,78 @@ pub struct LessonBundleResponse {
 }
 
 fn get_courses_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let app_data = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app_data_dir: {e}"))?;
-    let courses_dir = app_data.join("courses");
+    // Courses live in Documents/courses so synced material is user-visible in
+    // the Files app (UIFileSharingEnabled); app-support is the off-device
+    // fallback for platforms without a Documents directory.
+    let base = match app.path().document_dir() {
+        Ok(documents) => documents,
+        Err(_) => app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("Failed to get app_data_dir: {e}"))?,
+    };
+    let courses_dir = base.join("courses");
     if !courses_dir.exists() {
         std::fs::create_dir_all(&courses_dir)
             .map_err(|e| format!("Failed to create courses dir: {e}"))?;
     }
     Ok(courses_dir)
+}
+
+/// Parses `courseasset://` URIs (see `pdf::parse_course_asset_uri` in the
+/// shared pdf module, compiled into both the desktop and iPad crates).
+fn asset_content_type(path: &std::path::Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" | "md" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Serves synced course files (`<courses>/<course_id>/assets/**`) to the
+/// webview via `courseasset://localhost/...` so lesson markdown can reference
+/// the device's own assets folder and display offline.
+fn serve_course_asset(
+    app: &tauri::AppHandle,
+    uri: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let respond = |status: u16, content_type: &str, body: Vec<u8>| {
+        tauri::http::Response::builder()
+            .status(status)
+            .header("Content-Type", content_type)
+            .header("Cache-Control", "public, max-age=86400")
+            .body(body)
+            .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+    };
+
+    let Some((course_id, rel)) = pdf::parse_course_asset_uri(uri) else {
+        return respond(400, "text/plain; charset=utf-8", b"invalid courseasset URI".to_vec());
+    };
+
+    let file_path = match get_courses_dir(app) {
+        Ok(dir) => dir.join(&course_id).join(&rel),
+        Err(e) => return respond(500, "text/plain; charset=utf-8", e.into_bytes()),
+    };
+
+    match std::fs::read(&file_path) {
+        Ok(bytes) => respond(200, asset_content_type(&file_path), bytes),
+        Err(e) => respond(
+            404,
+            "text/plain; charset=utf-8",
+            format!("asset not found: {rel} ({e})").into_bytes(),
+        ),
+    }
 }
 
 fn normalize_lesson_id(s: &str) -> String {
@@ -50,47 +112,198 @@ fn normalize_lesson_id(s: &str) -> String {
     s
 }
 
-#[tauri::command]
-fn save_course_files(
-    app: tauri::AppHandle,
+// ── Zip Sync (iPad ← desktop bundle archive) ──────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct CourseSyncSummary {
     course_id: String,
-    manifest_json: String,
-    files: HashMap<String, String>,
-    checkpoints_json: Option<String>,
-) -> Result<usize, String> {
-    let courses_dir = get_courses_dir(&app)?;
-    let course_dir = courses_dir.join(course_id.to_lowercase());
-    std::fs::create_dir_all(&course_dir)
-        .map_err(|e| format!("Failed to create course dir {:?}: {e}", course_dir))?;
+    files: usize,
+    assets: usize,
+}
 
-    let manifest_path = course_dir.join("manifest.json");
-    std::fs::write(&manifest_path, &manifest_json)
-        .map_err(|e| format!("Failed to write manifest.json: {e}"))?;
-    let meta_path = course_dir.join("meta.json");
-    let _ = std::fs::write(&meta_path, &manifest_json);
+#[derive(serde::Serialize)]
+struct SyncZipSummary {
+    #[serde(rename = "generatedAt")]
+    generated_at: String,
+    courses: Vec<CourseSyncSummary>,
+    #[serde(rename = "llmConfig")]
+    llm_config: Option<serde_json::Value>,
+}
 
-    let count = files.len();
-    for (filename, content) in files {
-        let file_path = course_dir.join(&filename);
-        std::fs::write(&file_path, content)
-            .map_err(|e| format!("Failed to write file {:?}: {e}", file_path))?;
+/// Last-writer-wins merge of markup stroke arrays keyed by id (ISO date
+/// strings compare lexicographically) so a fresh sync never drops iPad-local
+/// annotations that haven't been pushed yet. Tombstones survive because the
+/// newer entry always wins, deleted or not.
+fn merge_annotations_lww(existing_path: &std::path::Path, incoming: &str) -> String {
+    let parse = |s: &str| -> Vec<serde_json::Value> {
+        serde_json::from_str(s).unwrap_or_default()
+    };
+    let local = std::fs::read_to_string(existing_path).unwrap_or_default();
+    let date_of = |v: &serde_json::Value| -> String {
+        v.get("date").and_then(|d| d.as_str()).unwrap_or_default().to_string()
+    };
+
+    let mut by_id: std::collections::HashMap<String, serde_json::Value> = Default::default();
+    for stroke in parse(&local).into_iter().chain(parse(incoming)) {
+        let Some(id) = stroke.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        match by_id.get(id) {
+            Some(prev) if date_of(prev) >= date_of(&stroke) => {}
+            _ => {
+                by_id.insert(id.to_string(), stroke);
+            }
+        }
     }
+    serde_json::to_string_pretty(&by_id.into_values().collect::<Vec<_>>())
+        .unwrap_or_else(|_| "[]".into())
+}
 
-    if let Some(cp_json) = checkpoints_json {
-        let cp_path = course_dir.join("checkpoints.json");
-        let _ = std::fs::write(&cp_path, &cp_json);
-        let legacy = course_dir.join("checkpoint.json");
-        if legacy.exists() {
-            let _ = std::fs::remove_file(&legacy);
+/// Downloads the desktop's zip sync bundle and extracts `courses/<id>/**`
+/// straight into Documents/courses. The whole payload stays in Rust: no JSON,
+/// no base64, no webview round-trips.
+#[tauri::command]
+async fn sync_fetch_bundle_zip(app: tauri::AppHandle, url: String) -> Result<SyncZipSummary, String> {
+    let response = tauri_plugin_http::reqwest::get(&url)
+        .await
+        .map_err(|e| format!("Could not reach the desktop app ({e}). Is it running on the same Wi-Fi?"))?;
+    if !response.status().is_success() {
+        return Err(format!("Desktop returned HTTP {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to download sync bundle: {e}"))?;
+    eprintln!(
+        "[tauripad-sync] downloaded sync zip: {:.1} MB",
+        bytes.len() as f64 / (1024.0 * 1024.0)
+    );
+
+    extract_sync_zip(&app, &bytes)
+}
+
+fn extract_sync_zip(app: &tauri::AppHandle, bytes: &[u8]) -> Result<SyncZipSummary, String> {
+    use std::io::Read as _;
+
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Invalid sync zip: {e}"))?;
+    let courses_dir = get_courses_dir(app)?;
+
+    let mut generated_at = String::new();
+    let mut llm_config: Option<serde_json::Value> = None;
+    let mut prompts: Vec<serde_json::Value> = Vec::new();
+    let mut counts: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| format!("Failed to read zip entry {index}: {e}"))?;
+        let name = entry
+            .name()
+            .map_err(|e| format!("Invalid zip entry name at {index}: {e}"))?
+            .to_string();
+        if entry.is_dir() {
+            continue;
+        }
+
+        if name == "_sync/meta.json" {
+            let mut meta = String::new();
+            entry
+                .read_to_string(&mut meta)
+                .map_err(|e| format!("Failed to read _sync/meta.json: {e}"))?;
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&meta) {
+                generated_at = value
+                    .get("generatedAt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                llm_config = value.get("llmConfig").cloned().filter(|v| !v.is_null());
+                if let Some(list) = value.get("prompts").and_then(|v| v.as_array()) {
+                    prompts = list.clone();
+                }
+            }
+            continue;
+        }
+
+        let Some(rest) = name.strip_prefix("courses/") else {
+            continue; // unknown top-level entry — skip
+        };
+        let Some((course_id, rel)) = rest.split_once('/') else {
+            continue;
+        };
+        let course_id = course_id.to_lowercase();
+        if course_id.is_empty() {
+            continue;
+        }
+        // Defense in depth: the server already excludes these.
+        if rel
+            .split('/')
+            .any(|s| s.is_empty() || s == ".." || s == "_backup" || s.starts_with('.'))
+        {
+            continue;
+        }
+
+        let file_path = courses_dir.join(&course_id).join(rel);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create {:?}: {e}", parent))?;
+        }
+
+        if rel == "annotations.json" && file_path.exists() {
+            let mut incoming = String::new();
+            entry
+                .read_to_string(&mut incoming)
+                .map_err(|e| format!("Failed to read annotations for {course_id}: {e}"))?;
+            let merged = merge_annotations_lww(&file_path, &incoming);
+            std::fs::write(&file_path, merged)
+                .map_err(|e| format!("Failed to write annotations for {course_id}: {e}"))?;
+        } else {
+            let mut file = std::fs::File::create(&file_path)
+                .map_err(|e| format!("Failed to create {name:?}: {e}"))?;
+            std::io::copy(&mut entry, &mut file)
+                .map_err(|e| format!("Failed to extract {name:?}: {e}"))?;
+        }
+
+        let counters = counts.entry(course_id).or_insert((0, 0));
+        if rel.starts_with("assets/") {
+            counters.1 += 1;
+        } else {
+            counters.0 += 1;
         }
     }
 
-    eprintln!(
-        "[tauripad-fs] save_course_files: wrote {} files for course {} to {:?}",
-        count, course_id, course_dir
-    );
+    if !prompts.is_empty() {
+        if let Ok(app_data) = app.path().app_data_dir() {
+            let dir = app_data.join("prompts");
+            let _ = std::fs::create_dir_all(&dir);
+            for prompt in &prompts {
+                let id = prompt.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                let content = prompt.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+                if !id.is_empty() && !id.contains('/') && !id.contains("..") {
+                    let _ = std::fs::write(dir.join(format!("{id}.md")), content);
+                }
+            }
+        }
+    }
 
-    Ok(count)
+    let courses: Vec<CourseSyncSummary> = counts
+        .into_iter()
+        .map(|(course_id, (files, assets))| CourseSyncSummary {
+            course_id,
+            files,
+            assets,
+        })
+        .collect();
+    eprintln!("[tauripad-sync] extracted {} course(s)", courses.len());
+
+    Ok(SyncZipSummary {
+        generated_at,
+        courses,
+        llm_config,
+    })
 }
 
 #[tauri::command]
@@ -575,9 +788,13 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     }
 
+    builder = builder.register_uri_scheme_protocol("courseasset", |ctx, request| {
+        serve_course_asset(ctx.app_handle(), &request.uri().to_string())
+    });
+
     builder
         .invoke_handler(tauri::generate_handler![
-            save_course_files,
+            sync_fetch_bundle_zip,
             get_lesson_bundle,
             read_course_doc,
             save_course_doc,
@@ -622,5 +839,25 @@ mod tests {
         assert_eq!(normalize_lesson_id("1.10"), "01.10");
         assert_eq!(normalize_lesson_id("01.06_assign1"), "01.06_assign1");
         assert_eq!(normalize_lesson_id("course.schedule"), "course.schedule");
+    }
+
+    #[test]
+    fn test_parse_course_asset_uri() {
+        assert_eq!(
+            pdf::parse_course_asset_uri(
+                "courseasset://localhost/biology_11/assets/locker_docs/fig%202.png"
+            ),
+            Some(("biology_11".to_string(), "assets/locker_docs/fig 2.png".to_string()))
+        );
+        assert_eq!(
+            pdf::parse_course_asset_uri("courseasset://localhost/b/assets/img/diagram.jpg?x=1"),
+            Some(("b".to_string(), "assets/img/diagram.jpg".to_string()))
+        );
+        // Traversal and non-asset targets are rejected.
+        assert_eq!(pdf::parse_course_asset_uri("courseasset://localhost/a/../../etc/passwd"), None);
+        assert_eq!(pdf::parse_course_asset_uri("courseasset://localhost/a/meta.json"), None);
+        // Other schemes don't match.
+        assert_eq!(pdf::parse_course_asset_uri("http://localhost/a/assets/x.png"), None);
+        assert_eq!(pdf::parse_course_asset_uri("/api/courses/a/assets/x.png"), None);
     }
 }

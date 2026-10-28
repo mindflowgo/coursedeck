@@ -41,6 +41,15 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
 - **Data Persistence**: Flat filesystem in `/data` (Single Source of Truth, no database required)
 - **Model Context Protocol (MCP)**: Native Streamable HTTP (`/mcp` on loopback `3182`) & Stdio (`--mcp-stdio`) integration via **`mcp-lite`**. See [`docs/mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/mcp.md) for full protocol specs and client configs.
 
+### 2.1 Programming Style: No Compat Shims, No Migration
+
+The codebase deliberately carries **no compatibility layers and no migration code**:
+
+- **No compat shims**: no alternate formats, legacy branches, or "browser mode" fallbacks alongside the primary path. One clean, optimized implementation per feature, targeting the Desktop Tauri app and the Mobile Tauri app exclusively. When a mechanism is replaced (e.g., the base64-JSON sync bundle), the old path is deleted, not kept behind a flag.
+- **No migration**: when a storage location or on-disk format changes (e.g., iPad courses moving to `Documents/courses`), stale data is not converted or relocated — users re-sync / regenerate. Legacy fallbacks for old filenames or paths are removed rather than accumulated.
+
+Every rejected alternative that would require one of these (dual endpoints, format sniffing, data movers) is treated as a design smell: prefer changing the format once, cleanly, at the source. See §20.5 for how this applies to the sync architecture.
+
 ```
 ilc-study-tool/
 ├── architecture.md             # Consolidated system architecture specification
@@ -79,7 +88,7 @@ ilc-study-tool/
     ├── tauri.conf.json         # Tauri v2 window & build configuration
     ├── capabilities/           # Security & permission capabilities
     └── src/                    # Rust entrypoint
-### 2.1 Key Directories & Codebase Map (Quick Reference)
+### 2.2 Key Directories & Codebase Map (Quick Reference)
 
 To accelerate code navigation and prevent exhaustive searches across the codebase:
 
@@ -1069,7 +1078,78 @@ CourseDeck natively transforms course schedules into the expanded ARC Markdown G
   - Extensible hook for future variables (`%Duration%`, `%Type%`, `%Tags%`).
 
 #### 2. RESTful POST Transport
-- **Endpoint Dispatch**: If an ARC Endpoint URL is configured (e.g. `https://arc.internal/api/groups` in `Settings > Integrations`), CourseDeck executes an HTTP `POST` with `Authorization: Bearer <apiKey>` and JSON payload (`{ extId, groupId, markdown, itemCount }`).
+- **Endpoint Dispatch**: If an ARC Endpoint URL is configured (e.g. `https://arc.internal/api/groups` in Settings > Integrations), CourseDeck executes an HTTP `POST` with `Authorization: Bearer <apiKey>` and JSON payload (`{ extId, groupId, markdown, itemCount }`).
 - **Simulation Mode**: If no remote endpoint is configured, clicking **"Simulate Sync to ARC"** in the schedule modal generates the complete Markdown payload and outputs it directly to the server `console.log`.
+
+---
+
+## 20. iPad Offline Sync & Course Bundle Architecture
+
+The iPad app (`/tauripad`, CourseDeck for iPad) keeps a full offline copy of selected courses. Sync is **one streaming zip archive, downloaded and extracted entirely in Rust** — the webview never sees the payload. There is no browser/paired-web mode and no legacy migration path: both apps are Tauri shells, and old storage formats are dropped rather than converted.
+
+### 20.1 End-to-End Flow
+
+1. **Course picker** (`CourseSyncPickerModal.svelte`): the Sync action in `DeviceSyncDropdown` opens a modal that lists the desktop's active courses via `GET /api/sync/courses` (compact `{ id, title, lessonCount, coursePDF }`, non-archived only, title-sorted). Courses already on the device are badged "On device". All are pre-selected; one tap still syncs everything.
+2. **Bundle request**: `syncFromDesktop({ courseIds, since? })` (in `syncState.svelte.ts`) builds one URL and invokes the Tauri command `sync_fetch_bundle_zip`.
+3. **Rust download + extract** (`tauripad/src/lib.rs`): `reqwest` streams the zip from the desktop's Bun sidecar (port 3182), then the extractor walks the archive and writes entries straight to disk. It returns a summary `{ generatedAt, courses: [{ course_id, files, assets }], llmConfig }`.
+4. **Client bookkeeping**: the summary's `generatedAt` becomes the `last_synced_at` cursor (the natural `since` argument for future incremental syncs), the LLM config is stored locally, and pending pushes are cleared.
+
+### 20.2 The Bundle: One Streaming Zip (`createSyncBundleZipStream`, `app/src/lib/server/backup.ts`)
+
+**What's inside:**
+
+- `courses/<lowercase-course-id>/**` — the complete course folder contents: markdown, `meta.json`/`manifest.json`, `assets/**` (images, locker docs, textbook PDF), `checkpoints.json`, `annotations.json`.
+- `_sync/meta.json` — version, `generatedAt`, LLM config (API keys only when `includeLlmKeys=true`), and prompts.
+
+**Exclusions** (applied at the source, re-verified defensively on extract):
+
+- `_backup/` directories and dotfiles — never leave the desktop.
+
+**Key choices:**
+
+- **Zip, not JSON.** The previous design base64-encoded every asset into one giant JSON response, parsed it in the webview, and mirrored it byte-by-byte into IndexedDB — three full copies of every byte through the slowest layer. A zip is one deflate pass, one HTTP stream, one native extraction. The old JSON endpoint was deleted rather than kept for compatibility.
+- **fflate streaming** (same machinery as the §14 backup exporter): `ZipDeflate` level 1 for text; `ZipPassThrough` for already-compressed formats (PDF/JPEG/PNG/ZIP — zero wasted deflate CPU). The archive streams out via `ReadableStream` as chunks compress, so the server never buffers the whole zip, and the pump yields to the event loop every 20 files so `/api/queue` polling never stalls.
+- **Entry names normalize to lowercase course ids** so the iPad's `courses_dir.join(course_id.to_lowercase())` lookups always match, regardless of the desktop folder's casing.
+- **Course id comes from the manifest** (lowercased), not the folder name, so renames on disk don't split a course's identity.
+
+**Selective & incremental parameters** (composable on `GET /api/sync/bundle`):
+
+- `courseIds=a,b` — bundle only those courses. Absent courses are untouched on the device.
+- `since=<ISO 8601>` — mtime-based incremental: only files modified after the timestamp are archived. Semantics:
+  - A course with **zero** changed files is omitted entirely.
+  - When a course has any change, its `meta.json`/`manifest.json` ride along regardless of mtime, so the device's course list stays current.
+  - Unchanged files being absent is what makes it correct: the device keeps its local copy, and only changed files overwrite.
+  - Invalid `since` → HTTP 400 (never silently full-sync).
+- Response headers carry `X-Sync-Generated-At` / `X-Sync-Courses` / `X-Sync-Files` for progress UI and cursors.
+
+**Merge safety on extract** (`merge_annotations_lww`): `annotations.json` is never clobbered — incoming strokes merge last-writer-wins by `id` (ISO date strings compare lexicographically; newer entry always wins, so deletion tombstones survive). This protects iPad-local markup that hasn't been pushed yet. Checkpoint files overwrite, matching the previous behavior.
+
+### 20.3 Device Storage & Offline Serving
+
+- **Courses live in `<Documents>/courses/<course-id>/`** — user-visible in the Files app (Info.plist sets `UIFileSharingEnabled` + `LSSupportsOpenInPlace`). Prompts stay in app-support (`prompts/`). There is deliberately no migration from the old app-support location; a re-sync repopulates.
+- **Lesson images load from the device, always.** `MarkdownViewer` rewrites `assets/…` references to `courseasset://localhost/<courseId>/assets/…` on the iPad (`courseAssetBase()` in `api.ts`). The `courseasset` URI scheme is registered in tauripad and served from `Documents/courses` with content-type detection and path-traversal guards (`pdf::parse_course_asset_uri`, shared by both crates via the symlinked `pdf.rs`).
+- **Strictly local, no remote fallback**: if an asset isn't on the device, the image fails visibly. Local asset references never silently fall back to the desktop's IP. External `http(s)` image links pass through untouched and require connectivity by design.
+- **PDFs**: `resolve_pdf_path` (shared `tauri/src/pdf.rs`) understands both `/api/courses/…` and `courseasset://…` URLs and maps them to the on-disk course folder (Documents on iOS), so the pdfium pipeline opens synced textbooks offline.
+
+### 20.4 API Surface (server, `app/src/lib/server/api.ts`)
+
+| Endpoint | Method | Purpose |
+| --- | --- | --- |
+| `/api/sync/courses` | GET | Compact course list for the picker |
+| `/api/sync/bundle` | GET | Streaming zip archive; params `courseIds`, `since`, `includeLlmKeys` |
+| `/api/sync/push` | POST | iPad → desktop push of checkpoints & annotations (separate flow) |
+
+### 20.5 Design Invariants
+
+- No browser/paired-web mode anywhere in the sync path; no compatibility or migration shims. Clean, optimized paths only, for Desktop Tauri and Mobile Tauri.
+- Large payloads never pass through the webview: no JSON asset bundles, no base64, no per-byte IndexedDB mirroring.
+- One bundle format (zip), one bundling function (`createSyncBundleZipStream`), reused concepts from the backup exporter rather than a parallel mechanism.
+
+### 20.6 Testing Strategy
+
+Current coverage: Bun unit tests against `handleApiRequest` (`app/src/lib/server/api.sync.test.ts`) verify bundle contents, `_backup` exclusion, incremental filtering, empty-course omission, invalid-`since` rejection, and the course-list endpoint; Rust unit tests cover the `courseasset` URI parser.
+
+**Preferred direction going forward: testing inside the Tauri builds and via MCP capabilities** rather than browser-level harnesses — i.e. `cargo test` within the `tauri`/`tauripad` crates for extraction/merge/protocol logic, and exercising the live server surface through the `coursedeck` MCP tools where practical. New sync behavior should add coverage in those layers first.
+
 
 

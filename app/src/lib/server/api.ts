@@ -30,7 +30,7 @@ import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import type { SchedulePreferences } from '../schedule';
 import { ScheduleParser, toggleEventDone } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
-import { createDataBackupZip, createDataBackupZipStream, restoreDataBackupZip } from './backup';
+import { createDataBackupZip, createDataBackupZipStream, createSyncBundleZipStream, restoreDataBackupZip } from './backup';
 import { SyncService } from './services/sync/sync.service';
 import { GoogleCalendarProvider } from './services/sync/google.provider';
 import { ArcSyncProvider } from './services/sync/arc.provider';
@@ -597,59 +597,63 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       });
     }
 
-    // ---- /api/sync/bundle (iPad offline sync) ----
+    // ---- /api/sync/courses (desktop course list for selective sync) ----
+    if (pathname === '/api/sync/courses' && method === 'GET') {
+      const courses = CourseService.listCourses()
+        .filter((c) => !c.archived)
+        .map((c) => ({
+          id: c.id.toLowerCase(),
+          title: c.title || c.id,
+          lessonCount: (c.units ?? []).reduce((sum, u) => sum + (u.lessons?.length || 0), 0),
+          coursePDF: Boolean(c.coursePDF)
+        }))
+        .sort((a, b) => a.title.localeCompare(b.title));
+      return json({ courses });
+    }
+
+    // ---- /api/sync/bundle (iPad offline sync: streaming zip archive) ----
     if (pathname === '/api/sync/bundle' && method === 'GET') {
       const courseIdsParam = url.searchParams.get('courseIds');
       const requestedIds = courseIdsParam
         ? courseIdsParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
         : null;
 
-      const allCourses = CourseService.listCourses();
-      const courses = requestedIds
-        ? allCourses.filter((c) => requestedIds.includes(c.id.toLowerCase()))
-        : allCourses;
+      const sinceParam = url.searchParams.get('since');
+      if (sinceParam && Number.isNaN(Date.parse(sinceParam))) {
+        return error(400, 'Invalid "since" timestamp — use ISO 8601 (e.g. 2026-10-27T12:00:00Z)');
+      }
 
-      const bundleCourses = courses.map((manifest) => {
-        const courseId = manifest.id.toLowerCase();
-        const courseDir = safeJoin(getCoursesDir(), courseId);
-
-        const files: Record<string, string> = {};
-        if (fs.existsSync(courseDir)) {
-          const entries = fs.readdirSync(courseDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.isFile() && entry.name.endsWith('.md')) {
-              try {
-                files[entry.name] = fs.readFileSync(safeJoin(courseDir, entry.name), 'utf8');
-              } catch {
-                // skip unreadable files
-              }
-            }
-          }
-        }
-
-        const checkpoints = CourseService.getCheckpoints(courseId);
-        const annotations = CourseService.getAnnotations(courseId);
-        return { manifest, files, checkpoints, annotations };
-      });
-
-      const prompts = PromptService.listPrompts();
+      const generatedAt = new Date().toISOString();
       const includeLlmKeys = url.searchParams.get('includeLlmKeys') === 'true';
       const llmStore = LLMService.loadStore();
-      const llmConfig = {
-        version: llmStore.version,
-        activeId: llmStore.activeId,
-        cards: llmStore.cards.map((card) => ({
-          ...card,
-          apiKey: includeLlmKeys ? card.apiKey : undefined
-        }))
-      };
 
-      return json({
-        version: 1,
-        generatedAt: new Date().toISOString(),
-        courses: bundleCourses,
-        prompts,
-        llmConfig
+      const { stream, courseCount, fileCount } = createSyncBundleZipStream({
+        courseIds: requestedIds,
+        since: sinceParam,
+        syncMeta: {
+          version: 1,
+          generatedAt,
+          llmConfig: {
+            version: llmStore.version,
+            activeId: llmStore.activeId,
+            cards: llmStore.cards.map((card) => ({
+              ...card,
+              apiKey: includeLlmKeys ? card.apiKey : undefined
+            }))
+          },
+          prompts: PromptService.listPrompts()
+        }
+      });
+
+      return new Response(stream, {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="coursedeck-sync-${generatedAt}.zip"`,
+          'X-Sync-Generated-At': generatedAt,
+          'X-Sync-Courses': String(courseCount),
+          'X-Sync-Files': String(fileCount),
+          'Cache-Control': 'no-store'
+        }
       });
     }
 

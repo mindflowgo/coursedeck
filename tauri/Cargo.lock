@@ -1894,6 +1894,7 @@ dependencies = [
  "base64 0.22.1",
  "image",
  "pdfium-render",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",

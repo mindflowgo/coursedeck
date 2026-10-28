@@ -67,6 +67,21 @@ export function getApiBaseUrl(): string {
   return '';
 }
 
+/**
+ * Base URL for course asset references in rendered markdown.
+ *
+ * iPad app: assets are synced onto the device's own filesystem and served
+ * through the `courseasset://` protocol registered in tauripad, so lesson
+ * images display offline. Everywhere else (desktop app, paired browser)
+ * they come from the backend HTTP route.
+ */
+export function courseAssetBase(courseId: string): string {
+  if (typeof window !== 'undefined' && isTauriMobile()) {
+    return `courseasset://localhost/${encodeURIComponent(courseId.toLowerCase())}`;
+  }
+  return `${getApiBaseUrl()}/api/courses/${courseId}`;
+}
+
 // Singleton reachability cache
 let _serverReachable: boolean | null = null;
 let _lastReachabilityCheck = 0;

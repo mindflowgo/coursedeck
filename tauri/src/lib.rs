@@ -539,7 +539,6 @@ pub fn run() {
             settings::set_setting,
             save_pdf_file,
             open_course_folder,
-            courses_fs::save_course_files,
             courses_fs::get_lesson_bundle,
             courses_fs::read_course_doc,
             courses_fs::save_course_doc,
