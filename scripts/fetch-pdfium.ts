@@ -111,10 +111,31 @@ async function fetchIosFrameworks() {
   const simFw = path.join(simDir, 'lib', 'pdfium.framework');
 
   if (fs.existsSync(deviceFw) && fs.existsSync(simFw)) {
+    console.log('[fetch-pdfium] Generating dSYMs via dsymutil...');
+    const deviceDsym = path.join(deviceDir, 'lib', 'pdfium.framework.dSYM');
+    const simDsym = path.join(simDir, 'lib', 'pdfium.framework.dSYM');
+
+    if (fs.existsSync(deviceDsym)) fs.rmSync(deviceDsym, { recursive: true, force: true });
+    if (fs.existsSync(simDsym)) fs.rmSync(simDsym, { recursive: true, force: true });
+
+    try {
+      execSync(`dsymutil "${path.join(deviceFw, 'pdfium')}" -o "${deviceDsym}" 2>/dev/null || true`);
+      execSync(`dsymutil "${path.join(simFw, 'pdfium')}" -o "${simDsym}" 2>/dev/null || true`);
+    } catch (err) {
+      console.warn('[fetch-pdfium] Warning: dsymutil failed to generate dSYMs:', err);
+    }
+
     console.log('[fetch-pdfium] Creating universal pdfium.xcframework via xcodebuild...');
     try {
+      const deviceArgs = fs.existsSync(deviceDsym)
+        ? `-framework "${deviceFw}" -debug-symbols "${deviceDsym}"`
+        : `-framework "${deviceFw}"`;
+      const simArgs = fs.existsSync(simDsym)
+        ? `-framework "${simFw}" -debug-symbols "${simDsym}"`
+        : `-framework "${simFw}"`;
+
       execSync(
-        `xcodebuild -create-xcframework -framework "${deviceFw}" -framework "${simFw}" -output "${xcframeworkPath}"`,
+        `xcodebuild -create-xcframework ${deviceArgs} ${simArgs} -output "${xcframeworkPath}"`,
         { stdio: 'inherit' }
       );
       console.log(`[fetch-pdfium] Created: ${path.relative(ROOT_DIR, xcframeworkPath)}`);

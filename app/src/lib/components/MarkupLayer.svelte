@@ -11,6 +11,7 @@
   import {
     MARKUP_PRESETS,
     hitTestStroke,
+    isCommittableStroke,
     strokeToHighlightPath,
     strokeToMarkerPath
   } from '$lib/markup/render';
@@ -35,6 +36,7 @@
     containerEl?: HTMLElement | null;
   } = $props();
 
+  let overlayEl: HTMLDivElement;
   let svgEl: SVGSVGElement;
   let livePathEl: SVGPathElement;
 
@@ -121,25 +123,27 @@
     const stroke = liveStroke(markupUi.tool, markupUi.color);
     const d = isMarker
       ? strokeToMarkerPath(stroke, scale, { live: true })
-      : strokeToHighlightPath(stroke, scale);
+      : strokeToHighlightPath(stroke, scale, { live: true });
     livePathEl.setAttribute('d', d);
 
+    livePathEl.setAttribute('fill', preset.color);
+    livePathEl.setAttribute('stroke', 'none');
+    livePathEl.removeAttribute('stroke-width');
+    livePathEl.removeAttribute('stroke-opacity');
+
     if (isMarker) {
-      livePathEl.setAttribute('fill', preset.color);
-      livePathEl.setAttribute('stroke', 'none');
-      livePathEl.removeAttribute('stroke-width');
-      livePathEl.removeAttribute('stroke-opacity');
+      livePathEl.removeAttribute('fill-opacity');
+      livePathEl.style.mixBlendMode = 'normal';
     } else {
-      livePathEl.setAttribute('fill', 'none');
-      livePathEl.setAttribute('stroke', preset.color);
-      livePathEl.setAttribute('stroke-width', String(preset.width * scale));
-      livePathEl.setAttribute('stroke-opacity', isDark ? '0.5' : '0.4');
+      livePathEl.setAttribute('fill-opacity', isDark ? '0.5' : '0.4');
+      livePathEl.style.mixBlendMode = isDark ? 'screen' : 'multiply';
     }
   }
 
   function clearLive(): void {
     currentPoints = [];
     livePathEl?.setAttribute('d', '');
+    livePathEl?.style.removeProperty('mix-blend-mode');
   }
 
   function cancelStroke(): void {
@@ -174,10 +178,19 @@
   function onPointerDown(e: PointerEvent): void {
     if (!active) return;
     e.preventDefault();
-    try {
-      svgEl.setPointerCapture(e.pointerId);
-    } catch {
-      // Capture is best-effort
+
+    // Palm rejection: if already drawing with a pointer (e.g. Apple Pencil),
+    // ignore secondary touches (palm/fingers hitting the screen).
+    if (drawingPointerId !== null && drawingPointerId !== e.pointerId) {
+      return;
+    }
+
+    // Only set pointer capture for mouse; touch/pen are implicitly captured
+    // and calling setPointerCapture on pen causes gesture conflicts on iOS WebKit.
+    if (e.pointerType === 'mouse') {
+      try {
+        overlayEl.setPointerCapture(e.pointerId);
+      } catch {}
     }
 
     if (e.pointerType === 'pen' && !penSeen) {
@@ -189,9 +202,11 @@
 
     if (e.pointerType === 'touch') {
       activeTouchIds.add(e.pointerId);
-      // If "Pencil only" box is checked, touch only scrolls:
+      // If "Pencil only" box is checked, touch only scrolls (only if not drawing):
       if (markupUi.pencilOnly) {
-        startPan(e);
+        if (drawingPointerId === null) {
+          startPan(e);
+        }
         return;
       }
       // Default: finger OR pencil draws. If 2 fingers touch down, cancel stroke and pan (double-touch scroll):
@@ -262,7 +277,27 @@
       erasing = false;
       return;
     }
-    if (!strokeCancelled && currentPoints.length >= 3) {
+    if (!strokeCancelled && isCommittableStroke(currentPoints)) {
+      addStroke(
+        courseId,
+        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, authorWidth)
+      );
+    }
+    clearLive();
+  }
+
+  function onPointerCancel(e: PointerEvent): void {
+    if (e.pointerType === 'touch') {
+      activeTouchIds.delete(e.pointerId);
+      if (activeTouchIds.size === 0) {
+        isPanning = false;
+      }
+    }
+    if (drawingPointerId !== e.pointerId) return;
+    drawingPointerId = null;
+    erasing = false;
+    // Commit any valid committable stroke so an OS interrupt doesn't discard user drawing
+    if (!strokeCancelled && isCommittableStroke(currentPoints)) {
       addStroke(
         courseId,
         createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, authorWidth)
@@ -274,11 +309,10 @@
 
 <svelte:window onbeforeunload={flushNow} onvisibilitychange={() => (document.hidden ? flushNow() : undefined)} />
 
-<svg
-  bind:this={svgEl}
-  width={svgWidth ? `${svgWidth}px` : '100%'}
-  height={svgHeight ? `${svgHeight}px` : '100%'}
-  viewBox={svgWidth && svgHeight ? `0 0 ${svgWidth} ${svgHeight}` : undefined}
+<!-- Pointer handlers, pointer capture, and touch-action live on this HTML
+     wrapper: WebKit's handling of all three on SVG elements is unreliable. -->
+<div
+  bind:this={overlayEl}
   class="markup-overlay"
   class:active
   role="presentation"
@@ -286,8 +320,16 @@
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
-  onpointercancel={onPointerUp}
+  onpointercancel={onPointerCancel}
 >
+  <svg
+    bind:this={svgEl}
+    width={svgWidth ? `${svgWidth}px` : '100%'}
+    height={svgHeight ? `${svgHeight}px` : '100%'}
+    viewBox={svgWidth && svgHeight ? `0 0 ${svgWidth} ${svgHeight}` : undefined}
+    class="block h-full w-full overflow-visible"
+    role="presentation"
+  >
   {#if ready && markupUi.show}
     {#each strokes as stroke (stroke.id)}
       {#if stroke.tool === 'marker'}
@@ -300,25 +342,22 @@
       {:else}
         <path
           class="markup-highlighter"
-          fill="none"
-          stroke={MARKUP_PRESETS[stroke.color].color}
-          stroke-width={MARKUP_PRESETS[stroke.color].width * scaleOf(stroke)}
-          stroke-opacity={isDark ? '0.5' : '0.4'}
-          stroke-linecap="round"
-          stroke-linejoin="round"
+          fill={MARKUP_PRESETS[stroke.color].color}
+          fill-opacity={isDark ? '0.5' : '0.4'}
+          stroke="none"
           d={strokeToHighlightPath(stroke, scaleOf(stroke))}
         />
       {/if}
     {/each}
   {/if}
   <path bind:this={livePathEl} class="markup-live" />
-</svg>
+  </svg>
+</div>
 
 <style>
-  svg.markup-overlay {
+  div.markup-overlay {
     position: absolute;
-    top: 0;
-    left: 0;
+    inset: 0;
     overflow: visible;
     z-index: 5;
     pointer-events: none;
@@ -326,23 +365,25 @@
     user-select: none;
     -webkit-touch-callout: none;
   }
-  svg.markup-overlay.active {
+  div.markup-overlay.active {
     pointer-events: auto;
     touch-action: none;
     cursor: crosshair;
+  }
+  div.markup-overlay svg {
+    pointer-events: none;
   }
   .markup-marker {
     pointer-events: none;
   }
   .markup-highlighter {
-    fill: none;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    mix-blend-mode: multiply;
     pointer-events: none;
   }
+  :global(.dark) .markup-highlighter {
+    mix-blend-mode: screen;
+  }
   .markup-live {
-    stroke-linecap: round;
-    stroke-linejoin: round;
     pointer-events: none;
   }
 </style>

@@ -119,3 +119,11 @@ targets:
         outputFiles:
           - $(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a
           - $(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a
+    postBuildScripts:
+      - script: |
+          if [ -d "${DWARF_DSYM_FOLDER_PATH}" ] && [ -d "${SRCROOT}/Frameworks/pdfium.xcframework/ios-arm64/dSYMs/pdfium.framework.dSYM" ]; then
+            echo "Ensuring pdfium.framework.dSYM is copied to ${DWARF_DSYM_FOLDER_PATH}..."
+            cp -R "${SRCROOT}/Frameworks/pdfium.xcframework/ios-arm64/dSYMs/pdfium.framework.dSYM" "${DWARF_DSYM_FOLDER_PATH}/" || true
+          fi
+        name: Copy Framework dSYMs
+        basedOnDependencyAnalysis: false

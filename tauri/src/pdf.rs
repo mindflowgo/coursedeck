@@ -1,4 +1,3 @@
-use image::ImageEncoder;
 use pdfium_render::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -384,13 +383,13 @@ fn render_page_to_rgb_image(page: &PdfPage, scale: f32) -> Result<image::RgbImag
 
 fn encode_rgb_image_to_jpeg(rgb_image: &image::RgbImage, quality: u8) -> Result<Vec<u8>, String> {
     let mut jpeg_bytes = Vec::new();
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
+    let encoder = jpeg_encoder::Encoder::new(&mut jpeg_bytes, quality);
     encoder
-        .write_image(
+        .encode(
             rgb_image.as_raw(),
-            rgb_image.width(),
-            rgb_image.height(),
-            image::ExtendedColorType::Rgb8,
+            rgb_image.width() as u16,
+            rgb_image.height() as u16,
+            jpeg_encoder::ColorType::Rgb,
         )
         .map_err(|e| format!("JPEG encoding failed: {e}"))?;
 

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import {
   MARKUP_PRESETS,
   hitTestStroke,
+  isCommittableStroke,
   mergeStrokes,
+  strokePathLength,
   strokePoints,
   strokeToHighlightPath,
   strokeToMarkerPath
@@ -37,6 +39,30 @@ describe('strokePoints', () => {
   });
 });
 
+describe('strokePathLength', () => {
+  it('sums travel across consecutive points', () => {
+    expect(strokePathLength({ points: [0, 0, 0.5, 3, 4, 0.5, 3, 10, 0.5] })).toBe(11);
+  });
+
+  it('is zero for empty or single-point strokes', () => {
+    expect(strokePathLength({ points: [] })).toBe(0);
+    expect(strokePathLength({ points: [10, 10, 0.5] })).toBe(0);
+  });
+});
+
+describe('isCommittableStroke', () => {
+  it('rejects empty, single-point, and near-zero-travel fragments', () => {
+    expect(isCommittableStroke([])).toBe(false);
+    expect(isCommittableStroke([10, 10, 0.5])).toBe(false);
+    expect(isCommittableStroke([10, 10, 0.5, 11, 11, 0.5])).toBe(false);
+  });
+
+  it('accepts strokes with two points and enough travel', () => {
+    expect(isCommittableStroke([10, 10, 0.5, 14, 10, 0.5])).toBe(true);
+    expect(isCommittableStroke(makeStroke().points)).toBe(true);
+  });
+});
+
 describe('strokeToMarkerPath', () => {
   it('produces a closed filled outline around the stroke', () => {
     const d = strokeToMarkerPath(makeStroke(), 1);
@@ -58,16 +84,28 @@ describe('strokeToMarkerPath', () => {
 });
 
 describe('strokeToHighlightPath', () => {
-  it('smooths a multi-point polyline with quadratic segments', () => {
+  it('produces a closed filled outline around the highlight stroke', () => {
     const d = strokeToHighlightPath(makeStroke({ tool: 'highlighter' }), 1);
-    expect(d.startsWith('M 10 10')).toBe(true);
-    expect(d).toContain('Q ');
-    expect(d).toContain('L 90 10');
+    expect(d.startsWith('M ')).toBe(true);
+    expect(d.endsWith('Z')).toBe(true);
+    expect(d.length).toBeGreaterThan(20);
   });
 
-  it('renders a dot for a single-point stroke', () => {
+  it('scales outline coordinates with the render scale', () => {
+    const d1 = strokeToHighlightPath(makeStroke({ tool: 'highlighter' }), 1);
+    const d2 = strokeToHighlightPath(makeStroke({ tool: 'highlighter' }), 2);
+    expect(d1.endsWith('Z')).toBe(true);
+    expect(d2.endsWith('Z')).toBe(true);
+  });
+
+  it('renders a closed circular outline for a single-point stroke', () => {
     const d = strokeToHighlightPath(makeStroke({ points: [10, 10, 0.5] }), 1);
-    expect(d).toBe('M 10 10 L 10.01 10');
+    expect(d.startsWith('M ')).toBe(true);
+    expect(d.endsWith('Z')).toBe(true);
+  });
+
+  it('returns empty path for a stroke with no points', () => {
+    expect(strokeToHighlightPath(makeStroke({ points: [] }), 1)).toBe('');
   });
 });
 

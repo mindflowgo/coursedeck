@@ -175,18 +175,18 @@
 			path = Externals;
 			sourceTree = "<group>";
 		};
-		"TEMP_0F2F9C0D-DA6A-48A2-8031-3337B53D2EEF" /* x86_64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = x86_64;
-			sourceTree = "<group>";
-		};
-		"TEMP_68544093-FF5C-4958-8C69-2D01CF9971FB" /* arm64 */ = {
+		"TEMP_0CA30E12-778A-46D0-A296-488CB4A27EF0" /* arm64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = arm64;
+			sourceTree = "<group>";
+		};
+		"TEMP_5EAF46FB-F504-40FE-9030-5EC09A07A515" /* x86_64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = x86_64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -201,6 +201,7 @@
 				21C59826D51D4DCB185A1656 /* Resources */,
 				88FC0167537894958832BD01 /* Frameworks */,
 				9E622902FC6FA7EF235485E0 /* Embed Frameworks */,
+				29645D0A3A3A6FF827BF1E4B /* Copy Framework dSYMs */,
 			);
 			buildRules = (
 			);
@@ -260,6 +261,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		29645D0A3A3A6FF827BF1E4B /* Copy Framework dSYMs */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Framework dSYMs";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ -d \"${DWARF_DSYM_FOLDER_PATH}\" ] && [ -d \"${SRCROOT}/Frameworks/pdfium.xcframework/ios-arm64/dSYMs/pdfium.framework.dSYM\" ]; then\n  echo \"Ensuring pdfium.framework.dSYM is copied to ${DWARF_DSYM_FOLDER_PATH}...\"\n  cp -R \"${SRCROOT}/Frameworks/pdfium.xcframework/ios-arm64/dSYMs/pdfium.framework.dSYM\" \"${DWARF_DSYM_FOLDER_PATH}/\" || true\nfi\n";
+		};
 		40159455947CEC8162DB0138 /* Build Rust Code */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;

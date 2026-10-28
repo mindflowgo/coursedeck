@@ -220,7 +220,10 @@
       },
       {
         root: viewportContainerEl,
-        rootMargin: '250px 0px 250px 0px',
+        // Percentage margins resolve against the root's own height, so the
+        // prefetch window scales with the viewport (≈615px on a 12.9" iPad)
+        // instead of a fixed 250px that only suits phone-sized pages.
+        rootMargin: '45% 0px 45% 0px',
         threshold: 0.01
       }
     );
@@ -415,6 +418,12 @@
       if (maxVis + 2 < totalPages) needed.push({ pageIndex: maxVis + 2, priority: 3 });
       if (minVis - 2 >= 0) needed.push({ pageIndex: minVis - 2, priority: 3 });
     }
+
+    // 3. Page-turn neighbors of the current page are always wanted, so jumps
+    //    via the page input or chevron buttons never land on a skeleton.
+    //    Already-cached neighbors are deduped below.
+    if (currentPage - 2 >= 0) needed.push({ pageIndex: currentPage - 2, priority: 2 });
+    if (currentPage < totalPages) needed.push({ pageIndex: currentPage, priority: 2 });
 
     for (const req of needed) {
       const currentScale = pageScales[req.pageIndex] || 0;

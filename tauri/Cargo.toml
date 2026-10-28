@@ -25,3 +25,4 @@ base64 = "0.22"
 percent-encoding = "2"
 pdfium-render = { version = "0.8", features = ["image", "sync"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+jpeg-encoder = { version = "0.7", features = ["simd"] }

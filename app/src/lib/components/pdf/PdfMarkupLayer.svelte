@@ -10,6 +10,7 @@
   import {
     MARKUP_PRESETS,
     hitTestStroke,
+    isCommittableStroke,
     strokeToHighlightPath,
     strokeToMarkerPath
   } from '$lib/markup/render';
@@ -41,6 +42,7 @@
     onStrokeDrawn
   }: Props = $props();
 
+  let overlayEl: HTMLDivElement | undefined;
   let svgEl: SVGSVGElement | undefined;
   let livePathEl: SVGPathElement | undefined;
 
@@ -92,25 +94,27 @@
     const stroke = liveStroke(markupUi.tool, markupUi.color);
     const d = isMarker
       ? strokeToMarkerPath(stroke, scale, { live: true })
-      : strokeToHighlightPath(stroke, scale);
+      : strokeToHighlightPath(stroke, scale, { live: true });
     livePathEl.setAttribute('d', d);
 
+    livePathEl.setAttribute('fill', preset.color);
+    livePathEl.setAttribute('stroke', 'none');
+    livePathEl.removeAttribute('stroke-width');
+    livePathEl.removeAttribute('stroke-opacity');
+
     if (isMarker) {
-      livePathEl.setAttribute('fill', preset.color);
-      livePathEl.setAttribute('stroke', 'none');
-      livePathEl.removeAttribute('stroke-width');
-      livePathEl.removeAttribute('stroke-opacity');
+      livePathEl.removeAttribute('fill-opacity');
+      livePathEl.style.mixBlendMode = 'normal';
     } else {
-      livePathEl.setAttribute('fill', 'none');
-      livePathEl.setAttribute('stroke', preset.color);
-      livePathEl.setAttribute('stroke-width', String(preset.width * scale));
-      livePathEl.setAttribute('stroke-opacity', isDark ? '0.5' : '0.4');
+      livePathEl.setAttribute('fill-opacity', isDark ? '0.5' : '0.4');
+      livePathEl.style.mixBlendMode = isDark ? 'screen' : 'multiply';
     }
   }
 
   function clearLive(): void {
     currentPoints = [];
     livePathEl?.setAttribute('d', '');
+    livePathEl?.style.removeProperty('mix-blend-mode');
   }
 
   function cancelStroke(): void {
@@ -143,11 +147,22 @@
   }
 
   function onPointerDown(e: PointerEvent): void {
-    if (!active || !svgEl) return;
+    if (!active || !overlayEl) return;
     e.preventDefault();
-    try {
-      svgEl.setPointerCapture(e.pointerId);
-    } catch {}
+
+    // Palm rejection: if already drawing with a pointer (e.g. Apple Pencil),
+    // ignore secondary touches (palm/fingers hitting the screen).
+    if (drawingPointerId !== null && drawingPointerId !== e.pointerId) {
+      return;
+    }
+
+    // Only set pointer capture for mouse; touch/pen are implicitly captured
+    // and calling setPointerCapture on pen causes gesture conflicts on iOS WebKit.
+    if (e.pointerType === 'mouse') {
+      try {
+        overlayEl.setPointerCapture(e.pointerId);
+      } catch {}
+    }
 
     if (e.pointerType === 'pen' && !penSeen) {
       penSeen = true;
@@ -158,9 +173,11 @@
 
     if (e.pointerType === 'touch') {
       activeTouchIds.add(e.pointerId);
-      // If "Pencil only" mode is active, touch pan-scrolls:
+      // If "Pencil only" mode is active, touch pan-scrolls (only if not drawing):
       if (markupUi.pencilOnly) {
-        startPan(e);
+        if (drawingPointerId === null) {
+          startPan(e);
+        }
         return;
       }
       // If 2 fingers touch down, cancel stroke and pan (two-finger scroll):
@@ -231,7 +248,28 @@
       return;
     }
 
-    if (!strokeCancelled && currentPoints.length >= 3) {
+    if (!strokeCancelled && isCommittableStroke(currentPoints)) {
+      addStroke(
+        courseId,
+        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, pageWidth)
+      );
+      onStrokeDrawn?.(file);
+    }
+    clearLive();
+  }
+
+  function onPointerCancel(e: PointerEvent): void {
+    if (e.pointerType === 'touch') {
+      activeTouchIds.delete(e.pointerId);
+      if (activeTouchIds.size === 0) {
+        isPanning = false;
+      }
+    }
+    if (drawingPointerId !== e.pointerId) return;
+    drawingPointerId = null;
+    erasing = false;
+    // Commit any valid committable stroke so an OS interrupt doesn't discard user drawing
+    if (!strokeCancelled && isCommittableStroke(currentPoints)) {
       addStroke(
         courseId,
         createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, pageWidth)
@@ -242,71 +280,79 @@
   }
 </script>
 
-<svg
-  bind:this={svgEl}
-  width="{displayWidth}px"
-  height="{displayHeight}px"
-  viewBox="0 0 {displayWidth} {displayHeight}"
-  class="pdf-markup-overlay absolute inset-0 overflow-visible"
+<!-- Pointer handlers, pointer capture, and touch-action live on this HTML
+     wrapper: WebKit's handling of all three on SVG elements is unreliable,
+     which let the iPad's scroll recognizer steal pen gestures mid-stroke. -->
+<div
+  bind:this={overlayEl}
+  class="pdf-markup-overlay absolute inset-0"
   class:active
   role="presentation"
   aria-label="PDF page markup annotations"
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
-  onpointercancel={onPointerUp}
+  onpointercancel={onPointerCancel}
 >
-  {#if markupUi.show}
-    {#each strokes as stroke (stroke.id)}
-      {#if stroke.tool === 'marker'}
-        <path
-          class="markup-marker"
-          fill={MARKUP_PRESETS[stroke.color].color}
-          stroke="none"
-          d={strokeToMarkerPath(stroke, scale)}
-        />
-      {:else}
-        <path
-          class="markup-highlighter"
-          fill="none"
-          stroke={MARKUP_PRESETS[stroke.color].color}
-          stroke-width={MARKUP_PRESETS[stroke.color].width * scale}
-          stroke-opacity={isDark ? '0.5' : '0.4'}
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          d={strokeToHighlightPath(stroke, scale)}
-        />
-      {/if}
-    {/each}
-  {/if}
-  <path bind:this={livePathEl} class="markup-live" />
-</svg>
+  <svg
+    bind:this={svgEl}
+    width="{displayWidth}px"
+    height="{displayHeight}px"
+    viewBox="0 0 {displayWidth} {displayHeight}"
+    class="block h-full w-full overflow-visible"
+    role="presentation"
+  >
+    {#if markupUi.show}
+      {#each strokes as stroke (stroke.id)}
+        {#if stroke.tool === 'marker'}
+          <path
+            class="markup-marker"
+            fill={MARKUP_PRESETS[stroke.color].color}
+            stroke="none"
+            d={strokeToMarkerPath(stroke, scale)}
+          />
+        {:else}
+          <path
+            class="markup-highlighter"
+            fill={MARKUP_PRESETS[stroke.color].color}
+            fill-opacity={isDark ? '0.5' : '0.4'}
+            stroke="none"
+            d={strokeToHighlightPath(stroke, scale)}
+          />
+        {/if}
+      {/each}
+    {/if}
+    <path bind:this={livePathEl} class="markup-live" />
+  </svg>
+</div>
 
 <style>
-  svg.pdf-markup-overlay {
+  div.pdf-markup-overlay {
     z-index: 10;
     pointer-events: none;
     -webkit-user-select: none;
     user-select: none;
     -webkit-touch-callout: none;
   }
-  svg.pdf-markup-overlay.active {
+  div.pdf-markup-overlay.active {
     pointer-events: auto;
     touch-action: none;
     cursor: crosshair;
+  }
+  div.pdf-markup-overlay svg {
+    pointer-events: none;
   }
   .markup-marker {
     pointer-events: none;
   }
   .markup-highlighter {
-    fill: none;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    mix-blend-mode: multiply;
     pointer-events: none;
   }
+  :global(.dark) .markup-highlighter {
+    mix-blend-mode: screen;
+  }
   .markup-live {
-    stroke-linecap: round;
-    stroke-linejoin: round;
     pointer-events: none;
   }
 </style>

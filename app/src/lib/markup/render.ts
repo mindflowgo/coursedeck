@@ -42,6 +42,30 @@ export function strokePoints(stroke: Pick<MarkupStroke, 'points'>, scale: number
   return out;
 }
 
+/** Strokes must cover at least this much pen travel (author px) to be saved. */
+export const MIN_COMMIT_TRAVEL_PX = 4;
+
+/** Total pen travel along the flat triplet points, in author px. */
+export function strokePathLength(stroke: Pick<MarkupStroke, 'points'>): number {
+  let length = 0;
+  for (let i = PRESSURE_STRIDE; i + PRESSURE_STRIDE - 1 < stroke.points.length; i += PRESSURE_STRIDE) {
+    const dx = stroke.points[i] - stroke.points[i - PRESSURE_STRIDE];
+    const dy = stroke.points[i + 1] - stroke.points[i - PRESSURE_STRIDE + 1];
+    length += Math.hypot(dx, dy);
+  }
+  return length;
+}
+
+/**
+ * Guard against committing gesture fragments: a real stroke has at least two
+ * points and some minimum travel. Anything shorter is a pen tap or the debris
+ * of an interrupted gesture and would render as a lone round dot.
+ */
+export function isCommittableStroke(points: number[]): boolean {
+  if (points.length < PRESSURE_STRIDE * 2) return false;
+  return strokePathLength({ points }) >= MIN_COMMIT_TRAVEL_PX;
+}
+
 function outlineToPath(outline: number[][]): string {
   if (outline.length < 2) return '';
   const d = outline.reduce((acc, [x0, y0], i, arr) => {
@@ -77,26 +101,29 @@ export function strokeToMarkerPath(
 }
 
 /**
- * Highlighter stroke → smoothed polyline SVG path `d` (quadratic midpoints,
- * round caps via CSS) scaled uniformly from author coordinates.
+ * Highlighter stroke → filled SVG path `d` via perfect-freehand with uniform
+ * width (no pressure thinning) and streamline smoothing. Produces a continuous,
+ * solid closed polygon outline without internal stroke overlapping artifacts.
  */
-export function strokeToHighlightPath(stroke: MarkupStroke, scale: number): string {
+export function strokeToHighlightPath(
+  stroke: MarkupStroke,
+  scale: number,
+  opts?: { live?: boolean }
+): string {
   const pts = strokePoints(stroke, scale);
   if (pts.length === 0) return '';
-  if (pts.length === 1) {
-    const [x, y] = pts[0];
-    return `M ${x} ${y} L ${x + 0.01} ${y}`;
-  }
-  let d = `M ${pts[0][0]} ${pts[0][1]}`;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const mx = (pts[i][0] + pts[i + 1][0]) / 2;
-    const my = (pts[i][1] + pts[i + 1][1]) / 2;
-    d += ` Q ${pts[i][0]} ${pts[i][1]} ${mx} ${my}`;
-  }
-  const last = pts[pts.length - 1];
-  d += ` L ${last[0]} ${last[1]}`;
-  return d;
-}function distToSegmentSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const outline = getStroke(pts, {
+    size: MARKUP_PRESETS[stroke.color].width * scale,
+    thinning: 0,
+    smoothing: 0.6,
+    streamline: 0.6,
+    simulatePressure: false,
+    last: opts?.live ?? false
+  });
+  return outlineToPath(outline);
+}
+
+function distToSegmentSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax;
   const dy = by - ay;
   const lenSq = dx * dx + dy * dy;
