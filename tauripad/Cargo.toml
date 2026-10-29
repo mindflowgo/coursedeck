@@ -17,6 +17,7 @@ tauri = { version = "2", features = ["custom-protocol"] }
 tauri-plugin-http = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-barcode-scanner = "2"
+tauri-plugin-pencilkit = { path = "../../tauri-plugin-pencilkit" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 percent-encoding = "2"

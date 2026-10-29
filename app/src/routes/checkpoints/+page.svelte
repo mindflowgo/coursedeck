@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import {
+    BookOpen,
     FlagTriangleRight,
     Loader2,
     Search,
@@ -18,6 +19,8 @@
     type Checkpoint
   } from '$lib/checkpoint';
   import { parseDocFileName, customTabDisplayName } from '$lib/tabs';
+  import { parsePdfPageFileKey } from '$lib/markup/pdfMarkup';
+  import { clearFile, flushNow } from '$lib/markup/annotationStore.svelte';
 
   interface CourseManifestBrief {
     id: string;
@@ -77,10 +80,16 @@
   async function handleDelete(courseId: string, id: string) {
     deletingId = id;
     try {
-      const res = await apiFetch(`/api/courses/${courseId}/checkpoints/${id}`, {
-        method: 'DELETE'
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const target = checkpoints.find((c) => c.id === id);
+      if (target?.type === 'markup') {
+        clearFile(courseId, target.file);
+        await flushNow();
+      } else {
+        const res = await apiFetch(`/api/courses/${courseId}/checkpoints/${id}`, {
+          method: 'DELETE'
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      }
       checkpoints = checkpoints.filter((c) => c.id !== id);
     } catch (e) {
       console.error('Failed to delete checkpoint:', e);
@@ -91,6 +100,10 @@
   }
 
   function getShortFileLabel(file: string): string {
+    const pdfKey = parsePdfPageFileKey(file);
+    if (pdfKey) {
+      return `p ${pdfKey.pageNumber}`;
+    }
     const parsed = parseDocFileName(file);
     if (!parsed) return file;
     if (parsed.isCourseScope) {
@@ -104,6 +117,10 @@
   }
 
   function getFullFileLabel(file: string): string {
+    const pdfKey = parsePdfPageFileKey(file);
+    if (pdfKey) {
+      return `Book · Page ${pdfKey.pageNumber}`;
+    }
     const parsed = parseDocFileName(file);
     if (!parsed) return file;
     const tabLabel = customTabDisplayName(parsed.tab);
@@ -362,16 +379,21 @@
                     role="button"
                     tabindex="0"
                   >
-                    <!-- Color-dot and small font part of written text (do not include date) -->
+                    <!-- Book icon (markup) or Color-dot (note) and small font part of written text -->
                     <div class="flex items-center space-x-2 min-w-0 flex-1">
-                      <!-- Color-dot -->
-                      <span
-                        class="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs ring-1 ring-black/10 dark:ring-white/10"
-                        style="background-color: {color.dot};"
-                        title={color.label}
-                      ></span>
+                      {#if cp.type === 'markup'}
+                        <span class="shrink-0 flex items-center justify-center" title="PDF Annotations">
+                          <BookOpen class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                        </span>
+                      {:else}
+                        <span
+                          class="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs ring-1 ring-black/10 dark:ring-white/10"
+                          style="background-color: {color.dot};"
+                          title={color.label}
+                        ></span>
+                      {/if}
 
-                      <!-- Short Lesson / Tab Tag -->
+                      <!-- Short Lesson / Tab / Page Tag -->
                       {#if shortLabel}
                         <span class="font-mono text-[10px] px-1.5 py-0.2 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 shrink-0 border border-stone-200/60 dark:border-stone-700/60">
                           {shortLabel}

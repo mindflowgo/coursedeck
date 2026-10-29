@@ -11,6 +11,7 @@
     lessonTitle?: string;
     pageRange?: string;
     readingDescription?: string;
+    initialPage?: number | null;
   }
 
   let {
@@ -20,7 +21,8 @@
     courseId = '',
     lessonTitle = '',
     pageRange = '',
-    readingDescription = ''
+    readingDescription = '',
+    initialPage = null
   }: Props = $props();
 
   // Static environment fact — evaluating it once avoids the state/onMount
@@ -91,7 +93,7 @@
 {:else if !isTauri && url}
   <!-- Standalone browser fallback using standard browser native PDF viewer -->
   <iframe
-    src={url}
+    src={initialPage ? `${url}#page=${initialPage}` : url}
     title={title}
     class="w-full h-full border-0 bg-stone-100 dark:bg-stone-950"
   ></iframe>
@@ -104,6 +106,7 @@
     {lessonTitle}
     {pageRange}
     {readingDescription}
+    {initialPage}
   />
 {:else}
   <div class="h-full w-full flex items-center justify-center text-stone-400 text-xs">

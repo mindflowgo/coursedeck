@@ -1,10 +1,12 @@
 import { docFileName, parseDocFileName, courseTabHref } from './tabs';
+import { parsePdfPageFileKey } from './markup/pdfMarkup';
+import type { MarkupStroke } from './markup/types';
 
 /**
  * Checkpoint domain models, color palette, and routing utilities.
  */
 
-export type CheckpointType = 'note' | 'position';
+export type CheckpointType = 'note' | 'position' | 'markup';
 
 export interface Checkpoint {
   id: string;
@@ -219,11 +221,60 @@ export function resolveRouteFromFile(file: string): { isCourseScope: boolean; is
  * Builds the URL to jump to a checkpoint on a course page.
  */
 export function getCheckpointHref(courseId: string, checkpoint: Checkpoint): string {
+  const pdfKey = parsePdfPageFileKey(checkpoint.file);
+  if (pdfKey) {
+    const cId = (courseId || checkpoint.courseId || '').trim().toLowerCase();
+    return `/courses/${cId}/course/book?page=${pdfKey.pageNumber}`;
+  }
   const parsed = parseDocFileName(checkpoint.file);
   const base = parsed
     ? courseTabHref(courseId, parsed.lessonId, parsed.tab, parsed.isCourseScope)
     : `/courses/${(courseId || '').toLowerCase()}`;
   return `${base}?checkpoint=${encodeURIComponent(checkpoint.id)}`;
+}
+
+/**
+ * Synthesizes checkpoint items for each PDF page that contains active (non-deleted) annotations.
+ * Aggregates all strokes on the same page into a single entry labeled "Annotations" for "p X".
+ */
+export function derivePdfMarkupCheckpoints(
+  courseId: string,
+  courseTitle: string,
+  strokes: MarkupStroke[]
+): Array<Checkpoint & { courseId: string; courseTitle: string }> {
+  const byPage = new Map<number, { pageNumber: number; file: string; date: string }>();
+
+  for (const s of strokes) {
+    if (s.deleted) continue;
+    const pdfKey = parsePdfPageFileKey(s.file);
+    if (!pdfKey) continue;
+
+    const existing = byPage.get(pdfKey.pageNumber);
+    if (!existing || new Date(s.date || 0).getTime() > new Date(existing.date || 0).getTime()) {
+      byPage.set(pdfKey.pageNumber, {
+        pageNumber: pdfKey.pageNumber,
+        file: s.file,
+        date: s.date || new Date().toISOString()
+      });
+    }
+  }
+
+  const list: Array<Checkpoint & { courseId: string; courseTitle: string }> = [];
+  for (const item of byPage.values()) {
+    list.push({
+      id: `markup_${courseId.toLowerCase()}_p${item.pageNumber}`,
+      courseId,
+      courseTitle,
+      file: item.file,
+      verticalPosition: 0,
+      type: 'markup',
+      noteText: 'Annotations',
+      date: item.date,
+      color: 'gold'
+    });
+  }
+
+  return list;
 }
 
 /**

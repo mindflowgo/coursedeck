@@ -788,6 +788,8 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_barcode_scanner::init());
     }
 
+    builder = builder.plugin(tauri_plugin_pencilkit::init());
+
     builder = builder.register_uri_scheme_protocol("courseasset", |ctx, request| {
         serve_course_asset(ctx.app_handle(), &request.uri().to_string())
     });

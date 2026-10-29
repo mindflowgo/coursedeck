@@ -15,8 +15,26 @@
   } from 'lucide-svelte';
   import type { PdfDocumentInfo } from '$lib/pdfClient';
   import { pdfRenderPage, pdfRenderThumbnail, getCoursePdfState, setCoursePdfState } from '$lib/pdfClient';
-  import { canUndo, flushNow, loadAnnotations } from '$lib/markup/annotationStore.svelte';
+  import {
+    markupUi,
+    addStroke,
+    canRedo,
+    canUndo,
+    flushNow,
+    loadAnnotations,
+    redo,
+    undo
+  } from '$lib/markup/annotationStore.svelte';
   import { getPdfPageFileKey } from '$lib/markup/pdfMarkup';
+  import {
+    isPencilKitAvailable,
+    setPencilKitActive,
+    setPencilKitTool,
+    onPencilKitStroke,
+    onPencilKitUndo,
+    onPencilKitRedo,
+    syncPencilKitUndoRedo
+  } from '$lib/markup/pencilKit';
   import MarkupMenu from '$lib/components/MarkupMenu.svelte';
   import PageRenderer from './PageRenderer.svelte';
   import Search from './Search.svelte';
@@ -30,6 +48,7 @@
     lessonTitle?: string;
     pageRange?: string;
     readingDescription?: string;
+    initialPage?: number | null;
     sideBarThumbnails?: boolean;
     sideBarSearch?: boolean;
   }
@@ -42,6 +61,7 @@
     lessonTitle = '',
     pageRange = '',
     readingDescription = '',
+    initialPage = null,
     sideBarThumbnails = $bindable(false),
     sideBarSearch = $bindable(false)
   }: Props = $props();
@@ -50,6 +70,17 @@
   let pageInputValue = $state('1');
   let zoomScale = $state(1.0);
   let isPanMode = $state(false);
+  let lastScrolledInitialPage = $state<number | null>(null);
+
+  $effect(() => {
+    const target = initialPage;
+    if (target && target >= 1 && target <= totalPages && target !== lastScrolledInitialPage) {
+      lastScrolledInitialPage = target;
+      tick().then(() => {
+        scrollToPage(target, true);
+      });
+    }
+  });
 
   // Resolve courseId from prop or path fallback
   const resolvedCourseId = $derived(
@@ -64,6 +95,54 @@
       ? lastDrawnFile
       : currentFile
   );
+
+  const isMarkupActive = $derived(markupUi.mode && markupUi.show);
+
+  function computePdfTopCutoff(): number {
+    const bar = typeof document !== 'undefined' ? document.querySelector('[data-pdf-floating-bar]') : null;
+    if (bar) {
+      const bottom = bar.getBoundingClientRect().bottom;
+      if (bottom > 0) return Math.ceil(bottom + 6);
+    }
+    const subHeader = typeof document !== 'undefined' ? document.querySelector('[data-sub-header]') : null;
+    if (subHeader) {
+      const bottom = subHeader.getBoundingClientRect().bottom;
+      if (bottom > 0) return Math.ceil(bottom + 48);
+    }
+    return 140;
+  }
+
+  // Sync native PencilKit active state and tool selection at viewer level (only when Pencil Mode is enabled)
+  $effect(() => {
+    if (isPencilKitAvailable()) {
+      const topHeight = computePdfTopCutoff();
+      const shouldActivate = isMarkupActive && markupUi.pencilOnly;
+      const u = resolvedCourseId && activeMarkupFile ? canUndo(resolvedCourseId, activeMarkupFile) : false;
+      const r = resolvedCourseId && activeMarkupFile ? canRedo(resolvedCourseId, activeMarkupFile) : false;
+      setPencilKitActive({
+        active: shouldActivate,
+        topHeight,
+        canUndo: u,
+        canRedo: r
+      });
+      if (shouldActivate) {
+        setPencilKitTool(markupUi.eraser ? 'eraser' : markupUi.tool, markupUi.color);
+      }
+    }
+  });
+
+  // Keep native Apple Pencil toolbar undo/redo button enabled states synced with web stroke stack
+  $effect(() => {
+    if (isPencilKitAvailable() && isMarkupActive && markupUi.pencilOnly && resolvedCourseId && activeMarkupFile) {
+      const u = canUndo(resolvedCourseId, activeMarkupFile);
+      const r = canRedo(resolvedCourseId, activeMarkupFile);
+      void syncPencilKitUndoRedo(u, r);
+    }
+  });
+
+  let unsubPencilKit: (() => void) | undefined;
+  let unsubPencilKitUndo: (() => void) | undefined;
+  let unsubPencilKitRedo: (() => void) | undefined;
 
   // Load annotations on mount or when resolvedCourseId changes
   $effect(() => {
@@ -515,6 +594,13 @@
     const targetEl = pageElements.get(targetIdx);
     if (targetEl && viewportContainerEl) {
       targetEl.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
+    } else if (viewportContainerEl) {
+      requestAnimationFrame(() => {
+        const el = pageElements.get(targetIdx);
+        if (el && viewportContainerEl) {
+          el.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
+        }
+      });
     }
   }
 
@@ -653,11 +739,6 @@
       previousZoomScale = remembered.zoomScale;
       zoomScale = remembered.zoomScale;
       sideBarThumbnails = remembered.sideBarThumbnails;
-      const targetPage = Math.max(1, Math.min(totalPages, remembered.page));
-      currentPage = targetPage;
-      tick().then(() => {
-        scrollToPage(targetPage, true);
-      });
     } else {
       // First open: compute fitWidth synchronously before triggering lookahead
       // to eliminate the double-render flash
@@ -668,17 +749,121 @@
         previousZoomScale = initialZoom;
         zoomScale = initialZoom;
       }
-      tick().then(() => {
-        scrollToPage(1, true);
-      });
     }
+
+    const hasExplicitInitial = Boolean(initialPage && initialPage >= 1 && initialPage <= totalPages);
+    const targetPage = hasExplicitInitial && initialPage
+      ? initialPage
+      : remembered
+        ? Math.max(1, Math.min(totalPages, remembered.page))
+        : 1;
+
+    if (hasExplicitInitial && initialPage) {
+      lastScrolledInitialPage = initialPage;
+    }
+
+    currentPage = targetPage;
+    tick().then(() => {
+      scrollToPage(targetPage, true);
+    });
 
     if (typeof document !== 'undefined') {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
     }
+
+    unsubPencilKit = onPencilKitStroke((stroke) => {
+      if (!resolvedCourseId || !isMarkupActive) return;
+      const pts = stroke.viewportPoints;
+      if (!pts || pts.length < 2) return;
+      const vx0 = pts[0];
+      const vy0 = pts[1];
+
+      // Match the page that contains (vx0, vy0)
+      let matchedIdx = -1;
+      let matchedRect: DOMRect | null = null;
+
+      for (const [idx, el] of pageElements) {
+        const r = el.getBoundingClientRect();
+        if (vx0 >= r.left && vx0 <= r.right && vy0 >= r.top && vy0 <= r.bottom) {
+          matchedIdx = idx;
+          matchedRect = r;
+          break;
+        }
+      }
+
+      // If stroke started slightly outside exact box, match closest page vertically
+      if (matchedIdx === -1) {
+        let minDist = Infinity;
+        for (const [idx, el] of pageElements) {
+          const r = el.getBoundingClientRect();
+          const centerY = (r.top + r.bottom) / 2;
+          const dist = Math.abs(vy0 - centerY);
+          if (dist < minDist) {
+            minDist = dist;
+            matchedIdx = idx;
+            matchedRect = r;
+          }
+        }
+      }
+
+      if (matchedIdx === -1 || !matchedRect) return;
+
+      const page = docInfo.pages[matchedIdx];
+      if (!page) return;
+
+      const targetFile = getPdfPageFileKey(docPath, matchedIdx);
+      const authorWidth = page.width;
+      const targetWidth = matchedRect.width || authorWidth;
+      const scale = authorWidth / targetWidth;
+
+      const authorPoints: number[] = [];
+      for (let i = 0; i < pts.length; i += 3) {
+        const x = pts[i];
+        const y = pts[i + 1];
+        const pressure = pts[i + 2] ?? 0.5;
+        authorPoints.push(
+          (x - matchedRect.left) * scale,
+          (y - matchedRect.top) * scale,
+          pressure
+        );
+      }
+
+      addStroke(resolvedCourseId, {
+        id: stroke.id || crypto.randomUUID(),
+        file: targetFile,
+        tool: stroke.tool,
+        color: stroke.color,
+        points: authorPoints,
+        authorWidth,
+        date: stroke.date || new Date().toISOString(),
+        width: stroke.width,
+        opacity: stroke.opacity
+      });
+
+      lastDrawnFile = targetFile;
+    });
+
+    // Wire Apple Pencil toolbar reverse/forward buttons into web undo/redo
+    unsubPencilKitUndo = onPencilKitUndo(() => {
+      if (isMarkupActive && markupUi.pencilOnly && resolvedCourseId && activeMarkupFile) {
+        undo(resolvedCourseId, activeMarkupFile);
+      }
+    });
+
+    unsubPencilKitRedo = onPencilKitRedo(() => {
+      if (isMarkupActive && markupUi.pencilOnly && resolvedCourseId && activeMarkupFile) {
+        redo(resolvedCourseId, activeMarkupFile);
+      }
+    });
   });
 
   onDestroy(() => {
+    unsubPencilKit?.();
+    unsubPencilKitUndo?.();
+    unsubPencilKitRedo?.();
+    if (isPencilKitAvailable()) {
+      setPencilKitActive({ active: false });
+    }
     flushNow();
     if (typeof document !== 'undefined') {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
@@ -756,7 +941,10 @@
     />
 
     <!-- Top Floating Control Bar (Right-side, under tabs) -->
-    <div class="absolute top-3 right-4 z-30 pointer-events-auto inline-flex items-center space-x-1.5 p-1 rounded-xl bg-white/90 dark:bg-stone-900/90 backdrop-blur-md border border-stone-200/90 dark:border-stone-800/90 shadow-lg text-stone-700 dark:text-stone-200">
+    <div
+      data-pdf-floating-bar
+      class="absolute top-3 right-4 z-30 pointer-events-auto inline-flex items-center space-x-1.5 p-1 rounded-xl bg-white/90 dark:bg-stone-900/90 backdrop-blur-md border border-stone-200/90 dark:border-stone-800/90 shadow-lg text-stone-700 dark:text-stone-200"
+    >
       <!-- 1. Thumbnail Toggle -->
       <button
         type="button"
@@ -946,11 +1134,11 @@
               pageHeight={page.height}
               {zoomScale}
               {isPanMode}
+              scrollerEl={viewportContainerEl}
               imgUrl={pageBlobUrls[idx]}
               isLoading={Boolean(pageLoading[idx])}
               searchRects={activeSearchPage === idx ? activeSearchRects : []}
               courseId={resolvedCourseId}
-              scrollerEl={viewportContainerEl}
               onStrokeDrawn={(f) => (lastDrawnFile = f)}
             />
           </div>

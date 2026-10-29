@@ -2096,9 +2096,9 @@ Grade/Level: ${grade || 'High School'}`;
     }
 
     // ---- /api/checkpoints ----
-    // All note checkpoints across non-archived courses, sorted newest to oldest.
+    // All note and PDF markup checkpoints across non-archived courses, sorted newest to oldest.
     if (pathname === '/api/checkpoints' && method === 'GET') {
-      const checkpoints = CourseService.listAllNoteCheckpoints();
+      const checkpoints = CourseService.listAllCheckpoints();
       return json({ checkpoints });
     }
 

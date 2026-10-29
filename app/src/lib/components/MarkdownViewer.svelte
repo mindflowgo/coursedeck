@@ -694,7 +694,7 @@
     {@html renderedHtml}
   </div>
   {#if markupFile}
-    <MarkupLayer {courseId} file={markupFile} scrollerEl={markupScroller} {containerEl} />
+    <MarkupLayer {courseId} file={markupFile} {containerEl} scrollerEl={markupScroller} />
   {/if}
 </div>
 
@@ -846,5 +846,42 @@
     :global(.image-toolbar) {
       display: none !important;
     }
+  }
+
+  /* Sketch block: extended workspace div for freehand sketching & notes in markdown */
+  :global(.sketch-block) {
+    min-height: 850px;
+    width: 100%;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
+    border-radius: 1rem;
+    border: 1.5px dashed rgba(214, 211, 209, 0.85);
+    background-color: rgba(250, 250, 249, 0.45);
+    position: relative;
+    box-sizing: border-box;
+    display: block;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  :global(.dark .sketch-block) {
+    border-color: rgba(87, 83, 78, 0.65);
+    background-color: rgba(28, 25, 23, 0.35);
+  }
+
+  :global(.sketch-block::before) {
+    content: 'Sketch Area';
+    display: block;
+    padding: 0.75rem 1rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    letter-spacing: 0.025em;
+    color: rgba(168, 162, 158, 0.7);
+    pointer-events: none;
+    user-select: none;
+  }
+
+  :global(.dark .sketch-block::before) {
+    color: rgba(120, 113, 108, 0.7);
   }
 </style>

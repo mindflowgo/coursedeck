@@ -15,8 +15,8 @@
     isLoading?: boolean;
     searchRects?: [number, number, number, number][];
     isPanMode?: boolean;
-    courseId?: string;
     scrollerEl?: HTMLElement | null;
+    courseId?: string;
     onStrokeDrawn?: (file: string) => void;
   }
 
@@ -30,8 +30,8 @@
     isLoading = false,
     searchRects = [],
     isPanMode = false,
+    scrollerEl,
     courseId = '',
-    scrollerEl = null,
     onStrokeDrawn
   }: Props = $props();
 

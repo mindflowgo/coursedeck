@@ -53,9 +53,11 @@ function readBoolPref(key: string, fallback: boolean): boolean {
 /** Markup mode UI state shared by the top-bar menu and the overlay. */
 export const markupUi = $state({
   mode: false,
-  tool: 'highlighter' as MarkupTool,
-  color: 'hl-yellow' as MarkupColor,
+  tool: 'marker' as MarkupTool,
+  color: 'yellow' as MarkupColor,
   eraser: false,
+  width: undefined as number | undefined,
+  opacity: undefined as number | undefined,
   pencilOnly: browser ? readBoolPref(PENCIL_ONLY_KEY, false) : false,
   show: browser ? readBoolPref(SHOW_KEY, true) : true
 });
@@ -219,9 +221,11 @@ export function createStroke(
   tool: MarkupTool,
   color: MarkupColor,
   points: number[],
-  authorWidth: number
+  authorWidth: number,
+  width?: number,
+  opacity?: number
 ): MarkupStroke {
-  return {
+  const stroke: MarkupStroke = {
     id: nextId(),
     file,
     tool,
@@ -230,6 +234,9 @@ export function createStroke(
     authorWidth,
     date: new Date().toISOString()
   };
+  if (width !== undefined) stroke.width = width;
+  if (opacity !== undefined) stroke.opacity = opacity;
+  return stroke;
 }
 
 /** Commits a finished stroke (optimistic + queued upsert + undo entry). */

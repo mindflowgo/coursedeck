@@ -22,6 +22,8 @@
   import PDFViewer from '$lib/components/pdf/PDFViewer.svelte';
   import { pdfCloseDocument, prewarmCourseBook, recordCourseBookOpened } from '$lib/pdfClient';
   import MarkupMenu from '$lib/components/MarkupMenu.svelte';
+  import StickyNotePlus from '$lib/components/icons/StickyNotePlus.svelte';
+  import { extendMarkdownContent } from '$lib/markup/extendPage';
   import {
     exitMarkupMode,
     markupUi,
@@ -50,7 +52,7 @@
     starterPromptForTab,
     docFileName
   } from '$lib/tabs';
-  import { onMount, onDestroy, untrack } from 'svelte';
+  import { onMount, onDestroy, untrack, tick } from 'svelte';
   import {
     ArrowUp,
     ArrowRight,
@@ -121,6 +123,12 @@
   // but destroys and frees native memory when navigating to a different course.
   let hasLoadedBookOnce: boolean = $state(false);
   let lastLoadedBookCourseId: string | null = $state(null);
+
+  const queryTargetPdfPage = $derived.by(() => {
+    const p = $page.url.searchParams.get('page');
+    const n = p ? parseInt(p, 10) : null;
+    return n && !Number.isNaN(n) && n > 0 ? n : null;
+  });
 
   $effect(() => {
     if (activeTab === 'book' && course?.id) {
@@ -1292,6 +1300,27 @@
     tabContents[activeTab] = serializeWithFrontmatter(currentParsed.frontmatter, newBody);
   }
 
+  let isExtendingPage: boolean = $state(false);
+  let extendBtnEl = $state<HTMLButtonElement>();
+
+  async function handleExtendPage() {
+    if (isExtendingPage) return;
+    if (activeTab === 'book' || activeTab === 'schedule' || activeTab === 'test') return;
+
+    isExtendingPage = true;
+    try {
+      const raw = tabContents[activeTab] || '';
+      tabContents[activeTab] = extendMarkdownContent(raw, activeTab === 'lesson');
+      await saveCurrentTab();
+
+      tick().then(() => {
+        extendBtnEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+    } finally {
+      isExtendingPage = false;
+    }
+  }
+
   async function triggerAIGeneration(opts?: {
     customPrompt?: string;
     customContent?: string;
@@ -1939,6 +1968,23 @@
   /** Sentinel thrown inside syncRoute when the route moves on mid-flight. */
   const ROUTE_MOVED_ON = { sentinel: 'route-moved-on' };
 
+  function getCanonicalTarget(canonicalPath: string): string | null {
+    const currentPath = $page.url.pathname;
+    const searchParams = new URLSearchParams($page.url.search);
+    const hasLegacyRoutingParams =
+      searchParams.has('scope') || searchParams.has('lesson') || searchParams.has('tab');
+
+    if (currentPath === canonicalPath && !hasLegacyRoutingParams) {
+      return null;
+    }
+
+    searchParams.delete('scope');
+    searchParams.delete('lesson');
+    searchParams.delete('tab');
+    const qs = searchParams.toString();
+    return qs ? `${canonicalPath}?${qs}` : canonicalPath;
+  }
+
   async function syncRoute() {
     if (isRouteSyncing || !courseId) {
       console.log(`[NAV] syncRoute skipped (syncing=${isRouteSyncing}, courseId=${JSON.stringify(courseId)})`);
@@ -2016,8 +2062,9 @@
         }
 
         const canonical = `/courses/${courseId.toLowerCase()}/course/${targetTab}`;
-        if ($page.url.pathname !== canonical || $page.url.search) {
-          nav(canonical, { replace: true });
+        const canonicalTarget = getCanonicalTarget(canonical);
+        if (canonicalTarget) {
+          nav(canonicalTarget, { replace: true });
         }
       } else {
         const rawRequested = (pLesson || qLesson || '').trim();
@@ -2053,8 +2100,9 @@
           }
 
           const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}/${targetTab}`;
-          if ($page.url.pathname !== canonical || $page.url.search) {
-            nav(canonical, { replace: true });
+          const canonicalTarget = getCanonicalTarget(canonical);
+          if (canonicalTarget) {
+            nav(canonicalTarget, { replace: true });
           }
         } else {
           const allLessons = (course.units || []).flatMap((u) => u.lessons);
@@ -2115,8 +2163,9 @@
           if (targetLesson) {
             const tabSuffix = targetTab !== 'lesson' ? `/${targetTab}` : '';
             const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}${tabSuffix}`;
-            if ($page.url.pathname !== canonical || $page.url.search) {
-              nav(canonical, { replace: true });
+            const canonicalTarget = getCanonicalTarget(canonical);
+            if (canonicalTarget) {
+              nav(canonicalTarget, { replace: true });
             }
           }
         }
@@ -2243,7 +2292,10 @@
 {:else}
   <div class="flex-1 flex flex-col h-[calc(100vh-3.5rem)] w-full max-w-full min-w-0 overflow-hidden">
     <!-- Sub-Header: Lesson Selector & Tabs -->
-    <div class="relative {isMobileTabDropdownOpen || isLessonActionsOpen ? 'z-40' : 'z-30'} border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-2 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-1.5 xs:gap-2 sm:gap-3 shrink-0 w-full max-w-full">
+    <div
+      data-sub-header
+      class="relative {isMobileTabDropdownOpen || isLessonActionsOpen ? 'z-40' : 'z-30'} border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-2 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-1.5 xs:gap-2 sm:gap-3 shrink-0 w-full max-w-full"
+    >
       <!-- Left: Lesson Selector & Add Chapters Button -->
       <div class="flex items-center space-x-1.5 sm:space-x-2 shrink min-w-0">
         <LessonSelector
@@ -2535,8 +2587,10 @@
         </div>
       </div>
 
-      <!-- Mobile Compact Tab Dropdown (< 480px) -->
-      <div class="block xs:hidden relative shrink-0 {isMobileTabDropdownOpen ? 'z-50' : ''}">
+      <!-- Right: Mobile Tab Dropdown & Markup / Done Controls -->
+      <div class="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
+        <!-- Mobile Compact Tab Dropdown (< 480px) -->
+        <div class="block xs:hidden relative shrink-0 {isMobileTabDropdownOpen ? 'z-50' : ''}">
         <button
           type="button"
           onclick={() => (isMobileTabDropdownOpen = !isMobileTabDropdownOpen)}
@@ -2782,6 +2836,7 @@
         {/if}
       </div>
     </div>
+  </div>
 
     <!-- Main Workspace Content Area (with checkpoints support). -->
     <div class="relative z-10 flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0">
@@ -2798,6 +2853,7 @@
             lessonTitle={isCourseScope ? 'Course Overview' : (currentLessonItem?.title || '')}
             pageRange={isCourseScope ? '' : (currentLessonItem?.pageRange || '')}
             readingDescription={isCourseScope ? 'Accompanying course textbook' : (currentLessonItem?.readingDescription || '')}
+            initialPage={queryTargetPdfPage}
           />
         </div>
       {/if}
@@ -2843,7 +2899,10 @@
         <!-- Top-Right Action Controls (Sticky): direct child of the scroll
              container. Negative top offsets cancel the container's py padding on desktop
              while staying flush on mobile. -->
-        <div class="sticky top-1 sm:-top-[30px] z-20 flex justify-end px-2 sm:px-12 pt-0.5 mt-1 mb-2 sm:-mb-[30px] pointer-events-none max-w-full">
+        <div
+          data-markdown-floating-bar
+          class="sticky top-1 sm:-top-[30px] z-20 flex justify-end px-2 sm:px-12 pt-0.5 mt-1 mb-2 sm:-mb-[30px] pointer-events-none max-w-full"
+        >
           <div class="pointer-events-auto flex items-center space-x-1.5 sm:space-x-2 max-w-full">
             {#if isEditing}
               {#if pageCharCount > 0}
@@ -2919,7 +2978,7 @@
                 </span>
               {/if}
 
-              {#if activeTab !== 'test' && activeTab !== 'book'}
+              {#if activeTab !== 'test' && activeTab !== 'book' && course?.id}
                 <MarkupMenu courseId={course.id} file={currentFile} />
               {/if}
 
@@ -3122,6 +3181,23 @@
                 markupFile={currentFile}
                 markupScroller={contentScroller}
               />
+              {#if markupUi.mode}
+                <div class="relative z-10 flex justify-center pt-2 pb-1">
+                  <button
+                    bind:this={extendBtnEl}
+                    type="button"
+                    onpointerdown={(e) => e.stopPropagation()}
+                    onclick={handleExtendPage}
+                    disabled={isExtendingPage}
+                    class="group inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-white/95 dark:bg-stone-800/95 backdrop-blur-xs text-stone-700 dark:text-stone-200 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-50 dark:hover:bg-stone-700/80 shadow-xs hover:shadow-sm transition cursor-pointer select-none active:scale-95 disabled:opacity-50"
+                    title="Add Sketch"
+                    aria-label="Add Sketch"
+                  >
+                    <StickyNotePlus class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    <span class="text-xs font-medium">Add Sketch</span>
+                  </button>
+                </div>
+              {/if}
             </article>
           {/if}
         </div>

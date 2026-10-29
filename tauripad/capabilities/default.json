@@ -23,6 +23,7 @@
     "dialog:default",
     "dialog:allow-confirm",
     "dialog:allow-ask",
-    "barcode-scanner:default"
+    "barcode-scanner:default",
+    "pencilkit:default"
   ]
 }

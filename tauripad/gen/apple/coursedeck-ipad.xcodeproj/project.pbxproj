@@ -15,6 +15,7 @@
 		516EBAD18B1BA2B830F84053 /* pdfium.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE40B055582C4278A9B196F5 /* pdfium.xcframework */; };
 		5D67530C169197BE8C49C90E /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0FFE273A95F700621C4DC766 /* CoreGraphics.framework */; };
 		789E09A47C44DF0005C0AD7C /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 27CBF060EEA7CC1393A3894F /* WebKit.framework */; };
+		8052A29A6129FD3F92F1C76B /* PencilKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 86FA94D7E0A00F2F34F653C7 /* PencilKit.framework */; };
 		86DECCB29439A2246E4E6607 /* pdfium.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = EE40B055582C4278A9B196F5 /* pdfium.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		C87929C3C1DE3201810830E5 /* assets in Resources */ = {isa = PBXBuildFile; fileRef = 11438D81DE6F974D00B1B839 /* assets */; };
 		D57B02F9676F92AAB77E84C6 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 858825E8CAEFB225FA635A08 /* MetalKit.framework */; };
@@ -51,6 +52,7 @@
 		70B6AE2131FAF9F9CA92C102 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		77481B16A776E4E9EDD9E41D /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
 		858825E8CAEFB225FA635A08 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		86FA94D7E0A00F2F34F653C7 /* PencilKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = PencilKit.framework; path = System/Library/Frameworks/PencilKit.framework; sourceTree = SDKROOT; };
 		A86A3C4C32126CE2B255A263 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		AAAFD474EE9893AEE8330806 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
 		B27BC6CC7D1B252EBD668B94 /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
@@ -73,6 +75,7 @@
 				5D67530C169197BE8C49C90E /* CoreGraphics.framework in Frameworks */,
 				02C2C69CBAD7DD4B62079808 /* Metal.framework in Frameworks */,
 				D57B02F9676F92AAB77E84C6 /* MetalKit.framework in Frameworks */,
+				8052A29A6129FD3F92F1C76B /* PencilKit.framework in Frameworks */,
 				F2E46F2D4BC4ED7AD160ABC3 /* QuartzCore.framework in Frameworks */,
 				F8AEC7BA1A8C81BE5D83FFB6 /* Security.framework in Frameworks */,
 				48BA05F87F93FDF428450006 /* UIKit.framework in Frameworks */,
@@ -116,6 +119,7 @@
 				A86A3C4C32126CE2B255A263 /* Metal.framework */,
 				858825E8CAEFB225FA635A08 /* MetalKit.framework */,
 				EE40B055582C4278A9B196F5 /* pdfium.xcframework */,
+				86FA94D7E0A00F2F34F653C7 /* PencilKit.framework */,
 				C78BC7DB0187A226642BAC11 /* QuartzCore.framework */,
 				77481B16A776E4E9EDD9E41D /* Security.framework */,
 				70B6AE2131FAF9F9CA92C102 /* UIKit.framework */,
@@ -175,14 +179,14 @@
 			path = Externals;
 			sourceTree = "<group>";
 		};
-		"TEMP_0CA30E12-778A-46D0-A296-488CB4A27EF0" /* arm64 */ = {
+		"TEMP_239D2461-DB84-410F-89A1-E087B0E8F681" /* arm64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = arm64;
 			sourceTree = "<group>";
 		};
-		"TEMP_5EAF46FB-F504-40FE-9030-5EC09A07A515" /* x86_64 */ = {
+		"TEMP_72AD6CC7-4F59-4FB7-9F91-78E5440504C2" /* x86_64 */ = {
 			isa = PBXGroup;
 			children = (
 			);

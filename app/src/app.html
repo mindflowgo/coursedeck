@@ -7,10 +7,6 @@
 		<link rel="stylesheet" href="%sveltekit.assets%/fonts/fonts.css" />
 		<link rel="stylesheet" href="%sveltekit.assets%/vendor/katex/katex.min.css" />
 		<script>
-			// Disable viewport pinch-to-zoom gestures (iOS/iPadOS WebKit)
-			document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
-			document.addEventListener('gesturechange', function (e) { e.preventDefault(); });
-			document.addEventListener('gestureend', function (e) { e.preventDefault(); });
 			try {
 				const theme = localStorage.getItem('app_theme') || 'system';
 				const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;

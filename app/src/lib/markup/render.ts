@@ -20,15 +20,16 @@ export interface MarkupPreset {
 // Markers are opaque perfect-freehand filled outlines. Highlighters are plain
 // stroked SVG paths blended with multiply so text underneath stays crisp and
 // only the paper tints (like a physical highlighter).
-export const MARKUP_PRESETS: Record<MarkupColor, MarkupPreset> = {
-  red: { label: 'Red', color: '#dc2626', width: 2.75, opacity: 1, blend: 'normal' },
-  blue: { label: 'Blue', color: '#2563eb', width: 2.75, opacity: 1, blend: 'normal' },
-  green: { label: 'Green', color: '#16a34a', width: 2.75, opacity: 1, blend: 'normal' },
+export const MARKUP_PRESETS: Record<string, MarkupPreset> = {
   white: { label: 'White', color: '#ffffff', width: 2.75, opacity: 1, blend: 'normal' },
+  blue: { label: 'Blue', color: '#007aff', width: 2.75, opacity: 1, blend: 'normal' },
+  green: { label: 'Green', color: '#34c759', width: 2.75, opacity: 1, blend: 'normal' },
+  yellow: { label: 'Yellow', color: '#ffcc00', width: 2.75, opacity: 1, blend: 'normal' },
+  red: { label: 'Red', color: '#ff3b30', width: 2.75, opacity: 1, blend: 'normal' },
   black: { label: 'Black', color: '#1c1917', width: 2.75, opacity: 1, blend: 'normal' },
-  'hl-yellow': { label: 'Neon Yellow', color: '#fde047', width: 16, opacity: 1, blend: 'multiply' },
-  'hl-green': { label: 'Neon Green', color: '#4ade80', width: 16, opacity: 1, blend: 'multiply' },
-  'hl-pink': { label: 'Neon Pink', color: '#f472b6', width: 16, opacity: 1, blend: 'multiply' }
+  'hl-yellow': { label: 'Neon Yellow', color: '#ffcc00', width: 16, opacity: 1, blend: 'multiply' },
+  'hl-green': { label: 'Neon Green', color: '#34c759', width: 16, opacity: 1, blend: 'multiply' },
+  'hl-pink': { label: 'Neon Pink', color: '#ff2d55', width: 16, opacity: 1, blend: 'multiply' }
 };
 
 const PRESSURE_STRIDE = 3;
@@ -89,8 +90,9 @@ export function strokeToMarkerPath(
 ): string {
   const pts = strokePoints(stroke, scale);
   if (pts.length === 0) return '';
+  const baseWidth = stroke.width ?? MARKUP_PRESETS[stroke.color]?.width ?? 2.75;
   const outline = getStroke(pts, {
-    size: MARKUP_PRESETS[stroke.color].width * scale,
+    size: baseWidth * scale,
     thinning: 0.6,
     smoothing: 0.5,
     streamline: 0.5,
@@ -112,8 +114,11 @@ export function strokeToHighlightPath(
 ): string {
   const pts = strokePoints(stroke, scale);
   if (pts.length === 0) return '';
+  const presetWidth = MARKUP_PRESETS[stroke.color]?.width ?? 2.75;
+  const defaultHighlightWidth = stroke.tool === 'highlighter' ? Math.max(16, presetWidth) : presetWidth;
+  const width = stroke.width ?? defaultHighlightWidth;
   const outline = getStroke(pts, {
-    size: MARKUP_PRESETS[stroke.color].width * scale,
+    size: width * scale,
     thinning: 0,
     smoothing: 0.6,
     streamline: 0.6,
@@ -144,7 +149,9 @@ export function hitTestStroke(
 ): boolean {
   const pts = strokePoints(stroke, scale);
   if (pts.length === 0) return false;
-  const radius = (MARKUP_PRESETS[stroke.color].width * scale) / 2 + tolerance;
+  const defaultWidth = stroke.tool === 'highlighter' ? 16 : 2.75;
+  const baseWidth = stroke.width ?? MARKUP_PRESETS[stroke.color]?.width ?? defaultWidth;
+  const radius = (baseWidth * scale) / 2 + tolerance;
   const radiusSq = radius * radius;
   if (pts.length === 1) {
     const dx = pts[0][0] - x;

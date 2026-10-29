@@ -29,8 +29,8 @@ export function initWebviewGestures(): () => void {
 
     // When writing/drawing with a stylus outside editable text fields, clear any existing
     // text selection so callouts/edit balloons don't follow the pen.
-    // Note: We deliberately do NOT preventDefault() on pointerdown so focus transitions
-    // and PDF markup/annotation canvas interactions continue working cleanly.
+    // Deliberately do NOT preventDefault() on pointerdown so focus transitions
+    // and markup/annotation canvas interactions continue working cleanly.
     if (e.pointerType === 'pen' && !isEditableElement(e.target)) {
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed) {

@@ -19,6 +19,7 @@
     normalizePdfPoint
   } from '$lib/markup/pdfMarkup';
   import type { MarkupStroke } from '$lib/markup/types';
+  import { isPencilKitAvailable } from '$lib/markup/pencilKit';
 
   interface Props {
     courseId: string;
@@ -38,7 +39,7 @@
     pageHeight,
     displayWidth,
     displayHeight,
-    scrollerEl = null,
+    scrollerEl,
     onStrokeDrawn
   }: Props = $props();
 
@@ -48,13 +49,46 @@
 
   let isDark = $state(false);
 
+  function getScroller(): HTMLElement | null {
+    if (scrollerEl) return scrollerEl;
+    let el: HTMLElement | null = overlayEl?.parentElement ?? null;
+    while (el && el !== document.body && el !== document.documentElement) {
+      const style = window.getComputedStyle(el);
+      const overflowY = style.overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') {
+        return el;
+      }
+      el = el.parentElement;
+    }
+    return (document.scrollingElement as HTMLElement) || document.documentElement;
+  }
+
   onMount(() => {
     isDark = document.documentElement.classList.contains('dark');
     const mo = new MutationObserver(() => {
       isDark = document.documentElement.classList.contains('dark');
     });
     mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => mo.disconnect();
+
+    const handleWindowPointerUp = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' && activeTouches.has(e.pointerId)) {
+        activeTouches.delete(e.pointerId);
+        if (activeTouches.size > 0) {
+          panLastCentroid = computeCentroid();
+        } else {
+          isPanning = false;
+        }
+      }
+    };
+    window.addEventListener('pointerup', handleWindowPointerUp);
+    window.addEventListener('pointercancel', handleWindowPointerUp);
+
+    return () => {
+      stopInertia();
+      mo.disconnect();
+      window.removeEventListener('pointerup', handleWindowPointerUp);
+      window.removeEventListener('pointercancel', handleWindowPointerUp);
+    };
   });
 
   const strokes = $derived(visibleStrokes(courseId, file));
@@ -65,15 +99,77 @@
   let drawingPointerId: number | null = null;
   let erasing = false;
   let currentPoints: number[] = [];
-  let strokeCancelled = false;
-  let isPanning = false;
-  let panLast = { x: 0, y: 0 };
-  const activeTouchIds = new Set<number>();
 
-  let penSeen = false;
-  try {
-    penSeen = localStorage.getItem('markup_pen_seen') === 'true';
-  } catch {}
+  // Multi-touch panning & palm rejection state
+  let activeTouches = new Map<number, { x: number; y: number }>();
+  let isPanning = false;
+  let strokeCancelled = false;
+  let panLastCentroid = { x: 0, y: 0 };
+  let velocityX = 0;
+  let velocityY = 0;
+  let lastMoveTime = 0;
+  let inertiaRafId: number | null = null;
+
+  function stopInertia(): void {
+    if (inertiaRafId !== null) {
+      cancelAnimationFrame(inertiaRafId);
+      inertiaRafId = null;
+    }
+    velocityX = 0;
+    velocityY = 0;
+  }
+
+  function computeCentroid(): { x: number; y: number } {
+    let sumX = 0;
+    let sumY = 0;
+    for (const pt of activeTouches.values()) {
+      sumX += pt.x;
+      sumY += pt.y;
+    }
+    const count = activeTouches.size || 1;
+    return { x: sumX / count, y: sumY / count };
+  }
+
+  function cancelStroke(): void {
+    strokeCancelled = true;
+    drawingPointerId = null;
+    erasing = false;
+    clearLive();
+  }
+
+  function startPan(): void {
+    stopInertia();
+    cancelStroke();
+    isPanning = true;
+    panLastCentroid = computeCentroid();
+    lastMoveTime = performance.now();
+  }
+
+  function triggerInertia(): void {
+    const scroller = getScroller();
+    const speed = Math.hypot(velocityX, velocityY);
+    if (!scroller || speed <= 0.15 || performance.now() - lastMoveTime >= 80) return;
+
+    let curVx = velocityX;
+    let curVy = velocityY;
+    let prevT = performance.now();
+
+    const step = (t: number) => {
+      const frameDt = Math.min(32, t - prevT);
+      prevT = t;
+      const decay = Math.pow(0.92, frameDt / 16.67);
+      curVx *= decay;
+      curVy *= decay;
+      scroller.scrollLeft -= curVx * frameDt;
+      scroller.scrollTop -= curVy * frameDt;
+      if (Math.hypot(curVx, curVy) > 0.05) {
+        inertiaRafId = requestAnimationFrame(step);
+      } else {
+        inertiaRafId = null;
+      }
+    };
+    inertiaRafId = requestAnimationFrame(step);
+  }
 
   function liveStroke(tool: MarkupStroke['tool'], color: MarkupStroke['color']): MarkupStroke {
     return {
@@ -90,23 +186,29 @@
   function updateLivePath(): void {
     if (!livePathEl) return;
     const isMarker = markupUi.tool === 'marker';
-    const preset = MARKUP_PRESETS[markupUi.color];
+    const fillColor = MARKUP_PRESETS[markupUi.color]?.color ?? markupUi.color;
     const stroke = liveStroke(markupUi.tool, markupUi.color);
+    if (markupUi.width !== undefined) stroke.width = markupUi.width;
+    if (markupUi.opacity !== undefined) stroke.opacity = markupUi.opacity;
     const d = isMarker
       ? strokeToMarkerPath(stroke, scale, { live: true })
       : strokeToHighlightPath(stroke, scale, { live: true });
     livePathEl.setAttribute('d', d);
-
-    livePathEl.setAttribute('fill', preset.color);
+    livePathEl.setAttribute('fill', fillColor);
     livePathEl.setAttribute('stroke', 'none');
     livePathEl.removeAttribute('stroke-width');
     livePathEl.removeAttribute('stroke-opacity');
 
     if (isMarker) {
-      livePathEl.removeAttribute('fill-opacity');
+      if (markupUi.opacity !== undefined && markupUi.opacity < 1) {
+        livePathEl.setAttribute('fill-opacity', String(markupUi.opacity));
+      } else {
+        livePathEl.removeAttribute('fill-opacity');
+      }
       livePathEl.style.mixBlendMode = 'normal';
     } else {
-      livePathEl.setAttribute('fill-opacity', isDark ? '0.5' : '0.4');
+      const opacity = markupUi.opacity !== undefined ? String(markupUi.opacity) : (isDark ? '0.5' : '0.4');
+      livePathEl.setAttribute('fill-opacity', opacity);
       livePathEl.style.mixBlendMode = isDark ? 'screen' : 'multiply';
     }
   }
@@ -115,11 +217,6 @@
     currentPoints = [];
     livePathEl?.setAttribute('d', '');
     livePathEl?.style.removeProperty('mix-blend-mode');
-  }
-
-  function cancelStroke(): void {
-    strokeCancelled = true;
-    clearLive();
   }
 
   function appendPoint(e: PointerEvent): void {
@@ -140,84 +237,99 @@
     if (hits.length > 0) eraseStrokesAt(courseId, file, hits);
   }
 
-  function startPan(e: PointerEvent): void {
-    cancelStroke();
-    isPanning = true;
-    panLast = { x: e.clientX, y: e.clientY };
-  }
-
+  // Clean W3C standard pointer handling with multi-touch panning
   function onPointerDown(e: PointerEvent): void {
     if (!active || !overlayEl) return;
+
+    stopInertia();
+
+    // Prevent default browser touch gestures (pinch-zoom, swipe gestures)
+    // so multi-touch panning and drawing are completely responsive
     e.preventDefault();
 
-    // Palm rejection: if already drawing with a pointer (e.g. Apple Pencil),
-    // ignore secondary touches (palm/fingers hitting the screen).
-    if (drawingPointerId !== null && drawingPointerId !== e.pointerId) {
-      return;
-    }
-
-    // Only set pointer capture for mouse; touch/pen are implicitly captured
-    // and calling setPointerCapture on pen causes gesture conflicts on iOS WebKit.
-    if (e.pointerType === 'mouse') {
-      try {
-        overlayEl.setPointerCapture(e.pointerId);
-      } catch {}
-    }
-
-    if (e.pointerType === 'pen' && !penSeen) {
-      penSeen = true;
-      try {
-        localStorage.setItem('markup_pen_seen', 'true');
-      } catch {}
-    }
-
+    // Track active touches
     if (e.pointerType === 'touch') {
-      activeTouchIds.add(e.pointerId);
-      // If "Pencil only" mode is active, touch pan-scrolls (only if not drawing):
+      activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      // In Pencil Mode, any finger touch initiates panning/scrolling
       if (markupUi.pencilOnly) {
-        if (drawingPointerId === null) {
-          startPan(e);
-        }
+        startPan();
         return;
       }
-      // If 2 fingers touch down, cancel stroke and pan (two-finger scroll):
-      if (activeTouchIds.size >= 2) {
-        drawingPointerId = null;
-        erasing = false;
-        startPan(e);
+
+      // In normal mode, two or more fingers initiate panning/scrolling
+      if (activeTouches.size >= 2) {
+        startPan();
         return;
       }
     }
 
     if (isPanning) return;
 
-    if (markupUi.eraser) {
-      erasing = true;
-      drawingPointerId = e.pointerId;
-      strokeCancelled = false;
-      eraseAt(e);
+    // When Apple Pencil is drawing on iPad, it is handled natively by PKCanvasView if Pencil Mode is enabled.
+    // When erasing, pencil touches pass through to erase vector strokes directly.
+    if (isPencilKitAvailable() && markupUi.pencilOnly && e.pointerType === 'pen' && !markupUi.eraser) return;
+
+    // Palm rejection: if already drawing with one pointer, ignore secondary inputs
+    if (drawingPointerId !== null && drawingPointerId !== e.pointerId) {
       return;
+    }
+
+    if (e.pointerType === 'mouse') {
+      try {
+        overlayEl.setPointerCapture(e.pointerId);
+      } catch {}
     }
 
     drawingPointerId = e.pointerId;
     strokeCancelled = false;
+
+    if (markupUi.eraser) {
+      erasing = true;
+      eraseAt(e);
+      return;
+    }
+
     currentPoints = [];
     appendPoint(e);
   }
 
   function onPointerMove(e: PointerEvent): void {
     if (!active) return;
-    e.preventDefault();
+
+    if (e.pointerType === 'touch') {
+      activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!isPanning && (markupUi.pencilOnly || activeTouches.size >= 2)) {
+        startPan();
+        return;
+      }
+    }
 
     if (isPanning) {
-      if (scrollerEl) {
-        scrollerEl.scrollTop -= e.clientY - panLast.y;
-        scrollerEl.scrollLeft -= e.clientX - panLast.x;
+      e.preventDefault();
+      const now = performance.now();
+      const dt = now - lastMoveTime;
+      const scroller = getScroller();
+      const centroid = computeCentroid();
+      if (scroller) {
+        const dx = centroid.x - panLastCentroid.x;
+        const dy = centroid.y - panLastCentroid.y;
+        scroller.scrollTop -= dy;
+        scroller.scrollLeft -= dx;
+        if (dt > 0 && dt < 100) {
+          const instantVx = dx / dt;
+          const instantVy = dy / dt;
+          velocityX = velocityX * 0.4 + instantVx * 0.6;
+          velocityY = velocityY * 0.4 + instantVy * 0.6;
+        }
       }
-      panLast = { x: e.clientX, y: e.clientY };
+      lastMoveTime = now;
+      panLastCentroid = centroid;
       return;
     }
+
     if (drawingPointerId !== e.pointerId) return;
+    e.preventDefault();
 
     if (erasing) {
       eraseAt(e);
@@ -233,13 +345,29 @@
   }
 
   function onPointerUp(e: PointerEvent): void {
+    const wasPanning = isPanning;
     if (e.pointerType === 'touch') {
-      activeTouchIds.delete(e.pointerId);
-      if (activeTouchIds.size === 0) {
+      activeTouches.delete(e.pointerId);
+      if (activeTouches.size > 0) {
+        panLastCentroid = computeCentroid();
+      } else {
         isPanning = false;
       }
     }
-    if (isPanning) return;
+
+    if (e.pointerType === 'mouse') {
+      try {
+        overlayEl?.releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+
+    if (wasPanning) {
+      if (activeTouches.size === 0) {
+        triggerInertia();
+      }
+      return;
+    }
+
     if (drawingPointerId !== e.pointerId) return;
     drawingPointerId = null;
 
@@ -251,7 +379,7 @@
     if (!strokeCancelled && isCommittableStroke(currentPoints)) {
       addStroke(
         courseId,
-        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, pageWidth)
+        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, pageWidth, markupUi.width, markupUi.opacity)
       );
       onStrokeDrawn?.(file);
     }
@@ -259,20 +387,32 @@
   }
 
   function onPointerCancel(e: PointerEvent): void {
+    const wasPanning = isPanning;
     if (e.pointerType === 'touch') {
-      activeTouchIds.delete(e.pointerId);
-      if (activeTouchIds.size === 0) {
+      activeTouches.delete(e.pointerId);
+      if (activeTouches.size > 0) {
+        panLastCentroid = computeCentroid();
+      } else {
         isPanning = false;
       }
     }
+
+    if (e.pointerType === 'mouse') {
+      try {
+        overlayEl?.releasePointerCapture(e.pointerId);
+      } catch {}
+    }
+
+    if (wasPanning) return;
+
     if (drawingPointerId !== e.pointerId) return;
     drawingPointerId = null;
     erasing = false;
-    // Commit any valid committable stroke so an OS interrupt doesn't discard user drawing
+
     if (!strokeCancelled && isCommittableStroke(currentPoints)) {
       addStroke(
         courseId,
-        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, pageWidth)
+        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, pageWidth, markupUi.width, markupUi.opacity)
       );
       onStrokeDrawn?.(file);
     }
@@ -280,9 +420,6 @@
   }
 </script>
 
-<!-- Pointer handlers, pointer capture, and touch-action live on this HTML
-     wrapper: WebKit's handling of all three on SVG elements is unreliable,
-     which let the iPad's scroll recognizer steal pen gestures mid-stroke. -->
 <div
   bind:this={overlayEl}
   class="pdf-markup-overlay absolute inset-0"
@@ -307,15 +444,16 @@
         {#if stroke.tool === 'marker'}
           <path
             class="markup-marker"
-            fill={MARKUP_PRESETS[stroke.color].color}
+            fill={MARKUP_PRESETS[stroke.color]?.color || stroke.color}
+            fill-opacity={stroke.opacity !== undefined && stroke.opacity < 1 ? stroke.opacity : undefined}
             stroke="none"
             d={strokeToMarkerPath(stroke, scale)}
           />
         {:else}
           <path
             class="markup-highlighter"
-            fill={MARKUP_PRESETS[stroke.color].color}
-            fill-opacity={isDark ? '0.5' : '0.4'}
+            fill={MARKUP_PRESETS[stroke.color]?.color || stroke.color}
+            fill-opacity={stroke.opacity !== undefined ? stroke.opacity : (isDark ? '0.5' : '0.4')}
             stroke="none"
             d={strokeToHighlightPath(stroke, scale)}
           />
@@ -332,7 +470,6 @@
     pointer-events: none;
     -webkit-user-select: none;
     user-select: none;
-    -webkit-touch-callout: none;
   }
   div.pdf-markup-overlay.active {
     pointer-events: auto;

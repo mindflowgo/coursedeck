@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
-import type { Checkpoint } from '../checkpoint';
+import { derivePdfMarkupCheckpoints, type Checkpoint } from '../checkpoint';
 import { isMarkupStroke, type MarkupStroke } from '../markup/types';
 import { tabFileName, courseDocFileName, parseDocFileName, parseUnitNumber, isUnitScopeId } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
@@ -734,6 +734,31 @@ export class CourseService {
     }
 
     return allNotes.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }
+
+  static listAllCheckpoints(): Array<Checkpoint & { courseId: string; courseTitle: string }> {
+    const courses = this.listCourses().filter((c) => !c.archived);
+    const all: Array<Checkpoint & { courseId: string; courseTitle: string }> = [];
+
+    for (const course of courses) {
+      const cps = this.getCheckpoints(course.id);
+      for (const cp of cps) {
+        if (cp.type === 'note') {
+          all.push({
+            ...cp,
+            courseId: course.id,
+            courseTitle: course.title
+          });
+        }
+      }
+      const annotations = this.getAnnotations(course.id);
+      if (annotations.length > 0) {
+        const markupCps = derivePdfMarkupCheckpoints(course.id, course.title, annotations);
+        all.push(...markupCps);
+      }
+    }
+
+    return all.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }
 
   static gatherLessonFiles(

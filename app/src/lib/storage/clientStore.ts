@@ -2,7 +2,7 @@
 // Native Filesystem + IndexedDB fallback store for CourseDeck iPad offline mode.
 
 import type { CourseManifest } from '$lib/parser/courseIngest';
-import type { Checkpoint } from '$lib/checkpoint';
+import { derivePdfMarkupCheckpoints, type Checkpoint } from '$lib/checkpoint';
 import { mergeStrokes } from '$lib/markup/render';
 import { isMarkupStroke, type MarkupStroke } from '$lib/markup/types';
 
@@ -344,15 +344,21 @@ export async function listAllCheckpointsLocally(): Promise<Array<Checkpoint & { 
   const courses = (await listCachedCourses()).filter((c) => !c.archived);
   const all: Array<Checkpoint & { courseId: string; courseTitle: string }> = [];
   for (const c of courses) {
+    const courseTitle = c.title || c.id.toUpperCase();
     const cps = await getCachedCheckpoints(c.id);
     for (const cp of cps) {
       if (cp.type === 'note') {
         all.push({
           ...cp,
           courseId: c.id,
-          courseTitle: c.title || c.id.toUpperCase()
+          courseTitle
         });
       }
+    }
+    const annotations = await getAnnotationsLocally(c.id);
+    if (annotations.length > 0) {
+      const markupCps = derivePdfMarkupCheckpoints(c.id, courseTitle, annotations);
+      all.push(...markupCps);
     }
   }
   return all.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());

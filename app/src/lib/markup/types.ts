@@ -15,14 +15,16 @@
 export type MarkupTool = 'marker' | 'highlighter';
 
 export type MarkupColor =
-  | 'red'
+  | 'white'
   | 'blue'
   | 'green'
-  | 'white'
+  | 'yellow'
+  | 'red'
   | 'black'
   | 'hl-yellow'
   | 'hl-green'
-  | 'hl-pink';
+  | 'hl-pink'
+  | (string & {});
 
 export interface MarkupStroke {
   id: string; // uuid — merge key across devices
@@ -34,11 +36,21 @@ export interface MarkupStroke {
   authorWidth: number;
   date: string; // ISO 8601 — last-write-wins merge key
   deleted?: string; // tombstone ISO date (erase / undo / clear)
+  width?: number; // Custom stroke width in author px (e.g. from PencilKit)
+  opacity?: number; // Custom stroke opacity 0..1 (e.g. from PencilKit)
 }
 
 export const MARKUP_TOOLS: MarkupTool[] = ['marker', 'highlighter'];
 
-export const MARKER_COLORS: MarkupColor[] = ['red', 'blue', 'green', 'white', 'black'];
+export const PALETTE_COLORS: { id: MarkupColor; label: string; hex: string }[] = [
+  { id: 'white', label: 'White', hex: '#ffffff' },
+  { id: 'blue', label: 'Blue', hex: '#007aff' },
+  { id: 'green', label: 'Green', hex: '#34c759' },
+  { id: 'yellow', label: 'Yellow', hex: '#ffcc00' },
+  { id: 'red', label: 'Red', hex: '#ff3b30' }
+];
+
+export const MARKER_COLORS: MarkupColor[] = ['white', 'blue', 'green', 'yellow', 'red', 'black'];
 export const HIGHLIGHTER_COLORS: MarkupColor[] = ['hl-yellow', 'hl-green', 'hl-pink'];
 
 /**
@@ -61,6 +73,8 @@ export function isMarkupStroke(value: unknown): value is MarkupStroke {
     typeof v.authorWidth === 'number' &&
     v.authorWidth > 0 &&
     typeof v.date === 'string' &&
-    (v.deleted === undefined || typeof v.deleted === 'string')
+    (v.deleted === undefined || typeof v.deleted === 'string') &&
+    (v.width === undefined || (typeof v.width === 'number' && Number.isFinite(v.width))) &&
+    (v.opacity === undefined || (typeof v.opacity === 'number' && Number.isFinite(v.opacity)))
   );
 }

@@ -107,6 +107,87 @@ describe('Checkpoint Palette & Models', () => {
       date: '2026-10-16T12:00:00Z'
     };
     expect(getCheckpointHref('hhs4u', courseCp)).toBe('/courses/hhs4u/course/summary?checkpoint=cp_course_1');
+
+    const pdfCp: Checkpoint = {
+      id: 'markup_mcr3u_p45',
+      file: 'course.pdf:p45',
+      verticalPosition: 0,
+      type: 'markup',
+      color: 'gold',
+      date: '2026-10-28T12:00:00Z'
+    };
+    expect(getCheckpointHref('MCR3U', pdfCp)).toBe('/courses/mcr3u/course/book?page=45');
+  });
+
+  it('derives markup checkpoints grouped by PDF page', () => {
+    const { derivePdfMarkupCheckpoints } = require('./checkpoint');
+    const strokes = [
+      {
+        id: 's1',
+        file: 'course.pdf:p45',
+        tool: 'highlighter',
+        color: 'hl-yellow',
+        points: [10, 10, 0.5, 20, 10, 0.5],
+        authorWidth: 612,
+        date: '2026-10-28T10:00:00Z'
+      },
+      {
+        id: 's2',
+        file: 'course.pdf:p45',
+        tool: 'marker',
+        color: 'red',
+        points: [30, 30, 0.5, 40, 30, 0.5],
+        authorWidth: 612,
+        date: '2026-10-28T11:00:00Z'
+      },
+      {
+        id: 's3',
+        file: 'course.pdf:p12',
+        tool: 'highlighter',
+        color: 'hl-pink',
+        points: [10, 10, 0.5, 20, 10, 0.5],
+        authorWidth: 612,
+        date: '2026-10-28T09:00:00Z'
+      },
+      {
+        id: 's_deleted',
+        file: 'course.pdf:p99',
+        tool: 'highlighter',
+        color: 'hl-yellow',
+        points: [10, 10, 0.5, 20, 10, 0.5],
+        authorWidth: 612,
+        date: '2026-10-28T08:00:00Z',
+        deleted: '2026-10-28T08:30:00Z'
+      },
+      {
+        id: 's_md',
+        file: '01.01.lesson.md',
+        tool: 'marker',
+        color: 'blue',
+        points: [10, 10, 0.5, 20, 10, 0.5],
+        authorWidth: 800,
+        date: '2026-10-28T07:00:00Z'
+      }
+    ];
+
+    const derived = derivePdfMarkupCheckpoints('mcr3u', 'Functions 11', strokes);
+    expect(derived.length).toBe(2);
+
+    const p45 = derived.find((d: any) => d.file === 'course.pdf:p45');
+    expect(p45).toBeDefined();
+    expect(p45.noteText).toBe('Annotations');
+    expect(p45.type).toBe('markup');
+    expect(p45.date).toBe('2026-10-28T11:00:00Z'); // Latest stroke on page 45
+    expect(p45.courseId).toBe('mcr3u');
+    expect(p45.courseTitle).toBe('Functions 11');
+
+    const p12 = derived.find((d: any) => d.file === 'course.pdf:p12');
+    expect(p12).toBeDefined();
+    expect(p12.noteText).toBe('Annotations');
+
+    // Deleted page 99 and markdown doc are not included
+    expect(derived.find((d: any) => d.file === 'course.pdf:p99')).toBeUndefined();
+    expect(derived.find((d: any) => d.file === '01.01.lesson.md')).toBeUndefined();
   });
 
   it('formats dates cleanly', () => {
