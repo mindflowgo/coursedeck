@@ -4,6 +4,7 @@ import path from 'node:path';
 import { unzipSync } from 'fflate';
 import { handleApiRequest } from './api';
 import { CourseService } from './courses';
+import { getPromptsDir } from './paths';
 
 const testCourseId = 'sync_bundle_test_101';
 const testCourseDir = path.join(CourseService.getCoursesDir(), testCourseId);
@@ -174,5 +175,176 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
     );
     const res = await handleApiRequest(req, new URL(req.url));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Sync Push API (/api/sync/push)', () => {
+  const pushCourseId = 'sync_push_test_101';
+  const pushCourseDir = path.join(CourseService.getCoursesDir(), pushCourseId);
+  const testPromptId = 'push_test_prompt_9x';
+  const testPromptPath = () => path.join(getPromptsDir(), `${testPromptId}.md`);
+
+  beforeEach(() => {
+    fs.rmSync(pushCourseDir, { recursive: true, force: true });
+    fs.mkdirSync(pushCourseDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(pushCourseDir, { recursive: true, force: true });
+    if (fs.existsSync(testPromptPath())) fs.rmSync(testPromptPath(), { force: true });
+  });
+
+  async function push(payload: Record<string, unknown>): Promise<any> {
+    const req = new Request('http://127.0.0.1:3182/api/sync/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const res = await handleApiRequest(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    return res.json();
+  }
+
+  it('applies pushed documents with mtime-guarded last-writer-wins', async () => {
+    await push({
+      documents: {
+        [pushCourseId]: [
+          { filename: '01.01.lesson.md', content: '# edited on ipad', date: new Date().toISOString() }
+        ]
+      }
+    });
+    expect(fs.readFileSync(path.join(pushCourseDir, '01.01.lesson.md'), 'utf8')).toBe('# edited on ipad');
+
+    // A desktop edit made after the iPad write is newer — the stale push must not clobber it.
+    fs.writeFileSync(path.join(pushCourseDir, '01.01.lesson.md'), '# desktop wins', 'utf8');
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(path.join(pushCourseDir, '01.01.lesson.md'), future, future);
+    await push({
+      documents: {
+        [pushCourseId]: [
+          { filename: '01.01.lesson.md', content: '# stale ipad edit', date: new Date().toISOString() }
+        ]
+      }
+    });
+    expect(fs.readFileSync(path.join(pushCourseDir, '01.01.lesson.md'), 'utf8')).toBe('# desktop wins');
+  });
+
+  it('applies document tombstones only when the delete is newer than the file', async () => {
+    fs.writeFileSync(path.join(pushCourseDir, '01.02.lesson.md'), '# old', 'utf8');
+
+    // Tombstone older than the file: keep the file.
+    await push({
+      documents: {
+        [pushCourseId]: [
+          { filename: '01.02.lesson.md', content: null, date: new Date(Date.now() - 120_000).toISOString() }
+        ]
+      }
+    });
+    expect(fs.existsSync(path.join(pushCourseDir, '01.02.lesson.md'))).toBe(true);
+
+    // Tombstone newer than the file: delete it.
+    await push({
+      documents: {
+        [pushCourseId]: [
+          { filename: '01.02.lesson.md', content: null, date: new Date(Date.now() + 120_000).toISOString() }
+        ]
+      }
+    });
+    expect(fs.existsSync(path.join(pushCourseDir, '01.02.lesson.md'))).toBe(false);
+  });
+
+  it('rejects path-traversal document filenames', async () => {
+    const data = await push({
+      documents: {
+        [pushCourseId]: [
+          { filename: '../evil.md', content: 'x', date: new Date().toISOString() }
+        ]
+      }
+    });
+    expect(data.results[pushCourseId].errors.length).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(CourseService.getCoursesDir(), 'evil.md'))).toBe(false);
+  });
+
+  it('propagates checkpoint saves and delete tombstones', async () => {
+    const hasCp = () => CourseService.getCheckpoints(pushCourseId).some((c) => c.id === 'cp_push_1');
+
+    await push({
+      checkpoints: {
+        [pushCourseId]: [
+          { id: 'cp_push_1', file: '01.01.lesson.md', verticalPosition: 0.5, type: 'note', date: new Date().toISOString() }
+        ]
+      }
+    });
+    expect(hasCp()).toBe(true);
+
+    // Older tombstone: desktop keeps its copy.
+    await push({
+      checkpoints: {
+        [pushCourseId]: [{ id: 'cp_push_1', deleted: true, date: new Date(Date.now() - 60_000).toISOString() }]
+      }
+    });
+    expect(hasCp()).toBe(true);
+
+    // Newer tombstone: checkpoint is removed.
+    await push({
+      checkpoints: {
+        [pushCourseId]: [{ id: 'cp_push_1', deleted: true, date: new Date(Date.now() + 60_000).toISOString() }]
+      }
+    });
+    expect(hasCp()).toBe(false);
+  });
+
+  it('applies pushed prompt saves and delete tombstones', async () => {
+    await push({
+      prompts: [{ id: testPromptId, content: '# Push Test', date: new Date().toISOString() }]
+    });
+    expect(fs.existsSync(testPromptPath())).toBe(true);
+
+    await push({
+      prompts: [{ id: testPromptId, content: null, date: new Date(Date.now() + 60_000).toISOString() }]
+    });
+    expect(fs.existsSync(testPromptPath())).toBe(false);
+  });
+
+  it('applies pushed locker-doc assets (base64) and delete tombstones', async () => {
+    const lockerDir = path.join(pushCourseDir, 'assets', 'locker_docs');
+    const assetPath = path.join(lockerDir, 'pasted.jpg');
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d]);
+
+    await push({
+      assets: {
+        [pushCourseId]: [{ filename: 'pasted.jpg', base64: bytes.toString('base64'), date: new Date().toISOString() }]
+      }
+    });
+    expect(fs.existsSync(assetPath)).toBe(true);
+    expect(fs.readFileSync(assetPath).equals(bytes)).toBe(true);
+
+    // Tombstone older than the file: file is kept.
+    await push({
+      assets: {
+        [pushCourseId]: [{ filename: 'pasted.jpg', base64: null, date: new Date(Date.now() - 120_000).toISOString() }]
+      }
+    });
+    expect(fs.existsSync(assetPath)).toBe(true);
+
+    // Tombstone newer than the file: file is removed.
+    await push({
+      assets: {
+        [pushCourseId]: [{ filename: 'pasted.jpg', base64: null, date: new Date(Date.now() + 120_000).toISOString() }]
+      }
+    });
+    expect(fs.existsSync(assetPath)).toBe(false);
+  });
+
+  it('rejects path-traversal asset filenames', async () => {
+    const data = await push({
+      assets: {
+        [pushCourseId]: [
+          { filename: '../../evil.bin', base64: Buffer.from('x').toString('base64'), date: new Date().toISOString() }
+        ]
+      }
+    });
+    expect(data.results[pushCourseId].errors.length).toBeGreaterThan(0);
+    expect(fs.existsSync(path.join(CourseService.getCoursesDir(), 'evil.bin'))).toBe(false);
   });
 });

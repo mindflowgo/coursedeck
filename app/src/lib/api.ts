@@ -136,15 +136,17 @@ if (typeof window !== 'undefined') {
  *
  * Everything is LOCAL-FIRST: course/lesson/tab reads and writes, checkpoints,
  * annotations, prompts, schedules, theme and cached assets are served from the
- * device's own store — NativeStore on Tauri (the same course files the backend
- * reads from disk) and IndexedDB in browsers. The app keeps working with no
- * connectivity at all.
+ * device's own store — NativeStore on Tauri, both desktop and iPad (the same
+ * course files the backend reads from disk / the synced copy on the device),
+ * and IndexedDB in browsers. The app keeps working with no connectivity at
+ * all. Local writes made on a synced device are propagated back to the desktop
+ * by the background push queue (see syncState.pushToDesktop).
  *
  * ONLINE_ONLY is the short list of endpoints that cannot work without the
  * backend server or external services: AI/LLM generation and grading, course
- * creation & ingest, attachment uploads, device pairing/sync, e-mail, backup
- * and maintenance. They always go through smartFetch and surface errors when
- * the server is unreachable.
+ * creation & ingest, device pairing/sync, e-mail, backup and maintenance.
+ * They always go through smartFetch and surface errors when the server is
+ * unreachable.
  */
 const ONLINE_ONLY: Array<{ methods?: string[]; pattern: RegExp }> = [
   // AI / LLM generation & grading (config reads stay local)
@@ -156,10 +158,9 @@ const ONLINE_ONLY: Array<{ methods?: string[]; pattern: RegExp }> = [
   { pattern: /^\/api\/courses\/[^/]+\/unit-test\// },
   { pattern: /^\/api\/courses\/[^/]+\/prompt-context/ },
   { methods: ['POST'], pattern: /^\/api\/courses\/[^/]+\/course-docs$/ },
-  // Course lifecycle & backend-managed files
+  // Course lifecycle (backend-managed ingest)
   { methods: ['POST'], pattern: /^\/api\/courses$/ },
-  { pattern: /^\/api\/courses\/[^/]+\/locker-docs/ },
-  { pattern: /^\/api\/courses\/[^/]+\/open$/ },
+  { pattern: /^\/api\/courses\/[^/]+\/open/ },
   { pattern: /^\/api\/courses\/[^/]+\/schedule\/mark-lesson-done$/ },
   // Server & external services
   { pattern: /^\/api\/sync\// },
@@ -198,10 +199,13 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     return smartFetch(`${getApiBaseUrl()}${path}`, init);
   }
 
-  // 2. Desktop Tauri: NativeStore reads/writes the very course files the
-  //    local backend serves — going direct is faster and works even if the
-  //    backend process is down.
-  if (isTauriDesktop()) {
+  // 2. Tauri apps — desktop AND iPad: every file-backed operation reads and
+  //    writes the device's own course files natively (NativeStore), with no
+  //    network round trip. The desktop app shares the very files its local
+  //    backend serves; the iPad keeps its synced copy current through bundle
+  //    sync, and local writes are pushed back to the desktop by the
+  //    background push queue.
+  if (isTauriEnvironment()) {
     return offlineFetch(path, method, init);
   }
 
@@ -210,7 +214,7 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     return smartFetch(path, init);
   }
 
-  // 4. iPad / paired browser: the desktop is the sync master — try it first
+  // 4. Paired browser: the desktop is the sync master — try it first
   //    (3.5s timeout, 15s reachability cache) and serve from the local synced
   //    store when it cannot be reached. Offline devices skip straight to the
   //    local store.
@@ -452,6 +456,50 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     const upserts = Array.isArray(body.upserts) ? body.upserts : [];
     await store.saveAnnotationsLocally(annMatch[1], upserts);
     return jsonRes({ success: true, merged: upserts.length });
+  }
+
+  // GET|POST|DELETE /api/courses/:id/locker-docs (assets/locker_docs — always local)
+  const lockerMatch = pathname.match(/^\/api\/courses\/([^/]+)\/locker-docs$/);
+  if (lockerMatch) {
+    const courseId = decodeURIComponent(lockerMatch[1]);
+
+    if (method === 'GET') {
+      const files = await store.listLockerDocsLocally(courseId);
+      return jsonRes({ success: true, courseId, files });
+    }
+
+    if (method === 'POST') {
+      const formData = typeof FormData !== 'undefined' && init?.body instanceof FormData ? init.body : null;
+      const file = formData?.get('file');
+      if (!(file instanceof File)) {
+        return jsonRes({ message: 'A file is required' }, 400);
+      }
+      const bytes = await file.arrayBuffer();
+      const saved = await store.saveLockerDocLocally(courseId, file.name, bytes);
+      // course.pdf toggles the manifest flag; the manifest push propagates it.
+      if (saved.filename.toLowerCase() === 'course.pdf') {
+        const manifest = await store.getCachedCourse(courseId);
+        if (manifest && !manifest.coursePDF) {
+          manifest.coursePDF = true;
+          await store.saveCourseManifestLocally(courseId, manifest);
+        }
+      }
+      return jsonRes({ success: true, courseId, file: saved });
+    }
+
+    if (method === 'DELETE') {
+      const filename = searchParams.get('file');
+      if (!filename) return jsonRes({ message: 'file query parameter required' }, 400);
+      const removed = await store.deleteLockerDocLocally(courseId, filename);
+      if (removed && (filename.split('/').pop() || '').toLowerCase() === 'course.pdf') {
+        const manifest = await store.getCachedCourse(courseId);
+        if (manifest?.coursePDF) {
+          manifest.coursePDF = false;
+          await store.saveCourseManifestLocally(courseId, manifest);
+        }
+      }
+      return jsonRes({ success: removed });
+    }
   }
 
   // GET /api/courses/:id/checkpoints

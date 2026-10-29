@@ -47,7 +47,7 @@ export async function saveLlmConfigLocally(config: ClientLlmStore): Promise<void
 }
 
 const DB_NAME = 'coursedeck_v1';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 const STORES = [
   'meta',
@@ -59,8 +59,40 @@ const STORES = [
   'annotations',
   'pending_push',
   'pending_push_annotations',
+  'pending_push_documents',
+  'pending_push_prompts',
+  'pending_push_assets',
+  'locker_docs',
   'pdf_assets'
 ] as const;
+
+/** A locally-written course file waiting to be pushed to the desktop. `content: null` = deleted locally (tombstone). */
+export interface PendingPushDocument {
+  filename: string;
+  content: string | null;
+  date: string; // ISO timestamp of the local write
+}
+
+/** A locally-written prompt waiting to be pushed to the desktop. `content: null` = deleted locally (tombstone). */
+export interface PendingPushPrompt {
+  id: string;
+  content: string | null;
+  date: string;
+}
+
+/**
+ * Fired on `window` whenever a local write lands in a pending-push queue, so
+ * syncState can schedule a debounced background flush without a circular import.
+ */
+export const PUSH_QUEUED_EVENT = 'coursedeck:push-queued';
+
+function notifyPushQueued(): void {
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent(PUSH_QUEUED_EVENT));
+    } catch {}
+  }
+}
 
 let _db: IDBDatabase | null = null;
 
@@ -138,6 +170,16 @@ async function putMany(store: typeof STORES[number], entries: [string, unknown][
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error);
+  });
+}
+
+async function deleteFromStore(store: typeof STORES[number], key: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 
@@ -241,6 +283,7 @@ export async function saveCourseManifestLocally(courseId: string, manifest: Cour
     }
   }
   await put('courses', courseId.toLowerCase(), manifest);
+  await queuePendingDocument(courseId, 'meta.json', json);
 }
 
 export async function deleteCourseLocally(courseId: string): Promise<void> {
@@ -257,7 +300,7 @@ export async function deleteCourseLocally(courseId: string): Promise<void> {
   const db = await openDb();
   return new Promise<void>((resolve, reject) => {
     const tx = db.transaction(
-      ['courses', 'documents', 'checkpoints', 'annotations', 'pending_push', 'pending_push_annotations'],
+      ['courses', 'documents', 'checkpoints', 'annotations', 'pending_push', 'pending_push_annotations', 'pending_push_documents', 'pending_push_assets', 'locker_docs'],
       'readwrite'
     );
     tx.objectStore('courses').delete(id);
@@ -265,10 +308,24 @@ export async function deleteCourseLocally(courseId: string): Promise<void> {
     tx.objectStore('annotations').delete(id);
     tx.objectStore('pending_push').delete(id);
     tx.objectStore('pending_push_annotations').delete(id);
+    tx.objectStore('pending_push_documents').delete(id);
+    tx.objectStore('pending_push_assets').delete(id);
 
     const docStore = tx.objectStore('documents');
     const docReq = docStore.openCursor();
     docReq.onsuccess = (e) => {
+      const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result;
+      if (cursor) {
+        if (typeof cursor.key === 'string' && cursor.key.startsWith(`${id}:`)) {
+          cursor.delete();
+        }
+        cursor.continue();
+      }
+    };
+
+    const lockerStore = tx.objectStore('locker_docs');
+    const lockerReq = lockerStore.openCursor();
+    lockerReq.onsuccess = (e) => {
       const cursor = (e.target as IDBRequest<IDBCursorWithValue>).result;
       if (cursor) {
         if (typeof cursor.key === 'string' && cursor.key.startsWith(`${id}:`)) {
@@ -309,7 +366,8 @@ export async function saveDocumentLocally(courseId: string, filename: string, co
     }
   }
 
-  return put('documents', `${courseId.toLowerCase()}:${filename}`, content);
+  await put('documents', `${courseId.toLowerCase()}:${filename}`, content);
+  await queuePendingDocument(courseId, filename, content);
 }
 
 export async function deleteDocumentLocally(courseId: string, filename: string): Promise<boolean> {
@@ -331,6 +389,7 @@ export async function deleteDocumentLocally(courseId: string, filename: string):
     tx.onerror = () => reject(tx.error);
   });
 
+  await queuePendingDocument(courseId, filename, null);
   return removed;
 }
 
@@ -466,13 +525,15 @@ export async function savePromptLocally(id: string, content: string): Promise<vo
   if (isTauri()) {
     try {
       await invoke('save_prompt', { id: cleanId, content });
-      return;
     } catch (err) {
       console.warn('[NativeStore] save_prompt native call failed, saving to IDB fallback:', err);
+      await put('prompts', cleanId, { id: cleanId, content });
     }
+  } else {
+    await put('prompts', cleanId, { id: cleanId, content });
   }
 
-  await put('prompts', cleanId, { id: cleanId, content });
+  await queuePendingPrompt(cleanId, content);
 }
 
 export async function deletePromptLocally(id: string): Promise<void> {
@@ -481,19 +542,15 @@ export async function deletePromptLocally(id: string): Promise<void> {
   if (isTauri()) {
     try {
       await invoke('delete_prompt', { id: cleanId });
-      return;
     } catch (err) {
       console.warn('[NativeStore] delete_prompt native call failed, deleting from IDB fallback:', err);
+      await deleteFromStore('prompts', cleanId);
     }
+  } else {
+    await deleteFromStore('prompts', cleanId);
   }
 
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
-    const tx = db.transaction('prompts', 'readwrite');
-    tx.objectStore('prompts').delete(cleanId);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+  await queuePendingPrompt(cleanId, null);
 }
 
 export async function hasCachedData(): Promise<boolean> {
@@ -537,6 +594,7 @@ export async function saveCheckpointLocally(courseId: string, checkpoint: Checkp
     pending.push(checkpoint);
   }
   await put('pending_push', id, pending);
+  notifyPushQueued();
 }
 
 export async function deleteCheckpointLocally(courseId: string, checkpointId: string): Promise<void> {
@@ -553,8 +611,25 @@ export async function deleteCheckpointLocally(courseId: string, checkpointId: st
   const existing = await getCachedCheckpoints(id);
   await put('checkpoints', id, existing.filter((c) => c.id !== checkpointId));
 
+  // Queue a tombstone so the delete propagates to the desktop on the next
+  // push (a plain queue-filter would silently resurrect the checkpoint).
+  const tombstone: Checkpoint = {
+    id: checkpointId,
+    file: '',
+    verticalPosition: 0,
+    type: 'note',
+    date: new Date().toISOString(),
+    deleted: true
+  };
   const pending = (await get<Checkpoint[]>('pending_push', id)) ?? [];
-  await put('pending_push', id, pending.filter((c) => c.id !== checkpointId));
+  const pi = pending.findIndex((c) => c.id === checkpointId);
+  if (pi !== -1) {
+    pending[pi] = tombstone;
+  } else {
+    pending.push(tombstone);
+  }
+  await put('pending_push', id, pending);
+  notifyPushQueued();
 }
 
 export async function getPendingPushPayload(): Promise<Record<string, Checkpoint[]>> {
@@ -572,12 +647,224 @@ export async function getPendingPushPayload(): Promise<Record<string, Checkpoint
   }
 }
 
+// ── Document & prompt push queues (local writes → desktop) ───────────────────
+
+async function queuePendingDocument(courseId: string, filename: string, content: string | null): Promise<void> {
+  const id = courseId.toLowerCase();
+  const entry: PendingPushDocument = { filename, content, date: new Date().toISOString() };
+  const pending = (await get<PendingPushDocument[]>('pending_push_documents', id)) ?? [];
+  const i = pending.findIndex((d) => d.filename === filename);
+  if (i !== -1) {
+    pending[i] = entry;
+  } else {
+    pending.push(entry);
+  }
+  await put('pending_push_documents', id, pending);
+  notifyPushQueued();
+}
+
+async function queuePendingPrompt(id: string, content: string | null): Promise<void> {
+  const entry: PendingPushPrompt = { id, content, date: new Date().toISOString() };
+  const pending = (await get<PendingPushPrompt[]>('pending_push_prompts', 'prompts')) ?? [];
+  const i = pending.findIndex((p) => p.id === id);
+  if (i !== -1) {
+    pending[i] = entry;
+  } else {
+    pending.push(entry);
+  }
+  await put('pending_push_prompts', 'prompts', pending);
+  notifyPushQueued();
+}
+
+export async function getPendingPushDocuments(): Promise<Record<string, PendingPushDocument[]>> {
+  try {
+    const rows = await getAll<PendingPushDocument[]>('pending_push_documents');
+    const result: Record<string, PendingPushDocument[]> = {};
+    for (const { key, value } of rows) {
+      if (value && value.length > 0) {
+        result[key] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export async function getPendingPushPrompts(): Promise<PendingPushPrompt[]> {
+  try {
+    return (await get<PendingPushPrompt[]>('pending_push_prompts', 'prompts')) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+// ── Locker docs (course assets/locker_docs — always local) ───────────────────
+
+/** Same shape the server returns for GET /api/courses/:id/locker-docs. */
+export interface LockerDocItem {
+  filename: string;
+  size: number;
+  updatedAt: string;
+  url: string;
+  ext: string;
+}
+
+/** A locally-uploaded locker doc waiting to be pushed to the desktop. `base64: null` = tombstone. */
+export interface PendingPushAsset {
+  filename: string;
+  base64: string | null;
+  size: number;
+  date: string;
+}
+
+/** Assets above this size are kept local-only (a textbook PDF has no business in the JSON push). */
+const MAX_PUSH_ASSET_BYTES = 25 * 1024 * 1024;
+
+function lockerDocItem(courseId: string, filename: string, size: number, updatedAtMs: number): LockerDocItem {
+  const dot = filename.lastIndexOf('.');
+  return {
+    filename,
+    size,
+    updatedAt: new Date(updatedAtMs || Date.now()).toISOString(),
+    url: `/api/courses/${courseId}/assets/locker_docs/${encodeURIComponent(filename)}`,
+    ext: dot > 0 ? filename.slice(dot + 1).toLowerCase() : ''
+  };
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+export async function listLockerDocsLocally(courseId: string): Promise<LockerDocItem[]> {
+  if (isTauri()) {
+    try {
+      const entries = await invoke<Array<{ filename: string; size: number; mtime_ms: number }>>(
+        'list_locker_docs',
+        { courseId }
+      );
+      if (Array.isArray(entries)) {
+        return entries.map((e) => lockerDocItem(courseId, e.filename, e.size, e.mtime_ms));
+      }
+    } catch (err) {
+      console.warn('[NativeStore] list_locker_docs failed, falling back to IDB:', err);
+    }
+  }
+
+  const prefix = `${courseId.toLowerCase()}:`;
+  const rows = await getAll<{ filename: string; size: number; savedAt: number }>('locker_docs');
+  return rows
+    .filter((r) => r.key.startsWith(prefix))
+    .map((r) => lockerDocItem(courseId, r.value.filename, r.value.size, r.value.savedAt))
+    .sort((a, b) => a.filename.localeCompare(b.filename));
+}
+
+export async function saveLockerDocLocally(
+  courseId: string,
+  filename: string,
+  bytes: ArrayBuffer
+): Promise<LockerDocItem> {
+  const safeName = filename.split('/').pop() || filename;
+  let item = lockerDocItem(courseId, safeName, bytes.byteLength, Date.now());
+
+  if (isTauri()) {
+    try {
+      const entry = await invoke<{ filename: string; size: number; mtime_ms: number }>(
+        'save_locker_doc',
+        { courseId, filename: safeName, base64Data: arrayBufferToBase64(bytes) }
+      );
+      item = lockerDocItem(courseId, entry.filename, entry.size, entry.mtime_ms);
+    } catch (err) {
+      console.warn('[NativeStore] save_locker_doc failed:', err);
+    }
+  }
+
+  await put('locker_docs', `${courseId.toLowerCase()}:${item.filename}`, {
+    filename: item.filename,
+    size: item.size,
+    savedAt: Date.now(),
+    buffer: bytes
+  });
+
+  // Queue for push to desktop (tombstones included); oversized files stay local-only.
+  const id = courseId.toLowerCase();
+  const pending = (await get<PendingPushAsset[]>('pending_push_assets', id)) ?? [];
+  const pi = pending.findIndex((a) => a.filename === item.filename);
+  if (item.size > MAX_PUSH_ASSET_BYTES) {
+    console.warn(`[NativeStore] locker doc "${item.filename}" (${item.size} bytes) exceeds push limit — kept local-only`);
+    if (pi !== -1) pending.splice(pi, 1);
+  } else {
+    const entry: PendingPushAsset = {
+      filename: item.filename,
+      base64: arrayBufferToBase64(bytes),
+      size: item.size,
+      date: new Date().toISOString()
+    };
+    if (pi !== -1) pending[pi] = entry;
+    else pending.push(entry);
+  }
+  await put('pending_push_assets', id, pending);
+  notifyPushQueued();
+  return item;
+}
+
+export async function deleteLockerDocLocally(courseId: string, filename: string): Promise<boolean> {
+  const safeName = filename.split('/').pop() || filename;
+  let removed = false;
+  if (isTauri()) {
+    try {
+      removed = await invoke<boolean>('delete_locker_doc', { courseId, filename: safeName });
+    } catch (err) {
+      console.warn('[NativeStore] delete_locker_doc failed:', err);
+    }
+  }
+
+  await deleteFromStore('locker_docs', `${courseId.toLowerCase()}:${safeName}`);
+
+  const id = courseId.toLowerCase();
+  const pending = (await get<PendingPushAsset[]>('pending_push_assets', id)) ?? [];
+  const pi = pending.findIndex((a) => a.filename === safeName);
+  const tombstone: PendingPushAsset = { filename: safeName, base64: null, size: 0, date: new Date().toISOString() };
+  if (pi !== -1) pending[pi] = tombstone;
+  else pending.push(tombstone);
+  await put('pending_push_assets', id, pending);
+  notifyPushQueued();
+  return removed;
+}
+
+export async function getPendingPushAssets(): Promise<Record<string, PendingPushAsset[]>> {
+  try {
+    const rows = await getAll<PendingPushAsset[]>('pending_push_assets');
+    const result: Record<string, PendingPushAsset[]> = {};
+    for (const { key, value } of rows) {
+      if (value && value.length > 0) {
+        result[key] = value;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 export async function clearPendingPush(): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['pending_push', 'pending_push_annotations'], 'readwrite');
+    const tx = db.transaction(
+      ['pending_push', 'pending_push_annotations', 'pending_push_documents', 'pending_push_prompts', 'pending_push_assets'],
+      'readwrite'
+    );
     tx.objectStore('pending_push').clear();
     tx.objectStore('pending_push_annotations').clear();
+    tx.objectStore('pending_push_documents').clear();
+    tx.objectStore('pending_push_prompts').clear();
+    tx.objectStore('pending_push_assets').clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -630,6 +917,7 @@ export async function saveAnnotationsLocally(courseId: string, upserts: MarkupSt
     else pending.push(s);
   }
   await put('pending_push_annotations', id, pending);
+  notifyPushQueued();
 }
 
 export async function getPendingPushAnnotations(): Promise<Record<string, MarkupStroke[]>> {

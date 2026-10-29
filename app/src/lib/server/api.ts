@@ -11,6 +11,7 @@ import { queueManager } from './queue';
 import {
   getDataDir,
   getCoursesDir,
+  getPromptsDir,
   safeJoin,
   assertCourseId,
   assertLessonId,
@@ -657,11 +658,14 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       });
     }
 
-    // ---- /api/sync/push (iPad -> Desktop manual sync) ----
+    // ---- /api/sync/push (iPad -> Desktop sync) ----
     if (pathname === '/api/sync/push' && method === 'POST') {
       const body = (await req.json().catch(() => ({}))) as {
         checkpoints?: Record<string, any[]>;
         annotations?: Record<string, any[]>;
+        documents?: Record<string, Array<{ filename: string; content: string | null; date: string }>>;
+        prompts?: Array<{ id: string; content: string | null; date: string }>;
+        assets?: Record<string, Array<{ filename: string; base64: string | null; date: string }>>;
       };
 
       if (!body || typeof body !== 'object') {
@@ -709,10 +713,22 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             const existingById = new Map(existing.map((c) => [c.id, c]));
 
             for (const cp of ipadCheckpoints) {
-              if (!cp.id || !cp.file || typeof cp.verticalPosition !== 'number') continue;
+              if (!cp?.id) continue;
               const desktopCp = existingById.get(cp.id);
-              if (!desktopCp || new Date(cp.date) > new Date(desktopCp.date)) {
-                existingById.set(cp.id, { ...cp, courseId: undefined });
+              const incomingDate = new Date(cp.date || 0);
+              if (cp.deleted) {
+                // Tombstone: propagate a local delete when it is newer than the
+                // desktop copy; otherwise the desktop keeps its version.
+                if (desktopCp && incomingDate > new Date(desktopCp.date)) {
+                  existingById.delete(cp.id);
+                  merged++;
+                }
+                continue;
+              }
+              if (!cp.file || typeof cp.verticalPosition !== 'number') continue;
+              if (!desktopCp || incomingDate > new Date(desktopCp.date)) {
+                const { deleted: _deleted, ...clean } = cp;
+                existingById.set(cp.id, { ...clean, courseId: undefined });
                 merged++;
               }
             }
@@ -722,6 +738,162 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             errors.push(e instanceof Error ? e.message : String(e));
           }
           results[courseId] = { merged, errors };
+        }
+      }
+
+      // Locally-edited course documents (lesson tabs, course docs, manifests).
+      // Last-writer-wins, guarded by mtime: an edit made on the desktop after
+      // the pushed write is newer and wins; tombstones delete older files only.
+      if (body.documents && typeof body.documents === 'object') {
+        const isValidPushFilename = (filename: unknown): filename is string =>
+          typeof filename === 'string' &&
+          !filename.includes('/') &&
+          !filename.includes('\\') &&
+          !filename.startsWith('.') &&
+          (filename === 'meta.json' || filename === 'manifest.json' || filename.endsWith('.md'));
+
+        for (const [rawCourseId, docs] of Object.entries(body.documents)) {
+          let courseId: string;
+          try {
+            courseId = assertCourseId(rawCourseId).toLowerCase();
+          } catch {
+            continue;
+          }
+          if (!Array.isArray(docs)) continue;
+
+          const entry = results[courseId] ?? { merged: 0, errors: [] };
+          for (const doc of docs) {
+            if (!isValidPushFilename(doc?.filename) || typeof doc?.date !== 'string') {
+              entry.errors.push(`invalid document entry: ${JSON.stringify(doc?.filename)}`);
+              continue;
+            }
+            try {
+              const filePath = safeJoin(getCoursesDir(), courseId, doc.filename);
+              const incomingDate = new Date(doc.date);
+              if (Number.isNaN(incomingDate.getTime())) {
+                entry.errors.push(`invalid date for ${doc.filename}`);
+                continue;
+              }
+              const fileTime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : null;
+
+              if (doc.content === null) {
+                if (fileTime && fileTime <= incomingDate) {
+                  fs.rmSync(filePath, { force: true });
+                  entry.merged++;
+                }
+              } else if (typeof doc.content === 'string') {
+                if (!fileTime || fileTime <= incomingDate) {
+                  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+                  fs.writeFileSync(filePath, doc.content, 'utf8');
+                  entry.merged++;
+                }
+              } else {
+                entry.errors.push(`invalid content for ${doc.filename}`);
+              }
+            } catch (e) {
+              entry.errors.push(e instanceof Error ? e.message : String(e));
+            }
+          }
+          results[courseId] = entry;
+        }
+      }
+
+      // Locally-edited prompt templates (same mtime-guarded last-writer-wins).
+      if (Array.isArray(body.prompts)) {
+        const entry = results['prompts'] ?? { merged: 0, errors: [] };
+        for (const p of body.prompts) {
+          try {
+            const safeId = assertPromptId(p?.id);
+            const incomingDate = new Date(p?.date);
+            if (Number.isNaN(incomingDate.getTime())) {
+              entry.errors.push(`invalid date for prompt ${p?.id}`);
+              continue;
+            }
+            const promptPath = safeJoin(getPromptsDir(), `${safeId}.md`);
+            const fileTime = fs.existsSync(promptPath) ? fs.statSync(promptPath).mtime : null;
+
+            if (p.content === null) {
+              if (fileTime && fileTime <= incomingDate) {
+                PromptService.deletePrompt(safeId);
+                entry.merged++;
+              }
+            } else if (typeof p.content === 'string') {
+              if (!fileTime || fileTime <= incomingDate) {
+                PromptService.savePrompt(safeId, p.content);
+                entry.merged++;
+              }
+            } else {
+              entry.errors.push(`invalid content for prompt ${safeId}`);
+            }
+          } catch (e) {
+            entry.errors.push(e instanceof Error ? e.message : String(e));
+          }
+        }
+        if (entry.merged > 0 || entry.errors.length > 0) {
+          results['prompts'] = entry;
+        }
+      }
+
+      // Locally-uploaded locker docs / pasted images (base64 binaries), same
+      // mtime-guarded last-writer-wins as markdown documents.
+      if (body.assets && typeof body.assets === 'object') {
+        for (const [rawCourseId, assets] of Object.entries(body.assets)) {
+          let courseId: string;
+          try {
+            courseId = assertCourseId(rawCourseId).toLowerCase();
+          } catch {
+            continue;
+          }
+          if (!Array.isArray(assets)) continue;
+
+          const entry = results[courseId] ?? { merged: 0, errors: [] };
+          for (const asset of assets) {
+            const filename = typeof asset?.filename === 'string' ? asset.filename : '';
+            if (
+              !filename ||
+              filename.startsWith('.') ||
+              filename.includes('/') ||
+              filename.includes('\\') ||
+              filename === 'manifest.json' ||
+              typeof asset?.date !== 'string'
+            ) {
+              entry.errors.push(`invalid asset entry: ${JSON.stringify(asset?.filename)}`);
+              continue;
+            }
+            try {
+              const lockerDir = safeJoin(getCoursesDir(), courseId, 'assets', 'locker_docs');
+              const filePath = safeJoin(lockerDir, filename);
+              const incomingDate = new Date(asset.date);
+              if (Number.isNaN(incomingDate.getTime())) {
+                entry.errors.push(`invalid date for ${filename}`);
+                continue;
+              }
+              const fileTime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : null;
+
+              if (asset.base64 === null) {
+                if (fileTime && fileTime <= incomingDate) {
+                  fs.rmSync(filePath, { force: true });
+                  entry.merged++;
+                }
+              } else if (typeof asset.base64 === 'string') {
+                const buffer = Buffer.from(asset.base64, 'base64');
+                if (buffer.length === 0) {
+                  entry.errors.push(`empty payload for ${filename}`);
+                  continue;
+                }
+                if (!fileTime || fileTime <= incomingDate) {
+                  fs.mkdirSync(lockerDir, { recursive: true });
+                  fs.writeFileSync(filePath, buffer);
+                  entry.merged++;
+                }
+              } else {
+                entry.errors.push(`invalid payload for ${filename}`);
+              }
+            } catch (e) {
+              entry.errors.push(e instanceof Error ? e.message : String(e));
+            }
+          }
+          results[courseId] = entry;
         }
       }
 

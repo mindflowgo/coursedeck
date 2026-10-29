@@ -474,6 +474,119 @@ fn delete_course_doc(
     Ok(false)
 }
 
+// ── Locker docs (course assets/locker_docs, always local) ─────────────────────
+
+#[derive(serde::Serialize)]
+pub struct LockerFileEntry {
+    pub filename: String,
+    pub size: u64,
+    pub mtime_ms: u64,
+}
+
+fn locker_docs_dir(app: &tauri::AppHandle, course_id: &str) -> Result<PathBuf, String> {
+    let courses_dir = get_courses_dir(app)?;
+    Ok(courses_dir
+        .join(course_id.to_lowercase())
+        .join("assets")
+        .join("locker_docs"))
+}
+
+fn sanitize_asset_filename(filename: &str) -> Result<String, String> {
+    let name = std::path::Path::new(filename)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if name.is_empty() || name.starts_with('.') || name.contains('/') || name.contains('\\') {
+        return Err(format!("Invalid locker doc filename: {filename:?}"));
+    }
+    Ok(name)
+}
+
+fn file_mtime_ms(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn list_locker_docs(
+    app: tauri::AppHandle,
+    course_id: String,
+) -> Result<Vec<LockerFileEntry>, String> {
+    let dir = locker_docs_dir(&app, &course_id)?;
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            if !entry.path().is_file() {
+                continue;
+            }
+            let filename = entry.file_name().to_string_lossy().to_string();
+            if filename.starts_with('.') {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata() {
+                files.push(LockerFileEntry {
+                    filename,
+                    size: meta.len(),
+                    mtime_ms: file_mtime_ms(&meta),
+                });
+            }
+        }
+    }
+    files.sort_by(|a, b| a.filename.cmp(&b.filename));
+    Ok(files)
+}
+
+#[tauri::command]
+fn save_locker_doc(
+    app: tauri::AppHandle,
+    course_id: String,
+    filename: String,
+    base64_data: String,
+) -> Result<LockerFileEntry, String> {
+    use base64::Engine;
+    let name = sanitize_asset_filename(&filename)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| format!("invalid base64 payload: {e}"))?;
+
+    let dir = locker_docs_dir(&app, &course_id)?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {:?}: {e}", dir))?;
+    let path = dir.join(&name);
+    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write {:?}: {e}", path))?;
+    eprintln!(
+        "[tauripad-fs] save_locker_doc: saved {:?} ({} bytes)",
+        path,
+        bytes.len()
+    );
+    Ok(LockerFileEntry {
+        filename: name,
+        size: bytes.len() as u64,
+        mtime_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    })
+}
+
+#[tauri::command]
+fn delete_locker_doc(
+    app: tauri::AppHandle,
+    course_id: String,
+    filename: String,
+) -> Result<bool, String> {
+    let name = sanitize_asset_filename(&filename)?;
+    let path = locker_docs_dir(&app, &course_id)?.join(&name);
+    if !path.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete {:?}: {e}", path))?;
+    eprintln!("[tauripad-fs] delete_locker_doc: deleted {:?}", path);
+    Ok(true)
+}
+
 #[tauri::command]
 fn list_cached_courses(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
     let courses_dir = get_courses_dir(&app)?;
@@ -801,6 +914,9 @@ pub fn run() {
             read_course_doc,
             save_course_doc,
             delete_course_doc,
+            list_locker_docs,
+            save_locker_doc,
+            delete_locker_doc,
             list_cached_courses,
             get_cached_course,
             delete_course,

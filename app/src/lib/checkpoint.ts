@@ -17,6 +17,7 @@ export interface Checkpoint {
   color?: string; // color id: 'coral' | 'orange' | 'amber' | 'yellow' | 'lime' | 'mint' | 'teal' | 'sky' | 'blue' | 'indigo' | 'purple' | 'pink'
   noteText?: string;
   date: string; // ISO 8601
+  deleted?: boolean; // tombstone: set when deleted locally, consumed by the desktop push merge
 }
 
 export interface CheckpointColor {

@@ -4,6 +4,9 @@
 import {
   getPendingPushPayload,
   getPendingPushAnnotations,
+  getPendingPushDocuments,
+  getPendingPushPrompts,
+  getPendingPushAssets,
   hasCachedData,
   getLastSyncedAt,
   getDesktopUrl,
@@ -11,9 +14,10 @@ import {
   isTauri,
   saveLlmConfigLocally,
   setMeta,
+  PUSH_QUEUED_EVENT,
   type SyncZipSummary
 } from './storage/clientStore';
-import { isServerReachable, isTauriDesktop, smartFetch } from './api';
+import { getApiBaseUrl, isServerReachable, isTauriDesktop, smartFetch } from './api';
 
 export const syncState = $state({
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
@@ -27,18 +31,66 @@ export const syncState = $state({
   pushError: null as string | null
 });
 
+async function countPendingPush(): Promise<number> {
+  const [checkpoints, annotations, documents, prompts, assets] = await Promise.all([
+    getPendingPushPayload(),
+    getPendingPushAnnotations(),
+    getPendingPushDocuments(),
+    getPendingPushPrompts(),
+    getPendingPushAssets()
+  ]);
+  return (
+    Object.values(checkpoints).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
+    Object.values(annotations).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
+    Object.values(documents).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
+    Object.values(assets).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
+    prompts.length
+  );
+}
+
 export async function refreshPendingPushCount(): Promise<number> {
   if (typeof window === 'undefined') return 0;
   try {
-    const payload = await getPendingPushPayload();
-    const annotations = await getPendingPushAnnotations();
-    const count =
-      Object.values(payload).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
-      Object.values(annotations).reduce((sum, arr) => sum + (arr?.length || 0), 0);
-    syncState.pendingPushCount = count;
-    return count;
+    syncState.pendingPushCount = await countPendingPush();
+    return syncState.pendingPushCount;
   } catch {
     return 0;
+  }
+}
+
+// ── Background auto-push ──────────────────────────────────────────────────────
+// Local writes land in the pending-push queues (see clientStore); a debounced
+// flush pushes them to the desktop whenever it is reachable, so edits made on
+// a synced device propagate without waiting for the manual "Push Changes" item.
+
+const AUTO_PUSH_DEBOUNCE_MS = 3000;
+let autoPushTimer: ReturnType<typeof setTimeout> | null = null;
+let isAutoPushing = false;
+
+function scheduleAutoPush(delayMs = AUTO_PUSH_DEBOUNCE_MS): void {
+  if (typeof window === 'undefined' || isTauriDesktop()) return;
+  if (autoPushTimer) clearTimeout(autoPushTimer);
+  autoPushTimer = setTimeout(() => {
+    autoPushTimer = null;
+    void attemptAutoPush();
+  }, delayMs);
+}
+
+async function attemptAutoPush(): Promise<void> {
+  if (isAutoPushing || syncState.isPushing || syncState.isSyncing) return;
+  if (!getApiBaseUrl()) return; // no desktop paired
+  try {
+    const pending = await countPendingPush();
+    if (pending === 0) return;
+    if (!(await isServerReachable())) return;
+    isAutoPushing = true;
+    await refreshPendingPushCount();
+    await pushToDesktop();
+  } catch {
+    // Desktop unreachable or push rejected — queues stay intact and the next
+    // write/reconnect reschedules a flush.
+  } finally {
+    isAutoPushing = false;
   }
 }
 
@@ -71,15 +123,23 @@ export async function initSyncState(): Promise<void> {
     syncState.serverReachable = false;
   });
 
+  // Local writes queue themselves; flush them to the desktop in the background.
+  window.addEventListener(PUSH_QUEUED_EVENT, () => scheduleAutoPush());
+
   await checkReachability();
 }
 
 export async function checkReachability(): Promise<boolean> {
   if (typeof window === 'undefined' || isTauriDesktop()) return true;
   const reachable = await isServerReachable(true);
+  const wasReachable = syncState.serverReachable;
   syncState.serverReachable = reachable;
   if (reachable) {
     await refreshPendingPushCount();
+    if (!wasReachable && syncState.pendingPushCount > 0) {
+      // Reconnected: flush anything that piled up while offline.
+      scheduleAutoPush(0);
+    }
   }
   return reachable;
 }
@@ -137,6 +197,18 @@ export async function syncFromDesktop(
       throw new Error('Sync runs inside the CourseDeck app.');
     }
 
+    // Unpushed local writes would be clobbered by the incoming bundle (the
+    // extract blindly overwrites everything but annotations) and then dropped
+    // by clearPendingPush below — flush them to the desktop first.
+    await refreshPendingPushCount();
+    if (syncState.pendingPushCount > 0) {
+      try {
+        await pushToDesktop();
+      } catch (e) {
+        console.warn('[Sync] pre-sync push failed; local-only writes may be overwritten:', e);
+      }
+    }
+
     // One zip archive downloaded and extracted natively in Rust — no JSON
     // bundle, no base64 assets, nothing large passing through the webview.
     const { invoke } = await import('@tauri-apps/api/core');
@@ -175,23 +247,25 @@ export async function pushToDesktop(): Promise<{ success: boolean; results?: Rec
   syncState.pushError = null;
 
   try {
-    const checkpoints = await getPendingPushPayload();
-    const annotations = await getPendingPushAnnotations();
-    const count =
-      Object.values(checkpoints).reduce((sum, arr) => sum + (arr?.length || 0), 0) +
-      Object.values(annotations).reduce((sum, arr) => sum + (arr?.length || 0), 0);
+    const [checkpoints, annotations, documents, prompts, assets] = await Promise.all([
+      getPendingPushPayload(),
+      getPendingPushAnnotations(),
+      getPendingPushDocuments(),
+      getPendingPushPrompts(),
+      getPendingPushAssets()
+    ]);
+    const count = await countPendingPush();
 
     if (count === 0) {
       syncState.pendingPushCount = 0;
       return { success: true };
     }
 
-    const { getApiBaseUrl } = await import('./api');
     const baseUrl = getApiBaseUrl();
     const res = await smartFetch(`${baseUrl}/api/sync/push`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ checkpoints, annotations })
+      body: JSON.stringify({ checkpoints, annotations, documents, prompts, assets })
     });
 
     if (!res.ok) {
