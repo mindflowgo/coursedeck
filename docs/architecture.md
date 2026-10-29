@@ -1151,5 +1151,38 @@ Current coverage: Bun unit tests against `handleApiRequest` (`app/src/lib/server
 
 **Preferred direction going forward: testing inside the Tauri builds and via MCP capabilities** rather than browser-level harnesses — i.e. `cargo test` within the `tauri`/`tauripad` crates for extraction/merge/protocol logic, and exercising the live server surface through the `coursedeck` MCP tools where practical. New sync behavior should add coverage in those layers first.
 
+## 21. Native Apple PencilKit Integration (iPad)
+
+Apple Pencil input runs on a **second native layer**: a `PKCanvasView` overlaid above the WKWebView inside the `tauri-plugin-pencilkit` crate (lives at `../tauri-plugin-pencilkit`, outside this repo, and is compiled *into* the Rust static library via swift-rs — the Xcode project only links `PencilKit.framework`). The webview renders the authoritative stroke store as SVG (perfect-freehand paths); the native canvas exists purely for zero-latency live ink. Finger touches, the top chrome, and registered popover rects (`set_excluded_rects`) all pass through the canvas untouched; only pencil strokes below the cutoff are captured.
+
+### 21.1 Seamless Handoff: Deferred Commit & Acknowledged Retirement
+
+The core problem is handoff without a blank frame: native Metal ink must stay on screen until the SVG commit has actually painted. The pipeline:
+
+1. **Accumulate**: strokes stay on the PKCanvasView while writing. A 1.0s idle debounce (`canvasViewDidEndUsingTool` → commit timer, cancelled on `pencilTouchDidBegin`/`canvasViewDidBeginUsingTool`) exports the whole burst at once — exporting per stroke would tear the surface every pen lift.
+2. **Export without clearing**: `commitPendingStrokes` emits `pencilkit:stroke-drawn` per stroke in **viewport coordinates** (page/overlay mapping happens in JS at receipt via live `getBoundingClientRect`, so scroll/zoom never drifts). The native drawing is untouched. Exports are decimated (≥1.3pt spacing with pressure-extreme retention, integer coordinate rounding) to keep payloads and `annotations.json` small.
+3. **Commit in batches**: the frontend buffers incoming native strokes and commits them in **one `addStrokes()` store pass per animation frame** — a single cache merge, one file-index rebuild, one debounced persistence flush, while each stroke keeps its own undo entry (double-tap undo still peels single strokes). Per-stroke commits made large bursts O(n²) in store work and starved the render pass.
+4. **Retire on acknowledgment**: 2.0s after the last received stroke, `ack_rendered(ids)` tells the plugin those strokes have painted. `reconcileCanvasDrawing` then removes *only acknowledged* strokes — and never while the pencil is down. An 8s failsafe auto-acks anything the frontend never confirmed (e.g. route change races).
+
+### 21.2 Purge Discipline (the blank-gap rule)
+
+Any native wipe between export and SVG paint is visible to the user as flashing blank ink. `flushAndPurgeScratchpad` therefore has exactly five sanctioned triggers: **deactivation, document/file change, explicit `clear`, native undo/redo, and picker dismissal** (which exits markup mode). Critically, `set_tool` and `PKToolPicker` tool changes **never** purge — changing tools does not invalidate strokes already drawn in viewport coordinates.
+
+The matching frontend rule: **PencilKit activation effects must contain no live store reads.** `canUndo`/`canRedo`/`activeMarkupFile` change on every committed stroke; an activation effect that reads them re-sends `set_active` mid-batch and wipes the scratchpad ~1s after every pause. Undo availability flows only through the dedicated `sync_undo_redo` command, which does not purge.
+
+### 21.3 Build Integrity (no silently stale native code)
+
+Two cache layers used to ship stale Swift/Rust into the app:
+
+- **Cargo cannot see Swift sources.** The plugin's `build.rs` emits `cargo:rerun-if-changed` for `ios/Sources/PencilKitPlugin.swift` and `ios/Package.swift`, so Swift edits always recompile into the crate (and thus `libapp.a`).
+- **The Xcode "Build Rust Code" phase no longer reuses any existing `libapp.a`.** It mtime-checks `tauripad` sources/manifests/capabilities *and* the external plugin crate's Rust + Swift, rebuilds when anything is newer (logging the trigger), keeps the x86_64 copy in sync unconditionally, and fails the Xcode build loudly if cargo fails or the plugin crate is missing.
+
+### 21.4 Design Invariants
+
+- Native ink is never cleared between export and acknowledged paint; `ack_rendered` is the only routine retirement path.
+- Activation state changes and tool changes are non-destructive to pending strokes.
+- Strokes are exported in viewport coordinates only; document-space mapping happens in JS at receipt time.
+- The plugin crate is a path dependency outside this repository — it must stay under version control on its own (or move back into `crates/`).
+
 
 

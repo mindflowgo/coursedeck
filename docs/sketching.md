@@ -4,6 +4,10 @@ Draw highlighter and marker strokes directly on top of rendered lesson documents
 with touch-first input for iPad / iPhone. Strokes are stored per course and sync
 between devices through the same pipeline as checkpoints.
 
+On iPad with Apple Pencil, live ink runs on a native PencilKit layer that hands
+off to this SVG pipeline — see **architecture.md §21** for the deferred-commit
+and acknowledged-retirement design that keeps the handoff seamless.
+
 Entry point: the **Markup** split button in the top toolbar (between **PDF** and
 **Edit**), visible on any markdown-reader view (hidden for schedule, course
 overview, and unit-test views, and while editing).

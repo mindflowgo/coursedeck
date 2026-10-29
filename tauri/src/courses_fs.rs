@@ -1,6 +1,15 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::RwLock;
 use tauri::Manager;
+
+static COURSES_ROOT_CACHE: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn clear_courses_root_cache() {
+    if let Ok(mut lock) = COURSES_ROOT_CACHE.write() {
+        *lock = None;
+    }
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct LessonBundleResponse {
@@ -11,6 +20,19 @@ pub struct LessonBundleResponse {
 }
 
 pub fn get_courses_root_dir(app: &tauri::AppHandle) -> PathBuf {
+    if let Ok(lock) = COURSES_ROOT_CACHE.read() {
+        if let Some(ref path) = *lock {
+            return path.clone();
+        }
+    }
+    let resolved = resolve_courses_root_dir(app);
+    if let Ok(mut lock) = COURSES_ROOT_CACHE.write() {
+        *lock = Some(resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_courses_root_dir(app: &tauri::AppHandle) -> PathBuf {
     // 0. Custom data_dir from settings.json
     if let Some(val) = crate::settings::get_setting_value(app, "data_dir") {
         if let Some(str_path) = val.as_str() {
@@ -316,13 +338,17 @@ pub fn list_cached_courses(app: tauri::AppHandle) -> Result<Vec<serde_json::Valu
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let meta_path = if path.join("meta.json").exists() {
-                    path.join("meta.json")
+                let meta_path = path.join("meta.json");
+                let manifest_path = path.join("manifest.json");
+                let target = if meta_path.exists() {
+                    Some(meta_path)
+                } else if manifest_path.exists() {
+                    Some(manifest_path)
                 } else {
-                    path.join("manifest.json")
+                    None
                 };
-                if meta_path.exists() {
-                    if let Ok(raw) = std::fs::read_to_string(&meta_path) {
+                if let Some(target_file) = target {
+                    if let Ok(raw) = std::fs::read_to_string(&target_file) {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
                             courses.push(val);
                         }
@@ -345,14 +371,18 @@ pub fn get_cached_course(
     course_id: String,
 ) -> Result<Option<serde_json::Value>, String> {
     if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        let meta_path = if course_dir.join("meta.json").exists() {
-            course_dir.join("meta.json")
+        let meta_path = course_dir.join("meta.json");
+        let manifest_path = course_dir.join("manifest.json");
+        let target = if meta_path.exists() {
+            Some(meta_path)
+        } else if manifest_path.exists() {
+            Some(manifest_path)
         } else {
-            course_dir.join("manifest.json")
+            None
         };
-        if meta_path.exists() {
-            let raw = std::fs::read_to_string(&meta_path)
-                .map_err(|e| format!("Failed to read manifest {:?}: {e}", meta_path))?;
+        if let Some(target_file) = target {
+            let raw = std::fs::read_to_string(&target_file)
+                .map_err(|e| format!("Failed to read manifest {:?}: {e}", target_file))?;
             let val = serde_json::from_str(&raw)
                 .map_err(|e| format!("Failed to parse manifest: {e}"))?;
             return Ok(Some(val));

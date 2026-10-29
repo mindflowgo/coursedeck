@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
+    addStrokes,
     addStroke,
     canRedo,
     canUndo,
@@ -22,6 +23,7 @@
   } from '$lib/markup/render';
   import type { MarkupStroke } from '$lib/markup/types';
   import {
+    ackPencilKitRendered,
     isPencilKitAvailable,
     onPencilKitRedo,
     onPencilKitStroke,
@@ -107,6 +109,36 @@
     window.addEventListener('resize', syncDimensions);
 
     // Listen for strokes drawn via native Apple PencilKit on iPad
+    let pendingAckIds: string[] = [];
+    let ackTimerId: ReturnType<typeof setTimeout> | null = null;
+    // Native bursts arrive as one event per stroke; buffer them and commit in
+    // a single store pass per frame so large batches render without O(n²) churn
+    let pendingNativeStrokes: MarkupStroke[] = [];
+    let nativeFlushRafId: number | null = null;
+
+    function flushNativeStrokes(): void {
+      if (nativeFlushRafId !== null) {
+        cancelAnimationFrame(nativeFlushRafId);
+        nativeFlushRafId = null;
+      }
+      if (pendingNativeStrokes.length > 0) {
+        addStrokes(courseId, pendingNativeStrokes.splice(0));
+      }
+    }
+
+    function scheduleBatchAck() {
+      if (ackTimerId !== null) clearTimeout(ackTimerId);
+      // Wait 2000ms (2.0s) so the SVG canvas has ample time to compute outlines,
+      // update the DOM, and rasterize to GPU before native PencilKit retires the overlay strokes
+      ackTimerId = setTimeout(() => {
+        ackTimerId = null;
+        const ids = pendingAckIds.splice(0);
+        if (ids.length > 0) {
+          void ackPencilKitRendered(ids);
+        }
+      }, 2000);
+    }
+
     const unsubPencil = onPencilKitStroke((stroke) => {
       if (!active || !overlayEl) return;
       const pts = stroke.viewportPoints;
@@ -125,8 +157,9 @@
         );
       }
 
-      addStroke(courseId, {
-        id: stroke.id || crypto.randomUUID(),
+      const strokeId = stroke.id || crypto.randomUUID();
+      pendingNativeStrokes.push({
+        id: strokeId,
         file,
         tool: stroke.tool,
         color: stroke.color,
@@ -136,6 +169,16 @@
         width: stroke.width,
         opacity: stroke.opacity
       });
+      if (nativeFlushRafId === null) {
+        nativeFlushRafId = requestAnimationFrame(() => {
+          nativeFlushRafId = null;
+          flushNativeStrokes();
+        });
+      }
+
+      // Accumulate stroke ID and debounce a batch ack
+      pendingAckIds.push(strokeId);
+      scheduleBatchAck();
     });
 
     // Wire Apple Pencil toolbar reverse/forward buttons into web undo/redo
@@ -174,6 +217,12 @@
       unsubPencil();
       unsubUndo();
       unsubRedo();
+      if (ackTimerId !== null) clearTimeout(ackTimerId);
+      // Commit any buffered strokes before acknowledging them
+      flushNativeStrokes();
+      if (pendingAckIds.length > 0) {
+        void ackPencilKitRendered(pendingAckIds.splice(0));
+      }
       if (isPencilKitAvailable()) {
         setPencilKitActive({ active: false });
       }
@@ -201,17 +250,17 @@
     return 140;
   }
 
-  // Sync native PencilKit active state and tool selection (only when Pencil Mode is enabled)
+  // Sync native PencilKit active state and tool selection (only when Pencil Mode is enabled).
+  // NOTE: keep live store reads (canUndo/canRedo) OUT of this effect — they change on every
+  // committed stroke, and re-sending set_active mid-batch wipes the native scratchpad before
+  // the SVG layer renders. Undo state flows via syncPencilKitUndoRedo below.
   $effect(() => {
     if (isPencilKitAvailable()) {
       const shouldActivate = active && markupUi.pencilOnly;
       if (shouldActivate) {
-        const topHeight = computeTopCutoff();
         setPencilKitActive({
           active: true,
-          topHeight,
-          canUndo: canUndo(courseId, file),
-          canRedo: canRedo(courseId, file)
+          topHeight: computeTopCutoff()
         });
         setPencilKitTool(markupUi.eraser ? 'eraser' : markupUi.tool, markupUi.color);
       } else {

@@ -179,14 +179,14 @@
 			path = Externals;
 			sourceTree = "<group>";
 		};
-		"TEMP_239D2461-DB84-410F-89A1-E087B0E8F681" /* arm64 */ = {
+		"TEMP_20E61B70-C55F-48A9-B88C-74907C396E0E" /* arm64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = arm64;
 			sourceTree = "<group>";
 		};
-		"TEMP_72AD6CC7-4F59-4FB7-9F91-78E5440504C2" /* x86_64 */ = {
+		"TEMP_BC31F936-D603-45E2-9725-B1E8E3BBE404" /* x86_64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
@@ -303,7 +303,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "mkdir -p \"${SRCROOT}/Externals/arm64/${CONFIGURATION}\"\nmkdir -p \"${SRCROOT}/Externals/x86_64/${CONFIGURATION}\"\nif [ -f \"${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a\" ]; then\n  echo \"Using existing libapp.a\"\nelse\n  PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --manifest-path \"${PROJECT_DIR}/../../../tauripad/Cargo.toml\" --target aarch64-apple-ios --release\n  cp \"${PROJECT_DIR}/../../../tauripad/target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a\" \"${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a\"\nfi\n[ -f \"${SRCROOT}/Externals/x86_64/${CONFIGURATION}/libapp.a\" ] || cp \"${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a\" \"${SRCROOT}/Externals/x86_64/${CONFIGURATION}/libapp.a\" 2>/dev/null || true\n";
+			shellScript = "mkdir -p \"${SRCROOT}/Externals/arm64/${CONFIGURATION}\"\nmkdir -p \"${SRCROOT}/Externals/x86_64/${CONFIGURATION}\"\nCRATE_DIR=\"${PROJECT_DIR}/../../../tauripad\"\nPENCILKIT_DIR=\"${PROJECT_DIR}/../../../../tauri-plugin-pencilkit\"\nLIBAPP=\"${SRCROOT}/Externals/arm64/${CONFIGURATION}/libapp.a\"\nneeds_build=0\nif [ ! -d \"${PENCILKIT_DIR}\" ]; then\n  echo \"warning: tauri-plugin-pencilkit not found at ${PENCILKIT_DIR}; forcing rebuild\"\n  needs_build=1\nfi\nif [ \"${needs_build}\" -eq 0 ] && [ ! -f \"${LIBAPP}\" ]; then\n  needs_build=1\nfi\nif [ \"${needs_build}\" -eq 0 ]; then\n  # Rebuild when any Rust/Swift source, manifest or config is newer than the cached archive\n  stale=$(find -L \"${CRATE_DIR}/src\" \"${CRATE_DIR}/Cargo.toml\" \"${CRATE_DIR}/Cargo.lock\" \"${CRATE_DIR}/tauri.conf.json\" \"${CRATE_DIR}/capabilities\" \"${PENCILKIT_DIR}/src\" \"${PENCILKIT_DIR}/ios/Sources\" \"${PENCILKIT_DIR}/build.rs\" \"${PENCILKIT_DIR}/Cargo.toml\" -newer \"${LIBAPP}\" -print -quit 2>/dev/null)\n  if [ -n \"${stale}\" ]; then\n    echo \"libapp.a stale (${stale}) - rebuilding Rust/Swift\"\n    needs_build=1\n  fi\nfi\nif [ \"${needs_build}\" -eq 1 ]; then\n  PATH=\"$HOME/.cargo/bin:$PATH\" cargo build --manifest-path \"${CRATE_DIR}/Cargo.toml\" --target aarch64-apple-ios --release || exit $?\n  cp \"${CRATE_DIR}/target/aarch64-apple-ios/release/libcoursedeck_ipad_lib.a\" \"${LIBAPP}\"\nelse\n  echo \"libapp.a up to date\"\nfi\ncp \"${LIBAPP}\" \"${SRCROOT}/Externals/x86_64/${CONFIGURATION}/libapp.a\" 2>/dev/null || true\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

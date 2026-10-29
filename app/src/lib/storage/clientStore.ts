@@ -5,6 +5,7 @@ import type { CourseManifest } from '$lib/parser/courseIngest';
 import { derivePdfMarkupCheckpoints, type Checkpoint } from '$lib/checkpoint';
 import { mergeStrokes } from '$lib/markup/render';
 import { isMarkupStroke, type MarkupStroke } from '$lib/markup/types';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface ClientLlmModelCard {
   id: string;
@@ -198,7 +199,6 @@ export async function deleteCachedPdfAsset(key: string): Promise<void> {
 export async function listCachedCourses(): Promise<CourseManifest[]> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const courses = await invoke<CourseManifest[]>('list_cached_courses');
       if (Array.isArray(courses)) {
         console.log(`[NativeStore] listCachedCourses: retrieved ${courses.length} courses from filesystem`);
@@ -216,7 +216,6 @@ export async function listCachedCourses(): Promise<CourseManifest[]> {
 export async function getCachedCourse(courseId: string): Promise<CourseManifest | undefined> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const course = await invoke<CourseManifest | null>('get_cached_course', { courseId });
       if (course) {
         console.log(`[NativeStore] getCachedCourse: retrieved manifest for "${courseId}" from filesystem`);
@@ -234,7 +233,6 @@ export async function saveCourseManifestLocally(courseId: string, manifest: Cour
   const json = JSON.stringify(manifest, null, 2);
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('save_course_doc', { courseId, filename: 'meta.json', content: json });
       await invoke('save_course_doc', { courseId, filename: 'manifest.json', content: json });
       console.log(`[NativeStore] saveCourseManifestLocally: wrote manifest for "${courseId}" directly to filesystem`);
@@ -249,7 +247,6 @@ export async function deleteCourseLocally(courseId: string): Promise<void> {
   const id = courseId.toLowerCase();
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('delete_course', { courseId: id });
       console.log(`[NativeStore] deleteCourseLocally: deleted course "${id}" from filesystem`);
     } catch (err) {
@@ -289,7 +286,6 @@ export async function deleteCourseLocally(courseId: string): Promise<void> {
 export async function getDocument(courseId: string, filename: string): Promise<string | undefined> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const doc = await invoke<string | null>('read_course_doc', { courseId, filename });
       if (doc !== null && doc !== undefined) {
         console.log(`[NativeStore] getDocument: read "${filename}" for "${courseId}" from filesystem (${doc.length} chars)`);
@@ -306,7 +302,6 @@ export async function getDocument(courseId: string, filename: string): Promise<s
 export async function saveDocumentLocally(courseId: string, filename: string, content: string): Promise<void> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('save_course_doc', { courseId, filename, content });
       console.log(`[NativeStore] saveDocumentLocally: wrote "${filename}" for "${courseId}" directly to filesystem`);
     } catch (err) {
@@ -321,7 +316,6 @@ export async function deleteDocumentLocally(courseId: string, filename: string):
   let removed = false;
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       removed = await invoke<boolean>('delete_course_doc', { courseId, filename });
       console.log(`[NativeStore] deleteDocumentLocally: deleted "${filename}" for "${courseId}" directly from filesystem: ${removed}`);
     } catch (err) {
@@ -370,7 +364,6 @@ export async function getLessonBundleLocally(
 ): Promise<{ lesson: string; tabs: Record<string, string> }> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       console.log(`[NativeStore] getLessonBundleLocally: reading "${courseId}/${lessonId}" from native filesystem...`);
       const res = await invoke<{
         course_id: string;
@@ -436,7 +429,6 @@ export async function getLessonBundleLocally(
 export async function getCachedCheckpoints(courseId: string): Promise<Checkpoint[]> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const list = await invoke<Checkpoint[]>('get_cached_checkpoints', { courseId });
       if (list && list.length > 0) return list;
     } catch (err) {
@@ -454,7 +446,6 @@ export async function getLlmStore(): Promise<ClientLlmStore | undefined> {
 export async function listPrompts(): Promise<{ id: string; content: string }[]> {
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const list = await invoke<{ id: string; title: string; filename: string; content: string }[]>('list_prompts');
       if (list && list.length > 0) {
         console.log(`[NativeStore] listPrompts: read ${list.length} prompts from filesystem`);
@@ -474,7 +465,6 @@ export async function savePromptLocally(id: string, content: string): Promise<vo
 
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('save_prompt', { id: cleanId, content });
       return;
     } catch (err) {
@@ -490,7 +480,6 @@ export async function deletePromptLocally(id: string): Promise<void> {
 
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('delete_prompt', { id: cleanId });
       return;
     } catch (err) {
@@ -523,7 +512,6 @@ export async function saveCheckpointLocally(courseId: string, checkpoint: Checkp
 
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('save_checkpoint', { courseId: id, checkpoint });
       console.log(`[NativeStore] saveCheckpointLocally: saved checkpoint ${checkpoint.id} to filesystem`);
     } catch (err) {
@@ -556,7 +544,6 @@ export async function deleteCheckpointLocally(courseId: string, checkpointId: st
 
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       await invoke('delete_checkpoint', { courseId: id, checkpointId });
     } catch (err) {
       console.warn('[NativeStore] Native delete_checkpoint failed:', err);
@@ -601,7 +588,6 @@ export async function clearPendingPush(): Promise<void> {
 async function writeAnnotationsNative(courseId: string, strokes: MarkupStroke[]): Promise<void> {
   if (!isTauri()) return;
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
     await invoke('save_annotations', { courseId, strokesJson: JSON.stringify(strokes) });
   } catch (err) {
     console.warn('[NativeStore] Native save_annotations failed:', err);
@@ -612,7 +598,6 @@ export async function getAnnotationsLocally(courseId: string): Promise<MarkupStr
   const id = courseId.toLowerCase();
   if (isTauri()) {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
       const json = await invoke<string | null>('get_annotations', { courseId: id });
       if (json) {
         const parsed = JSON.parse(json);

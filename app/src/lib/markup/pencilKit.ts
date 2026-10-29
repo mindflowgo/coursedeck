@@ -208,6 +208,20 @@ export async function clearPencilKit(): Promise<void> {
 }
 
 /**
+ * Acknowledges that one or more stroke IDs have been rendered into the DOM / SVG canvas.
+ * Signals native PencilKit to safely retire those strokes from the PKCanvasView scratchpad
+ * without causing any visual blank frame.
+ */
+export async function ackPencilKitRendered(ids: string[]): Promise<void> {
+  if (!browser || ids.length === 0 || !isPencilKitAvailable()) return;
+  try {
+    await invoke('plugin:pencilkit|ack_rendered', { ids });
+  } catch (err) {
+    console.warn('[PencilKit] Failed to acknowledge rendered stroke:', err);
+  }
+}
+
+/**
  * Subscribes to strokes drawn via native PencilKit.
  */
 export function onPencilKitStroke(cb: StrokeCallback): () => void {

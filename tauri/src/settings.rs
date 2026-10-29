@@ -55,6 +55,7 @@ pub fn set_setting_value(app: &AppHandle, key: String, value: Value) -> Result<(
         return Err("Failed to resolve app data directory".to_string());
     };
 
+    let is_data_dir = key == "data_dir";
     let mut raw = get_settings_raw(app);
     if let Some(obj) = raw.as_object_mut() {
         obj.insert(key, value);
@@ -68,6 +69,9 @@ pub fn set_setting_value(app: &AppHandle, key: String, value: Value) -> Result<(
 
     let content = serde_json::to_string_pretty(&raw).map_err(|e| e.to_string())?;
     std::fs::write(path, content).map_err(|e| e.to_string())?;
+    if is_data_dir {
+        crate::courses_fs::clear_courses_root_cache();
+    }
     Ok(())
 }
 

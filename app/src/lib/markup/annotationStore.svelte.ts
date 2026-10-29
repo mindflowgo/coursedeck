@@ -241,11 +241,23 @@ export function createStroke(
 
 /** Commits a finished stroke (optimistic + queued upsert + undo entry). */
 export function addStroke(courseId: string, stroke: MarkupStroke): void {
-  applyLocalUpsert(courseId, [stroke]);
-  queueUpsert(courseId, [stroke]);
-  const key = fileKey(courseId, stroke.file);
-  undoStacks[key] = [...(undoStacks[key] ?? []), { type: 'add', strokes: [stroke] }];
-  redoStacks[key] = [];
+  addStrokes(courseId, [stroke]);
+}
+
+/**
+ * Batched commit (native PencilKit bursts): one cache merge, one index
+ * rebuild and one debounced persistence flush for the whole batch, while
+ * each stroke keeps its own undo entry so undo still peels single strokes.
+ */
+export function addStrokes(courseId: string, newStrokes: MarkupStroke[]): void {
+  if (newStrokes.length === 0) return;
+  applyLocalUpsert(courseId, newStrokes);
+  queueUpsert(courseId, newStrokes);
+  for (const s of newStrokes) {
+    const key = fileKey(courseId, s.file);
+    undoStacks[key] = [...(undoStacks[key] ?? []), { type: 'add', strokes: [s] }];
+    redoStacks[key] = [];
+  }
 }
 
 /**

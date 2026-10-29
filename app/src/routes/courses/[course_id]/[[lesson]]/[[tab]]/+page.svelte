@@ -333,6 +333,7 @@
   let pendingScroll: { file: string; top: number } | null = null;
 
   let checkpoints: Checkpoint[] = $state([]);
+  let hasLoadedCheckpoints = $state(false);
   let isCheckpointModalOpen: boolean = $state(false);
   let activeCheckpoint: Partial<Checkpoint> | null = $state(null);
   let openNoteIds = $state<Set<string>>(new Set());
@@ -354,6 +355,7 @@
       if (res.ok) {
         const data = await res.json();
         checkpoints = data.checkpoints || [];
+        hasLoadedCheckpoints = true;
       }
     } catch (e) {
       console.warn('Failed to load checkpoints:', e);
@@ -625,8 +627,7 @@
       if (res.ok) {
         const data = await res.json();
         course = data.course;
-        await loadCheckpoints();
-        await loadCourseSchedule();
+        await Promise.all([loadCheckpoints(), loadCourseSchedule()]);
         if (!opts?.skipAutoLesson && !isCourseScope && course && course.units.length > 0 && course.units[0].lessons.length > 0) {
           const target = selectTargetLessonId || selectedLessonId || course.units[0].lessons[0].id;
           await loadLesson(target);
@@ -1050,7 +1051,6 @@
         }
         originalContents = { ...tabContents };
         quizRunnerKey++;
-        void loadCourseSchedule();
         console.log(`[NAV] loadLesson "${lessonId}" ✓ lessonLen=${(data.lesson || '').length}, tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}], activeTab="${activeTab}", activeTabLen=${(tabContents[activeTab] || '').length}`);
       } else {
         console.warn(`[NAV] loadLesson "${lessonId}" failed: HTTP ${res.status}`);
@@ -2010,6 +2010,7 @@
     let aborted = false;
     try {
       if (!course || course.id.toLowerCase() !== courseId.toLowerCase()) {
+        hasLoadedCheckpoints = false;
         await loadCourse(undefined, { skipAutoLesson: true });
         if (routeMovedOn()) throw ROUTE_MOVED_ON;
       }
@@ -2025,7 +2026,7 @@
       const isGenericCourseOpen = !pLesson && !pTab && !qScope && !qLesson && !qTab;
       let resumeTarget: ReturnType<typeof resolveLastAccessedCourseRoute> = null;
       if (isGenericCourseOpen && getResumeLastPosition()) {
-        if (checkpoints.length === 0) {
+        if (!hasLoadedCheckpoints) {
           await loadCheckpoints();
         }
         const allLessons = (course.units || []).flatMap((u) => u.lessons);
@@ -2203,9 +2204,9 @@
     untrack(() => syncRoute());
   });
 
-  onMount(async () => {
+  onMount(() => {
     installPerfObservers();
-    await loadPrompts();
+    void loadPrompts();
     startQueueFeedback();
     schedulePdfPrewarm();
     if (typeof window !== 'undefined') {

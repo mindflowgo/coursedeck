@@ -1,7 +1,12 @@
+<script module lang="ts">
+  import type { CourseManifest } from '$lib/parser/courseIngest';
+
+  let cachedCoursesList: CourseManifest[] | null = null;
+</script>
+
 <script lang="ts">
   import Header from '$lib/components/Header.svelte';
   import UploadModal from '$lib/components/UploadModal.svelte';
-  import type { CourseManifest } from '$lib/parser/courseIngest';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import {
@@ -41,8 +46,8 @@
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
 
   const isTauri = isTauriEnvironment();
-  let courses: CourseManifest[] = $state([]);
-  let isLoading = $state(true);
+  let courses: CourseManifest[] = $state(cachedCoursesList || []);
+  let isLoading = $state(!cachedCoursesList || cachedCoursesList.length === 0);
   let searchQuery = $state('');
   let isUploadModalOpen = $state(false);
   let busyCourseId = $state<string | null>(null);
@@ -194,13 +199,17 @@
     }
   }
 
-  async function loadCourses() {
-    isLoading = true;
+  async function loadCourses(forceLoading = false) {
+    if (forceLoading || courses.length === 0) {
+      isLoading = true;
+    }
     try {
       const res = await apiFetch('/api/courses');
       if (res.ok) {
         const data = await res.json();
-        courses = data.courses || [];
+        const list = data.courses || [];
+        courses = list;
+        cachedCoursesList = list;
       }
     } catch (e) {
       console.error('Failed to load courses:', e);

@@ -1,4 +1,7 @@
 import type { Checkpoint } from '$lib/checkpoint';
+import * as store from './storage/clientStore';
+import { invoke } from '@tauri-apps/api/core';
+import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
 export const BACKEND_PORT = 3182;
 
@@ -35,7 +38,6 @@ export function isTauriMobile(): boolean {
 export async function smartFetch(url: string, init?: RequestInit): Promise<Response> {
   if (isTauriEnvironment()) {
     try {
-      const { fetch: tauriFetch } = await import('@tauri-apps/plugin-http');
       return await tauriFetch(url, init);
     } catch (e) {
       console.warn('[smartFetch] tauri-plugin-http fetch error:', e);
@@ -247,7 +249,6 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
 // ── Offline Local Storage Interception ───────────────────────────────────────
 
 async function offlineFetch(path: string, method: string, init?: RequestInit): Promise<Response> {
-  const store = await import('./storage/clientStore');
   const [pathname, search] = path.split('?');
   const searchParams = new URLSearchParams(search || '');
 
@@ -537,7 +538,6 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   if (pathname === '/api/settings/theme' && method === 'GET') {
     if (isTauriEnvironment()) {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         const theme = await invoke<string | null>('get_setting', { key: 'theme' });
         if (theme) return jsonRes({ success: true, theme });
       } catch {}
@@ -552,7 +552,6 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     const theme = body.theme || 'system';
     if (isTauriEnvironment()) {
       try {
-        const { invoke } = await import('@tauri-apps/api/core');
         await invoke('set_setting', { key: 'theme', value: theme });
       } catch {}
     }
