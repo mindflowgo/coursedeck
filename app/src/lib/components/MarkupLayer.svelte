@@ -25,6 +25,7 @@
   import {
     ackPencilKitRendered,
     isPencilKitAvailable,
+    mapPencilKitWidth,
     onPencilKitRedo,
     onPencilKitStroke,
     onPencilKitUndo,
@@ -166,7 +167,7 @@
         points: authorPoints,
         authorWidth: authorW,
         date: stroke.date || new Date().toISOString(),
-        width: stroke.width,
+        width: stroke.width !== undefined ? mapPencilKitWidth(stroke.tool, stroke.width) : undefined,
         opacity: stroke.opacity
       });
       if (nativeFlushRafId === null) {
@@ -385,9 +386,10 @@
       }
       livePathEl.style.mixBlendMode = 'normal';
     } else {
-      const opacity = markupUi.opacity !== undefined ? String(markupUi.opacity) : (isDark ? '0.5' : '0.4');
+      const baseOpacity = markupUi.opacity !== undefined ? markupUi.opacity : 1.0;
+      const opacity = String(baseOpacity <= 0.5 ? baseOpacity : (isDark ? baseOpacity * 0.5 : baseOpacity * 0.42));
       livePathEl.setAttribute('fill-opacity', opacity);
-      livePathEl.style.mixBlendMode = isDark ? 'screen' : 'multiply';
+      livePathEl.style.mixBlendMode = isDark ? 'normal' : 'multiply';
     }
   }
 
@@ -642,7 +644,7 @@
           <path
             class="markup-highlighter"
             fill={MARKUP_PRESETS[stroke.color]?.color || stroke.color}
-            fill-opacity={stroke.opacity !== undefined ? stroke.opacity : (isDark ? '0.5' : '0.4')}
+            fill-opacity={stroke.opacity !== undefined && stroke.opacity <= 0.5 ? stroke.opacity : (stroke.opacity ? stroke.opacity * 0.42 : (isDark ? 0.5 : 0.42))}
             stroke="none"
             d={strokeToHighlightPath(stroke, s)}
           />
@@ -680,7 +682,7 @@
     pointer-events: none;
   }
   :global(.dark) .markup-highlighter {
-    mix-blend-mode: screen;
+    mix-blend-mode: normal;
   }
   .markup-live {
     pointer-events: none;

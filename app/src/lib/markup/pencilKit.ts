@@ -41,6 +41,30 @@ export const DEFAULT_TOOL_PICKER_CONFIG: ToolPickerOptions = {
   allowsColorSelection: false
 };
 
+/**
+ * Maps raw tool width from Apple PencilKit PKToolPicker / PKStroke to app author points.
+ * - Pen / Pencil: PencilKit default ~3.5 -> maps to ~1.4 (half-thickness, ~0.4 scale)
+ * - Highlighter: PencilKit default ~24 -> maps to ~12 (half of 24, ~0.5 scale)
+ */
+export function mapPencilKitWidth(tool: MarkupTool, rawWidth: number): number {
+  if (tool === 'highlighter') {
+    return Math.max(6, Math.min(24, Math.round(rawWidth * 0.5 * 10) / 10));
+  } else {
+    return Math.max(0.6, Math.min(4.0, Math.round(rawWidth * 0.4 * 10) / 10));
+  }
+}
+
+/**
+ * Maps app author width back to native Apple PencilKit tool width.
+ */
+export function mapAppWidthToPencilKit(tool: MarkupTool, appWidth: number): number {
+  if (tool === 'highlighter') {
+    return Math.round((appWidth / 0.5) * 10) / 10;
+  } else {
+    return Math.round((appWidth / 0.4) * 10) / 10;
+  }
+}
+
 export interface PencilKitActiveOptions {
   active: boolean;
   file?: string;
@@ -179,10 +203,13 @@ export async function setPencilKitTool(
 ): Promise<void> {
   if (!browser || !isPencilKitAvailable()) return;
   try {
+    const nativeWidth = width !== undefined && tool !== 'eraser'
+      ? mapAppWidthToPencilKit(tool, width)
+      : width;
     await invoke('plugin:pencilkit|set_tool', {
       tool,
       color: colorName,
-      width
+      width: nativeWidth
     });
   } catch (err) {
     // Non-fatal
@@ -328,7 +355,7 @@ function handleToolChanged(data: { tool: string; color: string; width?: number; 
     markupUi.tool = resolvedTool;
     markupUi.color = color;
     if (data.width !== undefined) {
-      markupUi.width = data.width;
+      markupUi.width = mapPencilKitWidth(resolvedTool, data.width);
     }
     if (data.opacity !== undefined) {
       markupUi.opacity = data.opacity;

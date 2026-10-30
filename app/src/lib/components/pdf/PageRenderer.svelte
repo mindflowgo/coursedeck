@@ -74,6 +74,7 @@
 </script>
 
 <div
+  data-pdf-page={pageIndex}
   data-page-index={pageIndex}
   class="relative bg-white shadow-md rounded-xs overflow-hidden mx-auto select-none shrink-0"
   style:width="{displayWidth}px"

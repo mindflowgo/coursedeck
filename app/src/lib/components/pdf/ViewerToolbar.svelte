@@ -38,6 +38,7 @@
   import {
     ackPencilKitRendered,
     isPencilKitAvailable,
+    mapPencilKitWidth,
     setPencilKitActive,
     setPencilKitTool,
     onPencilKitStroke,
@@ -989,10 +990,13 @@
       const matched = (() => {
         let closest = -1;
         let closestDist = Infinity;
+        let closestRect: DOMRect | null = null;
         for (const idx of visiblePageIndices) {
-          const el = pageEls[idx];
-          if (!el) continue;
-          const rect = el.getBoundingClientRect();
+          const wrap = pageEls[idx];
+          if (!wrap) continue;
+          // Target the exact PDF page container, not the full-width outer flex wrapper
+          const pageEl = (wrap.querySelector<HTMLElement>('[data-pdf-page]') ?? wrap);
+          const rect = pageEl.getBoundingClientRect();
           if (vx0 >= rect.left && vx0 <= rect.right && vy0 >= rect.top && vy0 <= rect.bottom) {
             return { idx, rect };
           }
@@ -1000,10 +1004,11 @@
           if (dist < closestDist) {
             closestDist = dist;
             closest = idx;
+            closestRect = rect;
           }
         }
-        if (closest >= 0 && pageEls[closest]) {
-          return { idx: closest, rect: pageEls[closest].getBoundingClientRect() };
+        if (closest >= 0 && closestRect) {
+          return { idx: closest, rect: closestRect };
         }
         return null;
       })();
@@ -1016,8 +1021,11 @@
 
       const targetFile = getPdfPageFileKey(docPath, matchedIdx);
       const authorWidth = page.width;
+      const authorHeight = page.height;
       const targetWidth = matchedRect.width || authorWidth;
-      const scale = authorWidth / targetWidth;
+      const targetHeight = matchedRect.height || authorHeight;
+      const scaleX = authorWidth / targetWidth;
+      const scaleY = authorHeight / targetHeight;
 
       const authorPoints: number[] = [];
       for (let i = 0; i < pts.length; i += 3) {
@@ -1025,8 +1033,8 @@
         const y = pts[i + 1];
         const pressure = pts[i + 2] ?? 0.5;
         authorPoints.push(
-          (x - matchedRect.left) * scale,
-          (y - matchedRect.top) * scale,
+          (x - matchedRect.left) * scaleX,
+          (y - matchedRect.top) * scaleY,
           pressure
         );
       }
@@ -1040,7 +1048,7 @@
         points: authorPoints,
         authorWidth,
         date: stroke.date || new Date().toISOString(),
-        width: stroke.width,
+        width: stroke.width !== undefined ? mapPencilKitWidth(stroke.tool, stroke.width) : undefined,
         opacity: stroke.opacity
       });
       if (nativeFlushRafId === null) {

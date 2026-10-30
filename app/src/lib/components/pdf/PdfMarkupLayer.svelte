@@ -207,9 +207,11 @@
       }
       livePathEl.style.mixBlendMode = 'normal';
     } else {
-      const opacity = markupUi.opacity !== undefined ? String(markupUi.opacity) : (isDark ? '0.5' : '0.4');
+      const baseOpacity = markupUi.opacity !== undefined ? markupUi.opacity : 1.0;
+      // Highlighters simulate Apple Pencil / physical ink translucency (~0.42) with multiply blend
+      const opacity = String(baseOpacity <= 0.5 ? baseOpacity : baseOpacity * 0.42);
       livePathEl.setAttribute('fill-opacity', opacity);
-      livePathEl.style.mixBlendMode = isDark ? 'screen' : 'multiply';
+      livePathEl.style.mixBlendMode = 'multiply';
     }
   }
 
@@ -453,7 +455,7 @@
           <path
             class="markup-highlighter"
             fill={MARKUP_PRESETS[stroke.color]?.color || stroke.color}
-            fill-opacity={stroke.opacity !== undefined ? stroke.opacity : (isDark ? '0.5' : '0.4')}
+            fill-opacity={stroke.opacity !== undefined && stroke.opacity <= 0.5 ? stroke.opacity : (stroke.opacity ? stroke.opacity * 0.42 : 0.42)}
             stroke="none"
             d={strokeToHighlightPath(stroke, scale)}
           />
@@ -485,9 +487,6 @@
   .markup-highlighter {
     mix-blend-mode: multiply;
     pointer-events: none;
-  }
-  :global(.dark) .markup-highlighter {
-    mix-blend-mode: screen;
   }
   .markup-live {
     pointer-events: none;

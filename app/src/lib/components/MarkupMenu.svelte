@@ -32,6 +32,49 @@
   let popoverEl = $state<HTMLDivElement>();
   let isAnIPad = $state(false);
 
+  type WidthTier = 'fine' | 'medium' | 'thick';
+  let activeWidthTier = $state<WidthTier>('medium');
+
+  const WIDTH_TIERS: Record<MarkupTool, Record<WidthTier, number>> = {
+    marker: { fine: 0.9, medium: 1.4, thick: 2.4 },
+    highlighter: { fine: 8, medium: 12, thick: 18 }
+  };
+
+  const currentToolKey = $derived(markupUi.tool === 'highlighter' ? 'highlighter' : 'marker');
+  const currentWidthValue = $derived(
+    markupUi.width ?? WIDTH_TIERS[currentToolKey][activeWidthTier]
+  );
+
+  const widthOptions = $derived([
+    {
+      tier: 'fine' as WidthTier,
+      label: 'Fine',
+      value: WIDTH_TIERS[currentToolKey].fine,
+      dotClass: currentToolKey === 'highlighter' ? 'w-2 h-1 rounded-2xs' : 'w-1 h-1'
+    },
+    {
+      tier: 'medium' as WidthTier,
+      label: 'Medium',
+      value: WIDTH_TIERS[currentToolKey].medium,
+      dotClass: currentToolKey === 'highlighter' ? 'w-3 h-1.5 rounded-2xs' : 'w-1.5 h-1.5'
+    },
+    {
+      tier: 'thick' as WidthTier,
+      label: 'Thick',
+      value: WIDTH_TIERS[currentToolKey].thick,
+      dotClass: currentToolKey === 'highlighter' ? 'w-4 h-2 rounded-2xs' : 'w-2.5 h-2.5'
+    }
+  ]);
+
+  function selectThickness(tier: WidthTier): void {
+    activeWidthTier = tier;
+    const val = WIDTH_TIERS[currentToolKey][tier];
+    markupUi.width = val;
+    if (isPencilKitAvailable() && markupUi.pencilOnly) {
+      setPencilKitTool(markupUi.tool, markupUi.color, val);
+    }
+  }
+
   $effect(() => {
     isAnIPad = isIPad();
     if (!isAnIPad && markupUi.pencilOnly) {
@@ -77,15 +120,24 @@
     setPencilOnly(false);
     markupUi.tool = tool;
     markupUi.eraser = false;
+    const toolKey = tool === 'highlighter' ? 'highlighter' : 'marker';
+    const val = WIDTH_TIERS[toolKey][activeWidthTier];
+    markupUi.width = val;
     if (!markupUi.mode) enterMarkupMode();
     if (isPencilKitAvailable() && markupUi.pencilOnly) {
-      setPencilKitTool(tool, markupUi.color);
+      setPencilKitTool(tool, markupUi.color, val);
     }
   }
 
   function selectPencilTab(): void {
     setPencilOnly(true);
     markupUi.eraser = false;
+    const toolKey = markupUi.tool === 'highlighter' ? 'highlighter' : 'marker';
+    const val = WIDTH_TIERS[toolKey][activeWidthTier];
+    markupUi.width = val;
+    if (isPencilKitAvailable()) {
+      setPencilKitTool(markupUi.tool, markupUi.color, val);
+    }
     enterMarkupMode();
     isOpen = false;
   }
@@ -307,6 +359,32 @@
           </div>
         </div>
       {/if}
+
+      <!-- 2.5 Width / Thickness Selection -->
+      <div class="px-3 py-2 border-t border-stone-100 dark:border-stone-800">
+        <div class="flex items-center justify-between mb-1.5">
+          <div class="text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500">Thickness</div>
+          <span class="text-[10px] font-mono text-stone-400 dark:text-stone-500">
+            {currentWidthValue}px
+          </span>
+        </div>
+        <div class="grid grid-cols-3 gap-1 p-0.5 rounded-lg bg-stone-100 dark:bg-stone-800/80">
+          {#each widthOptions as opt}
+            {@const isSelected = activeWidthTier === opt.tier}
+            <button
+              type="button"
+              onclick={() => selectThickness(opt.tier)}
+              class="flex items-center justify-center space-x-1.5 py-1.5 px-2 rounded-md text-[11px] font-medium transition cursor-pointer {isSelected
+                ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
+                : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'}"
+              title="{opt.label} stroke width ({opt.value}px)"
+            >
+              <div class="bg-current shrink-0 {opt.dotClass}"></div>
+              <span>{opt.label}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
 
       <!-- 3. Actions: Eraser, Undo, Redo, Show/Hide, Clear -->
       <div class="flex items-center gap-1 px-3 py-2 border-t border-stone-100 dark:border-stone-800">
