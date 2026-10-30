@@ -26,13 +26,13 @@ export type PromptGroupKey = 'course' | 'unit' | 'lessons' | 'custom';
 
 export const COURSE_PROMPT_ORDER = [
   'course_summary',
-  'course_studysheet',
+  'course_notes',
   'course_schedule',
   'course_test',
   'course_builder'
 ] as const;
 export const UNIT_PROMPT_ORDER = ['unit_assignments', 'unit_test'] as const;
-export const LESSON_PROMPT_ORDER = ['summary', 'studysheet', 'popquiz', 'lesson'] as const;
+export const LESSON_PROMPT_ORDER = ['summary', 'notes', 'popquiz', 'lesson'] as const;
 
 export function classifyPrompt(p: { id: string }): PromptGroupKey {
   const id = p.id.toLowerCase().replace(/\.md$/, '').replace(/\./g, '_');
@@ -40,6 +40,7 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
   // Standard complete course prompts
   if (
     id === 'course_summary' ||
+    id === 'course_notes' ||
     id === 'course_studysheet' ||
     id === 'course_schedule' ||
     id === 'course_test' ||
@@ -62,6 +63,7 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
   // Standard lesson prompts
   if (
     id === 'summary' ||
+    id === 'notes' ||
     id === 'studysheet' ||
     id === 'popquiz' ||
     id === 'pop_quiz' ||

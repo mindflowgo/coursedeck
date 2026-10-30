@@ -123,7 +123,7 @@
     const scope = scopeId ? 'lesson' : 'course';
     if (scope === 'lesson') return 'lesson - lessons';
     const cleanTab = tab.toLowerCase().trim();
-    if (cleanTab === 'studysheet') return 'course - studysheets';
+    if (cleanTab === 'notes' || cleanTab === 'studysheet') return 'course - notes';
     return 'course - summaries';
   }
 
@@ -133,7 +133,7 @@
     }
     const isLesson = scopeId && !isUnitScopeId(scopeId);
     if (isLesson) {
-      if (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - studysheets') {
+      if (!attachment || attachment === 'lesson - summaries' || attachment === 'lesson - notes' || attachment === 'lesson - studysheets') {
         return 'lesson - lessons';
       }
       return attachment;
@@ -186,7 +186,9 @@
 
   let selectedTab = $derived.by(() => {
     const parts = (selectedAttachment || '').split(' - ');
-    return parts[1] || 'lessons';
+    const tabPart = parts[1] || 'lessons';
+    if (tabPart === 'studysheets') return 'notes';
+    return tabPart;
   });
 
   let selectedLockerDoc = $derived.by(() => {
@@ -407,7 +409,7 @@
             >
               <option value="lessons">lesson(s)</option>
               <option value="summaries">summary(s)</option>
-              <option value="studysheets">studysheet(s)</option>
+              <option value="notes">note(s)</option>
             </select>
           {/if}
         </div>

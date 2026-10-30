@@ -3,7 +3,7 @@ import { parseFrontmatter } from '$lib/parser/frontmatter';
 import { stripLessonMedia } from '$lib/markdown/stripMedia';
 import { stripCourseCodePrefix } from '$lib/courses';
 
-export type CoursePdfExportType = 'lesson' | 'summary' | 'studysheet';
+export type CoursePdfExportType = 'lesson' | 'summary' | 'notes' | 'studysheet';
 
 export interface AggregatedCourseResult {
   markdown: string;
@@ -23,7 +23,8 @@ async function fetchLessonContent(
   // 1. Try local store (Tauri native filesystem or IndexedDB cache)
   try {
     const { getDocument } = await import('$lib/storage/clientStore');
-    const filename = type === 'lesson' ? `${lessonId}.lesson.md` : `${lessonId}.${type}.md`;
+    const tabSlug = type === 'studysheet' ? 'notes' : type;
+    const filename = type === 'lesson' ? `${lessonId}.lesson.md` : `${lessonId}.${tabSlug}.md`;
     const doc = await getDocument(courseId, filename);
     if (doc && doc.trim().length > 0) return doc;
   } catch {}
@@ -39,7 +40,8 @@ async function fetchLessonContent(
       if (type === 'lesson') {
         return data.lesson || '';
       }
-      return data.tabs?.[type] || '';
+      const tabSlug = type === 'studysheet' ? 'notes' : type;
+      return data.tabs?.[tabSlug] || '';
     }
   } catch {}
 
@@ -60,6 +62,7 @@ export async function buildCourseAggregatedMarkdown(
   const titles: Record<CoursePdfExportType, string> = {
     lesson: 'Complete Course Lessons',
     summary: 'All Lesson Summaries',
+    notes: 'All Study-Help Notes',
     studysheet: 'All Study-Help Notes'
   };
 

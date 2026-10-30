@@ -26,11 +26,11 @@
       attachment: 'lesson - lessons'
     },
     {
-      id: 'lesson_studysheets',
-      label: 'Lesson Studysheets',
+      id: 'lesson_notes',
+      label: 'Lesson Notes',
       description: 'Per-lesson quick references & formulas',
-      target: '<lesson_id>.studysheet.md',
-      prompt: 'studysheet.md',
+      target: '<lesson_id>.notes.md',
+      prompt: 'notes.md',
       attachment: 'lesson - lessons'
     },
     {
@@ -58,12 +58,12 @@
       attachment: 'course - summaries'
     },
     {
-      id: 'course_studysheets',
-      label: 'Course Studysheets',
-      description: 'Master reference studysheet for the course',
-      target: 'course.studysheet.md',
-      prompt: 'course_studysheet.md',
-      attachment: 'course - studysheets'
+      id: 'course_notes',
+      label: 'Course Notes',
+      description: 'Master reference notes for the course',
+      target: 'course.notes.md',
+      prompt: 'course_notes.md',
+      attachment: 'course - notes'
     },
     {
       id: 'course_tests',
@@ -145,8 +145,8 @@
     errorMessage = null;
 
     const categoriesToSend = Array.from(selectedCategories).flatMap((cat) => {
-      if (cat === 'lesson_studysheets') return ['lesson_studysheets', 'lesson_cheatsheets'];
-      if (cat === 'course_studysheets') return ['course_studysheets', 'course_cheatsheets'];
+      if (cat === 'lesson_notes' || (cat as string) === 'lesson_studysheets') return ['lesson_notes', 'lesson_studysheets', 'lesson_cheatsheets'];
+      if (cat === 'course_notes' || (cat as string) === 'course_studysheets') return ['course_notes', 'course_studysheets', 'course_cheatsheets'];
       return [cat];
     });
 

@@ -22,11 +22,11 @@
     if (!selectedPromptId) return undefined;
     const id = selectedPromptId.toLowerCase().replace(/\.md$/, '').replace(/\./g, '_');
     if (id === 'summary') return 'lesson_summaries';
-    if (id === 'studysheet') return 'lesson_studysheets';
+    if (id === 'notes' || id === 'studysheet') return 'lesson_notes';
     if (id === 'unit_assignments' || id === 'unit_assignment') return 'unit_assignments';
     if (id === 'unit_test') return 'unit_tests';
     if (id === 'course_summary') return 'course_summaries';
-    if (id === 'course_studysheet') return 'course_studysheets';
+    if (id === 'course_notes' || id === 'course_studysheet') return 'course_notes';
     if (id === 'course_test') return 'course_tests';
     return undefined;
   });

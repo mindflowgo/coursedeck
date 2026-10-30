@@ -59,6 +59,7 @@ describe('classifyPrompt', () => {
 
   it('classifies standard lesson prompts as lessons', () => {
     expect(classifyPrompt({ id: 'summary' })).toBe('lessons');
+    expect(classifyPrompt({ id: 'notes' })).toBe('lessons');
     expect(classifyPrompt({ id: 'studysheet' })).toBe('lessons');
     expect(classifyPrompt({ id: 'lesson' })).toBe('lessons');
     expect(classifyPrompt({ id: 'popquiz' })).toBe('lessons');
@@ -77,13 +78,14 @@ describe('classifyPrompt', () => {
 describe('prompt order constants', () => {
   it('has consistent ordering lists', () => {
     expect(COURSE_PROMPT_ORDER).toContain('course_summary');
+    expect(COURSE_PROMPT_ORDER).toContain('course_notes');
     expect(COURSE_PROMPT_ORDER).toContain('course_schedule');
     expect(COURSE_PROMPT_ORDER).toContain('course_test');
     expect(COURSE_PROMPT_ORDER).toContain('course_builder');
     expect(UNIT_PROMPT_ORDER).toContain('unit_assignments');
     expect(UNIT_PROMPT_ORDER).toContain('unit_test');
     expect(LESSON_PROMPT_ORDER).toContain('summary');
-    expect(LESSON_PROMPT_ORDER).toContain('studysheet');
+    expect(LESSON_PROMPT_ORDER).toContain('notes');
     expect(LESSON_PROMPT_ORDER).toContain('popquiz');
   });
 });

@@ -52,10 +52,10 @@ describe('Reparse with Updated Prompts API', () => {
       '---\nprompt: "OLD OUTDATED PROMPT"\ncontextAttachment: "old-attachment"\n---\n# Old Summary',
       'utf8'
     );
-    // Create an existing studysheet that should NOT be touched when only summary is selected
+    // Create an existing notes doc that should NOT be touched when only summary is selected
     fs.writeFileSync(
-      path.join(courseDir, '01.01.studysheet.md'),
-      '---\nprompt: "CHEATSHEET PROMPT MUST REMAIN UNTOUCHED"\n---\n# Unchanged Cheatsheet',
+      path.join(courseDir, '01.01.notes.md'),
+      '---\nprompt: "NOTES PROMPT MUST REMAIN UNTOUCHED"\n---\n# Unchanged Notes',
       'utf8'
     );
   });
@@ -114,18 +114,18 @@ describe('Reparse with Updated Prompts API', () => {
       expect(task.customPrompt).toBeUndefined(); // Fresh latest prompt loaded dynamically
       expect(task.customContent).toBeUndefined(); // Fresh context
       expect(task.contextAttachment).toBe('lesson - lessons');
-      // Must NOT be studysheet, assignments, or unit/course tests
-      expect(task.tab).not.toBe('studysheet');
+      // Must NOT be notes, assignments, or unit/course tests
+      expect(task.tab).not.toBe('notes');
       expect(task.tab).not.toBe('assignments');
       expect(task.tab).not.toBe('test');
     }
 
-    // Verify studysheet file on disk is completely untouched
-    const studysheetContent = fs.readFileSync(
-      path.join(CourseService.getCoursesDir(), courseId, '01.01.studysheet.md'),
+    // Verify notes file on disk is completely untouched
+    const notesContent = fs.readFileSync(
+      path.join(CourseService.getCoursesDir(), courseId, '01.01.notes.md'),
       'utf8'
     );
-    expect(studysheetContent).toContain('CHEATSHEET PROMPT MUST REMAIN UNTOUCHED');
+    expect(notesContent).toContain('NOTES PROMPT MUST REMAIN UNTOUCHED');
   });
 
   it('selecting unit_assignments and course_summaries enqueues ONLY those specific scopes', async () => {
@@ -151,19 +151,19 @@ describe('Reparse with Updated Prompts API', () => {
     expect(tabsEnqueued).toContain('02.unit:assignments');
     expect(tabsEnqueued).toContain('course:summary');
 
-    // Make sure no lesson-level summaries or studysheets were enqueued
+    // Make sure no lesson-level summaries or notes were enqueued
     expect(tabsEnqueued).not.toContain('01.01:summary');
-    expect(tabsEnqueued).not.toContain('01.01:studysheet');
+    expect(tabsEnqueued).not.toContain('01.01:notes');
   });
 
-  it('selecting lesson_studysheets (and legacy aliases) correctly enqueues studysheet tasks', async () => {
-    // 1. Canonical 'lesson_studysheets'
+  it('selecting lesson_notes (and legacy aliases) correctly enqueues notes tasks', async () => {
+    // 1. Canonical 'lesson_notes'
     const req1 = new Request('http://localhost:3182/api/maintenance/reparse-prompts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         courseId,
-        categories: ['lesson_studysheets']
+        categories: ['lesson_notes']
       })
     });
     const res1 = await handleApiRequest(req1, new URL(req1.url));
@@ -174,19 +174,19 @@ describe('Reparse with Updated Prompts API', () => {
 
     const queueStatus1 = queueManager.getStatus(courseId);
     for (const task of queueStatus1.tasks) {
-      expect(task.tab).toBe('studysheet');
+      expect(task.tab).toBe('notes');
     }
 
     // Reset queue for next assertion
     (queueManager as any).tasks.clear();
 
-    // 2. Legacy alias 'lesson_cheatsheets' and singular 'lesson_studysheet'
+    // 2. Legacy alias 'lesson_studysheets'
     const req2 = new Request('http://localhost:3182/api/maintenance/reparse-prompts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         courseId,
-        categories: ['lesson_cheatsheets']
+        categories: ['lesson_studysheets']
       })
     });
     const res2 = await handleApiRequest(req2, new URL(req2.url));
@@ -194,6 +194,29 @@ describe('Reparse with Updated Prompts API', () => {
     const data2 = await res2.json();
     expect(data2.success).toBe(true);
     expect(data2.enqueuedCount).toBe(3);
+
+    const queueStatus2 = queueManager.getStatus(courseId);
+    for (const task of queueStatus2.tasks) {
+      expect(task.tab).toBe('notes');
+    }
+
+    // Reset queue for next assertion
+    (queueManager as any).tasks.clear();
+
+    // 3. Legacy alias 'lesson_cheatsheets'
+    const req3 = new Request('http://localhost:3182/api/maintenance/reparse-prompts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        courseId,
+        categories: ['lesson_cheatsheets']
+      })
+    });
+    const res3 = await handleApiRequest(req3, new URL(req3.url));
+    expect(res3.status).toBe(200);
+    const data3 = await res3.json();
+    expect(data3.success).toBe(true);
+    expect(data3.enqueuedCount).toBe(3);
   });
 
   it('executing a course-level task in queue saves course.<tab>.md with updated frontmatter', async () => {

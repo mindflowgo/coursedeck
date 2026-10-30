@@ -855,7 +855,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           body: JSON.stringify({
             action: 'enqueue',
             courseId: finalCourseId,
-            tabs: ['summary', 'studysheet', 'test']
+            tabs: ['summary', 'notes', 'test']
           })
         }).catch(() => {});
       }
@@ -1511,7 +1511,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                 />
                 <div>
                   <div class="text-xs font-medium">Queue AI Study Materials Generation</div>
-                  <div class="text-2xs text-stone-500">Automatically enqueue Summaries, Studysheets, and Practice Tests in the background.</div>
+                  <div class="text-2xs text-stone-500">Automatically enqueue Summaries, Notes, and Practice Tests in the background.</div>
                 </div>
               </label>
             </div>
@@ -2197,7 +2197,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
             />
             <div>
               <div class="text-xs font-medium">Queue AI Study Materials Generation</div>
-              <div class="text-2xs text-stone-500">Automatically enqueue Summaries, Studysheets, and Practice Tests for all lessons upon course creation.</div>
+              <div class="text-2xs text-stone-500">Automatically enqueue Summaries, Notes, and Practice Tests for all lessons upon course creation.</div>
             </div>
           </label>
         </div>

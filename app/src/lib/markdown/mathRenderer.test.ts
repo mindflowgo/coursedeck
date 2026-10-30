@@ -16,8 +16,8 @@ describe('mathRenderer', () => {
     return restoreMathTokens(html, mathTokens);
   };
 
-  it('renders all course studysheet math expressions correctly', () => {
-    const input = `studysheet has:
+  it('renders all course notes math expressions correctly', () => {
+    const input = `notes has:
 No variables in denominators.
 Rational function	(\\frac{P(x)}{Q(x)}), (Q(x)\\neq0).
 Restriction	Values that make denominator zero; always state with simplified expression.

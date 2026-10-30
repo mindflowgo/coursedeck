@@ -6,7 +6,7 @@
  */
 
 /** Fixed, always-present tabs for lessons (rendered with icons in the tab bar). */
-export const BUILT_IN_TABS = ['lesson', 'summary', 'studysheet'] as const;
+export const BUILT_IN_TABS = ['lesson', 'summary', 'notes'] as const;
 
 export type BuiltInTab = (typeof BUILT_IN_TABS)[number];
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { splitMathSegments, renderMathToText, latexToUnicode } from './mathText';
 
 describe('mathText PDF renderer', () => {
-  it('converts course studysheet formulas to readable unicode in PDF', () => {
+  it('converts course notes formulas to readable unicode in PDF', () => {
     const input = 'Rational function (\\frac{P(x)}{Q(x)}), (Q(x)\\neq0). Exponent division (\\frac{x^m}{x^n}=x^{m-n}).';
     const text = renderMathToText(input);
 

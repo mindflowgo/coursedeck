@@ -252,6 +252,68 @@ describe('Course Builder Endpoints', () => {
       spy.mockRestore();
       configSpy.mockRestore();
     });
+
+    it('extracts text from an uploaded PDF file and parses JSON proposal', async () => {
+      const samplePdfPath = path.resolve('data.old/courses/clu3m/assets/locker_docs/clu3m_01_glossary.pdf');
+      if (!fs.existsSync(samplePdfPath)) return;
+
+      const mockResult = {
+        title: 'Canadian Law',
+        suggestedId: 'clu3m',
+        grade: '11',
+        level: 'University/College',
+        description: 'Canadian law course',
+        units: [
+          {
+            number: 1,
+            title: 'Unit 1: Heritage',
+            lessons: [
+              {
+                id: '01.01',
+                title: 'Legal Foundations',
+                type: 'lesson',
+                content: '# Legal Foundations\n\nIntroduction to law.'
+              }
+            ]
+          }
+        ]
+      };
+
+      const configSpy = spyOn(LLMService, 'loadStoredConfig').mockReturnValue({
+        baseUrl: 'http://mock-ai',
+        model: 'test-model'
+      } as any);
+
+      let capturedPrompt = '';
+      const spy = spyOn(LLMService, 'generateResult').mockImplementation(async (_cfg, _sys, userPrompt) => {
+        capturedPrompt = userPrompt;
+        return {
+          completion: '```json\n' + JSON.stringify(mockResult) + '\n```',
+          usage: { promptTokens: 10, completionTokens: 50, totalTokens: 60 }
+        } as any;
+      });
+
+      const pdfBytes = fs.readFileSync(samplePdfPath);
+      const formData = new FormData();
+      formData.append('file', new File([pdfBytes], 'syllabus.pdf', { type: 'application/pdf' }));
+      formData.append('instructions', 'Generate a structured curriculum');
+
+      const req = new Request('http://127.0.0.1:3182/api/builder/propose', {
+        method: 'POST',
+        body: formData
+      });
+
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.proposal.title).toBe('Canadian Law');
+      expect(capturedPrompt).toContain('Document: syllabus.pdf');
+      expect(capturedPrompt.toLowerCase()).toContain('law');
+
+      spy.mockRestore();
+      configSpy.mockRestore();
+    });
   });
 
   describe('POST /api/builder/generate-lesson', () => {

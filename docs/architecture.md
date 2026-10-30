@@ -185,7 +185,7 @@ tauri/
           "type": "lesson",
           "hasFull": true,
           "hasSummary": true,
-          "hasCheatsheet": true,
+          "hasNotes": true,
           "hasTest": true
         }
       ]

@@ -41,6 +41,7 @@ import { QuestionParser } from '../parser/questionParser';
 import { formatUnitScopeId, courseDocFileName } from '../tabs';
 import { NotFoundError, ConflictError, ValidationError } from './services/errors';
 import { CourseService as CourseManagerService } from './services/course.service';
+import { extractTextFromPdf } from './pdfText';
 
 /**
  * Single source of truth for the entire HTTP API.
@@ -71,10 +72,10 @@ const MIME_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon'
 };
 
-type Tab = 'summary' | 'studysheet' | 'test';
+type Tab = 'summary' | 'notes' | 'test';
 
 /** Course-level document types accepted by /api/courses/:id/course-docs. */
-const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'studysheet', 'test', 'schedule', 'logs'];
+const COURSE_DOC_TYPES: readonly CourseDocType[] = ['summary', 'notes', 'test', 'schedule', 'logs'];
 
 interface ActiveCourseDocJob {
   courseId: string;
@@ -92,8 +93,8 @@ interface ActiveCourseDocJob {
 
 const activeCourseDocJobs = new Map<string, ActiveCourseDocJob>();
 
-const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'studysheet', 'test'];
-const BULK_SUPPORTED_TABS: readonly string[] = ['summary', 'studysheet', 'test', 'cheatsheet'];
+const DEFAULT_LESSON_TABS: readonly Tab[] = ['summary', 'notes', 'test'];
+const BULK_SUPPORTED_TABS: readonly string[] = ['summary', 'notes', 'test', 'studysheet', 'cheatsheet'];
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -1053,7 +1054,10 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           if (singleTab !== undefined) {
             // One tab for one lesson — any valid tab slug, custom tabs included.
             // The schedule is a queue-only pseudo-tab for the whole course.
-            const normalizedTab = singleTab.toLowerCase() === 'cheatsheet' ? 'studysheet' : singleTab;
+            const normalizedTab =
+              singleTab.toLowerCase() === 'cheatsheet' || singleTab.toLowerCase() === 'studysheet'
+                ? 'notes'
+                : singleTab;
             try {
               assertTab(normalizedTab);
             } catch {
@@ -1105,14 +1109,16 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           if (!valid) {
             return error(
               400,
-              "Invalid tabs. Bulk generation supports 'summary', 'studysheet', and 'test'"
+              "Invalid tabs. Bulk generation supports 'summary', 'notes', and 'test'"
             );
           }
-          // Normalize legacy 'cheatsheet' to 'studysheet' and deduplicate
+          // Normalize legacy 'cheatsheet' / 'studysheet' to 'notes' and deduplicate
           const lessonTabs = Array.from(
             new Set(
               (requested as string[]).map((t) =>
-                t.toLowerCase() === 'cheatsheet' ? 'studysheet' : (t.toLowerCase() as Tab)
+                t.toLowerCase() === 'cheatsheet' || t.toLowerCase() === 'studysheet'
+                  ? 'notes'
+                  : (t.toLowerCase() as Tab)
               )
             )
           ) as Tab[];
@@ -1203,10 +1209,12 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           const safeId = assertPromptId(String(id));
           const STANDARD_BUILTINS = [
             'course_summary',
+            'course_notes',
             'course_studysheet',
             'course_schedule',
             'course_test',
             'summary',
+            'notes',
             'studysheet',
             'test',
             'test_kica',
@@ -1384,10 +1392,12 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
       const VALID_CATEGORIES = [
         'lesson_summaries',
+        'lesson_notes',
         'lesson_studysheets',
         'unit_assignments',
         'unit_tests',
         'course_summaries',
+        'course_notes',
         'course_studysheets',
         'course_tests'
       ] as const;
@@ -1395,6 +1405,10 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       function normalizeCategory(cat: string): string {
         const c = String(cat).toLowerCase().trim();
         if (
+          c === 'lesson_notes' ||
+          c === 'lesson_note' ||
+          c === 'notes' ||
+          c === 'note' ||
           c === 'lesson_cheatsheets' ||
           c === 'lesson_cheatsheet' ||
           c === 'lesson_studysheet' ||
@@ -1404,15 +1418,17 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           c === 'cheatsheet' ||
           c === 'cheatsheets'
         ) {
-          return 'lesson_studysheets';
+          return 'lesson_notes';
         }
         if (
+          c === 'course_notes' ||
+          c === 'course_note' ||
           c === 'course_cheatsheets' ||
           c === 'course_cheatsheet' ||
           c === 'course_studysheet' ||
           c === 'course_studysheets'
         ) {
-          return 'course_studysheets';
+          return 'course_notes';
         }
         if (c === 'lesson_summary' || c === 'summary' || c === 'summaries' || c === 'lesson_summaries') {
           return 'lesson_summaries';
@@ -1491,15 +1507,15 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
         }
 
-        // 2. Lesson S
-        if (selectedCategories.includes('lesson_studysheets')) {
+        // 2. Lesson Notes
+        if (selectedCategories.includes('lesson_notes') || selectedCategories.includes('lesson_studysheets')) {
           for (const unit of course.units) {
             for (const lesson of unit.lessons) {
               tasksToEnqueue.push({
                 courseId,
                 lessonId: lesson.id,
                 lessonTitle: lesson.title,
-                tab: 'studysheet',
+                tab: 'notes',
                 contextAttachment: 'lesson - lessons'
               });
             }
@@ -1543,14 +1559,14 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           });
         }
 
-        // 6. Course Studysheets
-        if (selectedCategories.includes('course_studysheets')) {
+        // 6. Course Notes
+        if (selectedCategories.includes('course_notes') || selectedCategories.includes('course_studysheets')) {
           tasksToEnqueue.push({
             courseId,
             lessonId: 'course',
-            lessonTitle: `${course.title} Studysheet`,
-            tab: 'studysheet',
-            contextAttachment: 'course - studysheets'
+            lessonTitle: `${course.title} Notes`,
+            tab: 'notes',
+            contextAttachment: 'course - notes'
           });
         }
 
@@ -2082,7 +2098,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
         if (body.queueStudyMaterials) {
           try {
-            queueManager.enqueueCourseMissing(courseId, ['summary', 'studysheet', 'test']);
+            queueManager.enqueueCourseMissing(courseId, ['summary', 'notes', 'test']);
           } catch (qErr) {
             console.warn(`Failed to auto-enqueue study materials for course ${courseId}:`, qErr);
           }
@@ -2135,10 +2151,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
         if (ext === '.pdf') {
           try {
-            const { PDFParse } = (await import('pdf-parse')) as any;
-            const parser = new PDFParse(new Uint8Array(buffer));
-            const parsed = await parser.getText();
-            extractedText = parsed?.text?.trim() || '';
+            extractedText = await extractTextFromPdf(buffer);
           } catch (pdfErr: any) {
             return error(400, `Failed to parse PDF: ${pdfErr?.message || String(pdfErr)}`);
           }
@@ -2928,6 +2941,7 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
             success: true,
             courseDocs: course.courseDocs || {
               summary: false,
+              notes: false,
               studysheet: false,
               test: false,
               schedule: false
@@ -2937,12 +2951,13 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
 
         if (method === 'POST') {
           const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-          const type = body.type as CourseDocType | undefined;
+          const rawType = body.type as string | undefined;
+          const type = (rawType === 'studysheet' ? 'notes' : rawType) as CourseDocType | undefined;
           const forceRegenerate = Boolean(body.forceRegenerate);
           const customPrompt = typeof body.customPrompt === 'string' ? body.customPrompt.trim() : undefined;
 
           if (!type || !(COURSE_DOC_TYPES as readonly string[]).includes(type)) {
-            return error(400, "Invalid type. Must be 'summary', 'studysheet', 'test', 'schedule', or 'logs'");
+            return error(400, "Invalid type. Must be 'summary', 'notes', 'test', 'schedule', or 'logs'");
           }
 
           if (type === 'logs') {
@@ -3006,15 +3021,15 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
           const contextAttachment =
             typeof body.contextAttachment === 'string'
               ? body.contextAttachment.trim()
-              : `course - ${type === 'summary' ? 'summaries' : type === 'studysheet' ? 'studysheets' : 'lessons'}`;
+              : `course - ${type === 'summary' ? 'summaries' : type === 'notes' ? 'notes' : 'lessons'}`;
           const customContent = typeof body.customContent === 'string' ? body.customContent : undefined;
 
-          // 4. Aggregated lesson payload for course summary / studysheet / test
+          // 4. Aggregated lesson payload for course summary / notes / test
           const payload =
             customContent !== undefined
               ? customContent
               : (await CourseService.getPromptContext(courseId, contextAttachment)) ||
-                CourseService.buildAggregatedPayload(courseId, type as 'summary' | 'studysheet' | 'test');
+                CourseService.buildAggregatedPayload(courseId, type as 'summary' | 'notes' | 'test');
           if (!payload || payload.trim().length < 50) {
             return error(
               400,

@@ -37,6 +37,7 @@ import {
   safeJoin,
   trySafeJoin,
 } from './paths';
+import { extractTextFromPdf } from './pdfText';
 
 export interface LessonContentBundle {
   courseId: string;
@@ -94,7 +95,7 @@ export class CourseService {
   static discoverCourseDocs(courseFolder: string): Record<string, boolean> {
     const flags: Record<string, boolean> = {
       summary: false,
-      studysheet: false,
+      notes: false,
       test: false,
       schedule: false,
       logs: false
@@ -275,7 +276,8 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) return false;
 
-    const filePath = safeJoin(courseDir, tabFileName(lessonId, tab));
+    const effectiveTab = tab === 'studysheet' ? 'notes' : tab;
+    const filePath = safeJoin(courseDir, tabFileName(lessonId, effectiveTab));
     if (!fs.existsSync(filePath)) return false;
     try {
       const content = fs.readFileSync(filePath, 'utf8');
@@ -410,11 +412,8 @@ export class CourseService {
     const ext = path.extname(filePath).toLowerCase();
     try {
       if (ext === '.pdf') {
-        const { PDFParse } = (await import('pdf-parse')) as any;
         const fileBuf = fs.readFileSync(filePath);
-        const parser = new PDFParse(new Uint8Array(fileBuf));
-        const parsed = await parser.getText();
-        return parsed?.text?.trim() || '';
+        return await extractTextFromPdf(fileBuf);
       }
       if (ext === '.html' || ext === '.htm') {
         const cheerio = await import('cheerio');
@@ -763,7 +762,7 @@ export class CourseService {
 
   static gatherLessonFiles(
     courseId: string,
-    type: 'lesson' | 'summary' | 'studysheet' | 'test'
+    type: 'lesson' | 'summary' | 'notes' | 'studysheet' | 'test'
   ): Array<{ unitNumber: number; unitTitle: string; lessonId: string; lessonTitle: string; content: string }> {
     const course = this.getCourse(courseId);
     const courseDir = this.courseDir(courseId);
@@ -777,9 +776,10 @@ export class CourseService {
       content: string;
     }> = [];
 
+    const effectiveType = type === 'studysheet' ? 'notes' : type;
     for (const unit of course.units) {
       for (const lesson of unit.lessons) {
-        const filePath = safeJoin(courseDir, tabFileName(lesson.id, type));
+        const filePath = safeJoin(courseDir, tabFileName(lesson.id, effectiveType));
         const content = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
 
         results.push({
@@ -860,8 +860,8 @@ export class CourseService {
       return this.readCuratedContent(courseDir, lessonId, 'summary') || '';
     }
 
-    if (norm === 'lesson - studysheets' && lessonId) {
-      return this.readCuratedContent(courseDir, lessonId, 'studysheet') || '';
+    if ((norm === 'lesson - notes' || norm === 'lesson - studysheets') && lessonId) {
+      return this.readCuratedContent(courseDir, lessonId, 'notes') || '';
     }
 
     if (norm === 'unit - lessons') {
@@ -911,7 +911,7 @@ export class CourseService {
       return parts.join('\n\n');
     }
 
-    if (norm === 'unit - studysheets') {
+    if (norm === 'unit - notes' || norm === 'unit - studysheets') {
       let targetUnit = course.units[0];
       const unitNum = lessonId ? parseUnitNumber(lessonId) : null;
       if (unitNum !== null) {
@@ -925,7 +925,7 @@ export class CourseService {
 
       const parts: string[] = [];
       for (const l of targetUnit.lessons) {
-        const cs = this.readCuratedContent(courseDir, l.id, 'studysheet');
+        const cs = this.readCuratedContent(courseDir, l.id, 'notes');
         if (cs && cs.trim()) {
           parts.push(`## Lesson ${l.id} - ${l.title}\n\n${cs.trim()}`);
         }
@@ -962,11 +962,11 @@ export class CourseService {
       return parts.join('\n\n');
     }
 
-    if (norm === 'course - studysheets') {
+    if (norm === 'course - notes' || norm === 'course - studysheets') {
       const parts: string[] = [];
       for (const u of course.units) {
         for (const l of u.lessons) {
-          const cs = this.readCuratedContent(courseDir, l.id, 'studysheet');
+          const cs = this.readCuratedContent(courseDir, l.id, 'notes');
           if (cs && cs.trim()) {
             parts.push(`## Lesson ${l.id} - ${l.title}\n\n${cs.trim()}`);
           }
@@ -988,16 +988,19 @@ export class CourseService {
   }
 
   /**
-   * Body of the lesson's curated tab file (summary/studysheet/test), skipping
+   * Body of the lesson's curated tab file (summary/notes/test), skipping
    * "Not yet generated" stubs. Null when the file is absent or a stub.
    */
   private static readCuratedContent(
     courseDir: string,
     lessonId: string,
-    docType: 'summary' | 'studysheet' | 'test'
+    docType: 'summary' | 'notes' | 'studysheet' | 'test'
   ): string | null {
-    const filePath = safeJoin(courseDir, tabFileName(lessonId, docType));
-    if (!fs.existsSync(filePath)) return null;
+    const effectiveType = docType === 'studysheet' ? 'notes' : docType;
+    const filePath = safeJoin(courseDir, tabFileName(lessonId, effectiveType));
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
       if (raw.includes('Not yet generated') && raw.length < 200) {
@@ -1062,7 +1065,7 @@ export class CourseService {
     return clean;
   }
 
-  static buildAggregatedPayload(courseId: string, type: 'summary' | 'studysheet' | 'test'): string {
+  static buildAggregatedPayload(courseId: string, type: 'summary' | 'notes' | 'studysheet' | 'test'): string {
     const course = this.getCourse(courseId);
     const courseDir = this.courseDir(courseId);
     if (!course || !fs.existsSync(courseDir)) return '';
@@ -1083,13 +1086,13 @@ export class CourseService {
         if (type === 'summary') {
           const body =
             this.readCuratedContent(courseDir, lesson.id, 'summary') ??
-            this.readCuratedContent(courseDir, lesson.id, 'studysheet');
+            this.readCuratedContent(courseDir, lesson.id, 'notes');
           if (body) {
             lessonContent = this.budgetLessonContent(body, 3000);
           }
-        } else if (type === 'studysheet') {
+        } else if (type === 'notes' || (type as string) === 'studysheet') {
           const body =
-            this.readCuratedContent(courseDir, lesson.id, 'studysheet') ??
+            this.readCuratedContent(courseDir, lesson.id, 'notes') ??
             this.readCuratedContent(courseDir, lesson.id, 'summary');
           if (body) {
             lessonContent = this.budgetLessonContent(body, 2500);
@@ -1097,7 +1100,7 @@ export class CourseService {
         } else if (type === 'test') {
           const primaryBody =
             this.readCuratedContent(courseDir, lesson.id, 'summary') ??
-            this.readCuratedContent(courseDir, lesson.id, 'studysheet');
+            this.readCuratedContent(courseDir, lesson.id, 'notes');
           const testBody = this.readCuratedContent(courseDir, lesson.id, 'test');
 
           const parts: string[] = [];
@@ -1218,7 +1221,7 @@ export class CourseService {
           : 0;
         const summaryBody =
           this.readCuratedContent(courseDir, lesson.id, 'summary') ??
-          this.readCuratedContent(courseDir, lesson.id, 'studysheet');
+          this.readCuratedContent(courseDir, lesson.id, 'notes');
         const density = summaryBody ? computeSummaryDensity(summaryBody) : null;
 
         if (density) {
@@ -1294,7 +1297,7 @@ export class CourseService {
 
         const summaryBody =
           this.readCuratedContent(courseDir, lesson.id, 'summary') ??
-          this.readCuratedContent(courseDir, lesson.id, 'studysheet');
+          this.readCuratedContent(courseDir, lesson.id, 'notes');
 
         const densityObj = summaryBody ? computeSummaryDensity(summaryBody) : null;
         const summaryDensity: 'low' | 'medium' | 'high' = densityObj?.density || 'medium';

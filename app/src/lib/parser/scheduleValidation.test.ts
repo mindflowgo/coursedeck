@@ -11,7 +11,7 @@ const lesson = (id: string, title: string, type: 'lesson' | 'assignment' = 'less
   type,
   hasFull: true,
   hasSummary: false,
-  hasCheatsheet: false,
+  hasNotes: false,
   hasTest: false
 });
 

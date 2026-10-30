@@ -721,7 +721,7 @@
                         onclick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          handleDownloadCoursePdf(course, 'studysheet');
+                          handleDownloadCoursePdf(course, 'notes');
                         }}
                         class="flex w-full items-center justify-between px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer disabled:opacity-50"
                       >

@@ -166,7 +166,7 @@
           </div>
           <div>
             <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">Setup AI / LLM Connection</h2>
-            <p class="text-[11px] text-stone-500 dark:text-stone-400">Configure an LLM to generate summaries, studysheets, and tests</p>
+            <p class="text-[11px] text-stone-500 dark:text-stone-400">Configure an LLM to generate summaries, notes, and tests</p>
           </div>
         </div>
 

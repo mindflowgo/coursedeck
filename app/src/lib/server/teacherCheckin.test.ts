@@ -38,7 +38,7 @@ describe('Pop Quiz Accountability & Schedule Mark-Done API', () => {
               type: 'lesson',
               hasFull: true,
               hasSummary: true,
-              hasCheatsheet: false,
+              hasNotes: false,
               hasTest: true
             },
             {
@@ -50,7 +50,7 @@ describe('Pop Quiz Accountability & Schedule Mark-Done API', () => {
               type: 'lesson',
               hasFull: true,
               hasSummary: false,
-              hasCheatsheet: false,
+              hasNotes: false,
               hasTest: false
             }
           ]

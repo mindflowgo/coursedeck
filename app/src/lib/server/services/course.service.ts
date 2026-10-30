@@ -182,7 +182,7 @@ export class CourseService {
     return bundle;
   }
 
-  static getCourseDocument(courseId: string, type: CourseDocType): string | null {
+  static getCourseDocument(courseId: string, type: CourseDocType | string): string | null {
     const id = normalizeCourseId(courseId);
     return BaseCourseService.getCourseDocument(id, type);
   }
@@ -245,7 +245,7 @@ export class CourseService {
           type: item.type || 'lesson',
           hasFull: false,
           hasSummary: false,
-          hasCheatsheet: false,
+          hasNotes: false,
           hasTest: false,
           pageRange: item.pageRange,
           readingDescription: item.readingDescription
@@ -274,7 +274,7 @@ export class CourseService {
             const tabFile = tabFileName(item.id, tabName);
             atomicWriteFileSync(path.join(courseDir, tabFile), tabContent);
             if (tabName === 'summary') activeLesson.hasSummary = true;
-            if (tabName === 'studysheet') activeLesson.hasCheatsheet = true;
+            if (tabName === 'notes' || tabName === 'studysheet') activeLesson.hasNotes = true;
             if (tabName === 'test') activeLesson.hasTest = true;
           }
         }
@@ -309,7 +309,7 @@ export class CourseService {
     return BaseCourseService.saveLessonTab(normalizeCourseId(courseId), lessonId, tab, content);
   }
 
-  static buildAggregatedPayload(courseId: string, tab: 'summary' | 'studysheet' | 'test'): string {
+  static buildAggregatedPayload(courseId: string, tab: 'summary' | 'notes' | 'studysheet' | 'test'): string {
     return BaseCourseService.buildAggregatedPayload(normalizeCourseId(courseId), tab);
   }
 
@@ -320,7 +320,7 @@ export class CourseService {
   static hasLessonTabContent(
     courseId: string,
     lessonId: string,
-    tab: 'summary' | 'studysheet' | 'test'
+    tab: 'summary' | 'notes' | 'studysheet' | 'test' | string
   ): boolean {
     return BaseCourseService.hasLessonTabContent(normalizeCourseId(courseId), lessonId, tab);
   }

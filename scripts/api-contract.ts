@@ -68,7 +68,7 @@ await (async () => {
               type: 'lesson',
               hasFull: true,
               hasSummary: false,
-              hasCheatsheet: false,
+              hasNotes: false,
               hasTest: false
             }
           ]

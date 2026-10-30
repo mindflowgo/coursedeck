@@ -27,7 +27,7 @@ describe('CourseService accountability and audit logging (logs.md)', () => {
     CourseService.recordLog({
       courseId,
       type: 'llm',
-      lessonDoc: '01.02.studysheet.md',
+      lessonDoc: '01.02.notes.md',
       chars: 1035,
       tokens: 7247,
       date: testDate
@@ -39,7 +39,7 @@ describe('CourseService accountability and audit logging (logs.md)', () => {
     const content = CourseService.getLogs(courseId) || '';
     expect(content).toContain('| Date | Type | Lesson | Tokens |');
     expect(content).toContain('| :--- | :--- | :--- | :--- |');
-    expect(content).toContain('| 2026-03-03 9:14 | llm | MCR3U: 01.02.studysheet.md (1035 chars) | 7247 |');
+    expect(content).toContain('| 2026-03-03 9:14 | llm | MCR3U: 01.02.notes.md (1035 chars) | 7247 |');
   });
 
   it('appends subsequent log entries with types sequentially', () => {
@@ -64,7 +64,7 @@ describe('CourseService accountability and audit logging (logs.md)', () => {
 
     const content = CourseService.getLogs(courseId) || '';
     const lines = content.trim().split('\n');
-    expect(lines).toContain('| 2026-03-03 9:14 | llm | MCR3U: 01.02.studysheet.md (1035 chars) | 7247 |');
+    expect(lines).toContain('| 2026-03-03 9:14 | llm | MCR3U: 01.02.notes.md (1035 chars) | 7247 |');
     expect(lines).toContain('| 2026-03-03 10:30 | llm | MCR3U: 01.03.summary.md (2450 chars) | 3120 |');
     expect(lines).toContain('| 2026-03-03 11:00 | edit | MCR3U: 01.03.lesson.md (3100 chars) | - |');
   });
@@ -88,7 +88,7 @@ describe('CourseService accountability and audit logging (logs.md)', () => {
     expect(CourseService.hasCourseDocument(courseId, 'logs')).toBe(true);
     const doc = CourseService.getCourseDocument(courseId, 'logs');
     expect(doc).toBeTruthy();
-    expect(doc).toContain('01.02.studysheet.md');
+    expect(doc).toContain('01.02.notes.md');
   });
 
   it('discoverCourseDocs flags logs as true when logs.md exists', () => {

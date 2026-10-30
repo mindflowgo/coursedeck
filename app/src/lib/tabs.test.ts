@@ -81,6 +81,7 @@ describe('isCourseTab', () => {
   it('is true for all valid course-level tabs', () => {
     expect(isCourseTab('lesson')).toBe(true);
     expect(isCourseTab('summary')).toBe(true);
+    expect(isCourseTab('notes')).toBe(false);
     expect(isCourseTab('studysheet')).toBe(false);
     expect(isCourseTab('test')).toBe(true);
     expect(isCourseTab('schedule')).toBe(true);
@@ -104,7 +105,7 @@ describe('customTabDisplayName', () => {
 });
 
 describe('validateTabName', () => {
-  const existing = ['lesson', 'summary', 'studysheet', 'test', 'assignment'];
+  const existing = ['lesson', 'summary', 'notes', 'test', 'assignment'];
 
   it('accepts a fresh name and returns its slug', () => {
     const result = validateTabName('Reading Log', existing);
@@ -123,7 +124,7 @@ describe('validateTabName', () => {
   });
 
   it('allows Summary when not already present in existing slugs', () => {
-    const withoutSummary = ['lesson', 'studysheet'];
+    const withoutSummary = ['lesson', 'notes'];
     const result = validateTabName('Summary', withoutSummary);
     expect(result.ok).toBe(true);
     expect(result.ok && result.slug).toBe('summary');

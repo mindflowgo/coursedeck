@@ -158,7 +158,7 @@ List lessons for a course with unit numbers, titles, types, and existing tab fil
 - **Parameters**:
   - `courseId` *(string, required)*: Course identifier (e.g. `'mcr3u'`).
   - `unitNumber` *(integer, optional)*: Filter lessons by unit index.
-- **Returns**: Array of lesson descriptors including `id`, `code`, `title`, `unitNumber`, `lessonNumber`, `type`, and tab availability flags (`hasFull`, `hasSummary`, `hasCheatsheet`, `hasTest`).
+- **Returns**: Array of lesson descriptors including `id`, `code`, `title`, `unitNumber`, `lessonNumber`, `type`, and tab availability flags (`hasFull`, `hasSummary`, `hasNotes`, `hasTest`).
 
 ---
 

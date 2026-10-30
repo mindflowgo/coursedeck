@@ -16,5 +16,5 @@
       "$lib/*": ["./app/src/lib/*"]
     }
   },
-  "include": ["server/**/*.ts", "scripts/**/*.ts", "app/src/lib/server/**/*.ts"]
+  "include": ["server/**/*.ts", "scripts/**/*.ts", "app/src/lib/server/**/*.ts", "app/src/app.d.ts"]
 }

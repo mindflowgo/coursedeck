@@ -1,7 +1,7 @@
 import type { Content } from 'pdfmake/build/pdfmake';
 
 /** Which study-workspace tab is being exported — fixed tabs or a custom tab slug. */
-export type ExportTab = 'lesson' | 'summary' | 'studysheet' | 'test' | 'schedule' | (string & {});
+export type ExportTab = 'lesson' | 'summary' | 'notes' | 'studysheet' | 'test' | 'schedule' | (string & {});
 
 export interface PdfExportOptions {
   courseCode: string;
@@ -21,8 +21,9 @@ export function tabBadgeLabel(tab: ExportTab): string {
       return 'Course Notes • Full Lesson';
     case 'summary':
       return 'High-Yield Study Summary';
+    case 'notes':
     case 'studysheet':
-      return 'Quick Reference Studysheet';
+      return 'Study & Personal Work';
     case 'test':
       return 'Ontario Curriculum Practice Test';
     case 'schedule':

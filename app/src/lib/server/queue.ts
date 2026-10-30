@@ -260,7 +260,7 @@ export class GenerationQueue {
     const enqueued: GenerationTask[] = [];
 
     for (const item of items) {
-      const tab = item.tab === 'cheatsheet' ? 'studysheet' : item.tab;
+      const tab = item.tab === 'cheatsheet' || item.tab === 'studysheet' ? 'notes' : item.tab;
       const lessonId = item.lessonId || (tab === 'schedule' ? 'schedule' : '');
       const lessonTitle = item.lessonTitle || (tab === 'schedule' ? 'Course Schedule' : lessonId);
       const id = this.makeId(item.courseId, lessonId, tab);
@@ -311,7 +311,7 @@ export class GenerationQueue {
    */
   enqueueCourseMissing(
     courseId: string,
-    tabs: Array<string> = ['summary', 'studysheet']
+    tabs: Array<string> = ['summary', 'notes']
   ): GenerationTask[] {
     const manifest = CourseService.getManifest(courseId);
     if (!manifest) return [];
@@ -766,8 +766,8 @@ export class GenerationQueue {
           `[ILC AI Received: COURSE SCHEDULE] ${nextTask.courseId.toUpperCase()}: Generated ${finalWithFrontmatter.length.toLocaleString()} characters${tookS !== null ? ` in ${tookS}s` : ''}${tokensInfo}${warningsInfo}\n`
         );
       } else {
-        if (nextTask.tab === 'cheatsheet') {
-          nextTask.tab = 'studysheet';
+        if (nextTask.tab === 'cheatsheet' || nextTask.tab === 'studysheet') {
+          nextTask.tab = 'notes';
         }
         const isCourse = nextTask.lessonId === 'course';
         const isUnit = isUnitScopeId(nextTask.lessonId);
@@ -794,13 +794,13 @@ export class GenerationQueue {
         let attachment = nextTask.contextAttachment;
         if (!attachment) {
           if (isCourse) {
-            attachment = nextTask.tab === 'summary' ? 'course - summaries' : nextTask.tab === 'studysheet' ? 'course - studysheets' : 'course - lessons';
+            attachment = nextTask.tab === 'summary' ? 'course - summaries' : (nextTask.tab === 'notes' || nextTask.tab === 'studysheet') ? 'course - notes' : 'course - lessons';
           } else if (isUnit) {
             attachment = 'unit - lessons';
           } else {
             attachment = 'lesson - lessons';
           }
-        } else if (!isUnit && !isCourse && (attachment === 'lesson - summaries' || attachment === 'lesson - studysheets')) {
+        } else if (!isUnit && !isCourse && (attachment === 'lesson - summaries' || attachment === 'lesson - notes' || attachment === 'lesson - studysheets')) {
           attachment = 'lesson - lessons';
         }
 

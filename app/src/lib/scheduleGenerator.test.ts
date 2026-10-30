@@ -33,7 +33,7 @@ const mockManifest: CourseManifest = {
           type: 'lesson',
           hasFull: true,
           hasSummary: true,
-          hasCheatsheet: false,
+          hasNotes: false,
           hasTest: true
         },
         {
@@ -45,7 +45,7 @@ const mockManifest: CourseManifest = {
           type: 'lesson',
           hasFull: true,
           hasSummary: true,
-          hasCheatsheet: false,
+          hasNotes: false,
           hasTest: true
         },
         {
@@ -57,7 +57,7 @@ const mockManifest: CourseManifest = {
           type: 'assignment',
           hasFull: true,
           hasSummary: false,
-          hasCheatsheet: false,
+          hasNotes: false,
           hasTest: false
         }
       ]
@@ -75,7 +75,7 @@ const mockManifest: CourseManifest = {
           type: 'lesson',
           hasFull: true,
           hasSummary: true,
-          hasCheatsheet: false,
+          hasNotes: false,
           hasTest: true
         }
       ]

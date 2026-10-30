@@ -16,7 +16,7 @@ export interface CourseManifestLesson {
   type: 'lesson' | 'assignment';
   hasFull: boolean;
   hasSummary: boolean;
-  hasCheatsheet: boolean;
+  hasNotes: boolean;
   hasTest: boolean;
   pageRange?: string;
   readingDescription?: string;
@@ -45,11 +45,12 @@ export interface CourseManifest {
 }
 
 /** Course-level documents stored as `course.<type>.md` (or `logs.md`) in the course folder. */
-export type CourseDocType = 'summary' | 'studysheet' | 'test' | 'schedule' | 'logs';
+export type CourseDocType = 'summary' | 'notes' | 'test' | 'schedule' | 'logs';
 
 export interface CourseDocsFlags {
   summary: boolean;
-  studysheet: boolean;
+  notes: boolean;
+  studysheet?: boolean;
   test: boolean;
   schedule: boolean;
   logs?: boolean;
@@ -75,7 +76,7 @@ export class CourseIngest {
     this.turndownConverter = new TurndownConverter();
   }
 
-  private loadGenericPrompt(type: 'summary' | 'studysheet' | 'test'): string {
+  private loadGenericPrompt(type: 'summary' | 'notes' | 'test'): string {
     const rootDir = process.cwd().endsWith('/app') ? path.resolve(process.cwd(), '..') : process.cwd();
     const promptsDir = path.join(rootDir, 'data', 'prompts');
     const filename = type === 'test' ? 'test.md' : `${type}.md`;
@@ -187,7 +188,7 @@ export class CourseIngest {
           type: isAssignment ? 'assignment' : 'lesson',
           hasFull: fs.existsSync(path.join(courseDir, `${lessonId}.lesson.md`)),
           hasSummary: fs.existsSync(path.join(courseDir, `${lessonId}.summary.md`)),
-          hasCheatsheet: fs.existsSync(path.join(courseDir, `${lessonId}.studysheet.md`)),
+          hasNotes: fs.existsSync(path.join(courseDir, `${lessonId}.notes.md`)),
           hasTest: fs.existsSync(path.join(courseDir, `${lessonId}.test.md`))
         });
         continue;
@@ -236,12 +237,12 @@ export class CourseIngest {
         fs.writeFileSync(summaryFilePath, finalContent, 'utf8');
       }
 
-      // 3. Generate Initial Studysheet with YAML frontmatter
-      const studysheetFilename = `${lessonId}.studysheet.md`;
-      const studysheetFilePath = path.join(courseDir, studysheetFilename);
-      if (!fs.existsSync(studysheetFilePath) || shouldOverwrite) {
-        const studysheetPrompt = this.loadGenericPrompt('studysheet');
-        const studysheetBody = this.generateInitialStudysheet(
+      // 3. Generate Initial Notes with YAML frontmatter
+      const notesFilename = `${lessonId}.notes.md`;
+      const notesFilePath = path.join(courseDir, notesFilename);
+      if (!fs.existsSync(notesFilePath) || shouldOverwrite) {
+        const notesPrompt = this.loadGenericPrompt('notes');
+        const notesBody = this.generateInitialNotes(
           courseId,
           extracted.unitNumber,
           extracted.lessonNumber,
@@ -250,14 +251,14 @@ export class CourseIngest {
         );
         const finalContent = serializeWithFrontmatter(
           {
-            prompt: studysheetPrompt,
-            type: 'studysheet',
+            prompt: notesPrompt,
+            type: 'notes',
             version: 1,
             updatedAt: new Date().toISOString().split('T')[0]
           },
-          studysheetBody
+          notesBody
         );
-        fs.writeFileSync(studysheetFilePath, finalContent, 'utf8');
+        fs.writeFileSync(notesFilePath, finalContent, 'utf8');
       }
 
       // 4. Generate Initial KICA Test with YAML frontmatter
@@ -293,7 +294,7 @@ export class CourseIngest {
         type: extracted.isAssignment ? 'assignment' : 'lesson',
         hasFull: true,
         hasSummary: true,
-        hasCheatsheet: true,
+        hasNotes: true,
         hasTest: true
       });
 
@@ -326,7 +327,7 @@ export class CourseIngest {
       level: existingManifest?.level || 'University/College Preparation',
       description:
         existingManifest?.description ||
-        'Comprehensive ILC course study notes, summaries, studysheets, and interactive practice questions.',
+        'Comprehensive ILC course study notes, summaries, notes, and interactive practice questions.',
       units,
       updatedAt: new Date().toISOString(),
       archived: existingManifest?.archived
@@ -373,16 +374,16 @@ export class CourseIngest {
 `;
   }
 
-  private generateInitialStudysheet(
+  private generateInitialNotes(
     courseId: string,
     unit: number,
     lesson: number,
     title: string,
     isAssignment: boolean
   ): string {
-    return `# Studysheet: ${title}
+    return `# Notes: ${title}
 
-*Not yet generated. This studysheet can be generated using the AI button above or automatically in the background.*
+*Not yet generated. These notes can be generated using the AI button above or automatically in the background.*
 `;
   }
 

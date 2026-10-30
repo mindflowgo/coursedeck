@@ -24,22 +24,42 @@ export class PromptService {
     const activeDir = getPromptsDir();
     const promptMap = new Map<string, PromptItem>();
 
+    const recordPrompt = (rawId: string, filename: string, content: string) => {
+      let id = rawId;
+      let fname = filename;
+      if (id === 'studysheet') {
+        id = 'notes';
+        fname = 'notes.md';
+      } else if (id === 'course_studysheet') {
+        id = 'course_notes';
+        fname = 'course_notes.md';
+      }
+
+      if (!promptMap.has(id)) {
+        const titleMatch = content.match(/^#\s+(.*)/m);
+        let title = titleMatch ? titleMatch[1].trim() : id;
+        if (id === 'notes' && title.toLowerCase().includes('studysheet')) {
+          title = title.replace(/studysheet/gi, 'Notes');
+        } else if (id === 'course_notes' && title.toLowerCase().includes('studysheet')) {
+          title = title.replace(/studysheet/gi, 'Notes');
+        }
+        promptMap.set(id, {
+          id,
+          title,
+          filename: fname,
+          content
+        });
+      }
+    };
+
     // 1. Load any defaults first from fallback directories
     for (const fallbackDir of this.getFallbackDirs()) {
       try {
         const files = fs.readdirSync(fallbackDir).filter((f) => f.endsWith('.md'));
         for (const f of files) {
           const id = f.replace(/\.md$/, '');
-          if (!promptMap.has(id)) {
-            const content = fs.readFileSync(path.join(fallbackDir, f), 'utf8');
-            const titleMatch = content.match(/^#\s+(.*)/m);
-            promptMap.set(id, {
-              id,
-              title: titleMatch ? titleMatch[1].trim() : id,
-              filename: f,
-              content
-            });
-          }
+          const content = fs.readFileSync(path.join(fallbackDir, f), 'utf8');
+          recordPrompt(id, f, content);
         }
       } catch {}
     }
@@ -52,13 +72,7 @@ export class PromptService {
           const id = f.replace(/\.md$/, '');
           const fullPath = path.join(activeDir, f);
           const content = fs.readFileSync(fullPath, 'utf8');
-          const titleMatch = content.match(/^#\s+(.*)/m);
-          promptMap.set(id, {
-            id,
-            title: titleMatch ? titleMatch[1].trim() : id,
-            filename: f,
-            content
-          });
+          recordPrompt(id, f, content);
         }
       } catch {}
     }
@@ -67,6 +81,13 @@ export class PromptService {
   }
 
   static getPrompt(id: string): PromptItem | null {
+    if (id === 'studysheet') {
+      return this.getPrompt('notes');
+    }
+    if (id === 'course_studysheet') {
+      return this.getPrompt('course_notes');
+    }
+
     const safeId = assertPromptId(id);
     const activeDir = getPromptsDir();
     const fullPath = safeJoin(activeDir, `${safeId}.md`);
@@ -75,9 +96,15 @@ export class PromptService {
     if (fs.existsSync(fullPath)) {
       const content = fs.readFileSync(fullPath, 'utf8');
       const titleMatch = content.match(/^#\s+(.*)/m);
+      let title = titleMatch ? titleMatch[1].trim() : safeId;
+      if (safeId === 'notes' && title.toLowerCase().includes('studysheet')) {
+        title = title.replace(/studysheet/gi, 'Notes');
+      } else if (safeId === 'course_notes' && title.toLowerCase().includes('studysheet')) {
+        title = title.replace(/studysheet/gi, 'Notes');
+      }
       return {
         id: safeId,
-        title: titleMatch ? titleMatch[1].trim() : safeId,
+        title,
         filename: `${safeId}.md`,
         content
       };
@@ -89,6 +116,12 @@ export class PromptService {
       if (fs.existsSync(fbPath)) {
         const content = fs.readFileSync(fbPath, 'utf8');
         const titleMatch = content.match(/^#\s+(.*)/m);
+        let title = titleMatch ? titleMatch[1].trim() : safeId;
+        if (safeId === 'notes' && title.toLowerCase().includes('studysheet')) {
+          title = title.replace(/studysheet/gi, 'Notes');
+        } else if (safeId === 'course_notes' && title.toLowerCase().includes('studysheet')) {
+          title = title.replace(/studysheet/gi, 'Notes');
+        }
         // Auto-seed into activeDir so user has it locally
         try {
           fs.mkdirSync(activeDir, { recursive: true });
@@ -96,7 +129,7 @@ export class PromptService {
         } catch {}
         return {
           id: safeId,
-          title: titleMatch ? titleMatch[1].trim() : safeId,
+          title,
           filename: `${safeId}.md`,
           content
         };

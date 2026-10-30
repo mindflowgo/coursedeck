@@ -56,7 +56,7 @@
 
   function formatTabLabel(tab: string): string {
     const clean = tab.replace(/-\d+$/, '').toLowerCase();
-    if (clean === 'cheatsheet' || clean === 'studysheet') return 'STUDYSHEET';
+    if (clean === 'cheatsheet' || clean === 'studysheet' || clean === 'notes') return 'NOTES';
     return clean.toUpperCase();
   }
 
@@ -101,7 +101,7 @@
         body: JSON.stringify({
           action: 'enqueue',
           courseId,
-          tabs: ['summary', 'studysheet', 'test']
+          tabs: ['summary', 'notes', 'test']
         })
       });
       await queueStatus.refresh();

@@ -368,7 +368,7 @@ export function registerMcpTools(mcp: McpServer): void {
 
   // ─── 7. search_course ─────────────────────────────────────────────────────────
   mcp.tool('search_course', {
-    description: 'Search across course notes, summaries, studysheets, and lesson content with relevance scoring.',
+    description: 'Search across course notes, summaries, and lesson content with relevance scoring.',
     inputSchema: z.object({
       query: z.string().min(1).describe('Search term or phrase'),
       courseId: z.string().optional().describe('Optional course ID filter. If omitted, searches all courses.'),
@@ -399,22 +399,22 @@ export function registerMcpTools(mcp: McpServer): void {
   // ─── 8. get_lesson_doc ────────────────────────────────────────────────────────
   mcp.tool('get_lesson_doc', {
     description:
-      'Retrieve lesson or course documents (summary, studysheet, test, lesson, notes, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing.',
+      'Retrieve lesson or course documents (summary, notes, test, lesson, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing.',
     inputSchema: z.object({
       courseId: z.string().describe("Course ID, e.g. 'mcr3u'"),
       lessonId: z.string().optional().describe('Omit to fetch course-scope documents'),
       tab: z.enum([
         'lesson',
         'summary',
+        'notes',
         'studysheet',
         'cheatsheet',
         'test',
         'schedule',
-        'notes',
         'logs',
         'full',
         'practice-sheet'
-      ]).default('summary').describe("Document tab type ('lesson', 'summary', 'studysheet', 'test', 'schedule', 'notes', 'logs'). Aliases 'full' and 'practice-sheet' are accepted."),
+      ]).default('summary').describe("Document tab type ('lesson', 'summary', 'notes', 'test', 'schedule', 'logs'). Aliases 'full', 'studysheet', and 'practice-sheet' are accepted."),
       generateIfMissing: z.boolean().default(true).describe('If true, generates on demand using the active LLM if missing (default: true)'),
       async: z.boolean().default(false).describe('If true, starts generation in the background and returns a jobId immediately for polling via get_task_status.'),
       format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, markdown content) or "json" (structured job result for async)')
@@ -423,11 +423,21 @@ export function registerMcpTools(mcp: McpServer): void {
       try {
         // Resolve alias
         const tab =
-          args.tab === 'full' ? 'lesson' : args.tab === 'practice-sheet' ? 'test' : args.tab === 'cheatsheet' ? 'studysheet' : args.tab;
+          args.tab === 'full'
+            ? 'lesson'
+            : args.tab === 'practice-sheet'
+              ? 'test'
+              : args.tab === 'cheatsheet' || args.tab === 'studysheet'
+                ? 'notes'
+                : args.tab;
 
         // Course-scope doc
         if (!args.lessonId) {
           if (tab === 'notes') {
+            const courseDoc = CourseService.getCourseDocument(args.courseId, 'notes');
+            if (courseDoc) {
+              return { content: [{ type: 'text', text: courseDoc }] };
+            }
             const notes = CourseService.buildAggregatedNotes(args.courseId);
             return { content: [{ type: 'text', text: notes || 'No lesson notes found.' }] };
           }
@@ -462,7 +472,7 @@ export function registerMcpTools(mcp: McpServer): void {
         }
 
         // Generate on demand if missing and requested
-        if (args.generateIfMissing && (tab === 'summary' || tab === 'studysheet' || tab === 'test')) {
+        if (args.generateIfMissing && (tab === 'summary' || tab === 'notes' || tab === 'test')) {
           if (args.async) {
             const tasks = queueManager.enqueue([
               {
