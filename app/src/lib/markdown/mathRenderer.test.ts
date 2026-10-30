@@ -3,7 +3,9 @@ import {
   extractMathFromMarkdown,
   restoreMathTokens,
   isLikelyInlineMath,
-  renderTextWithMath
+  renderTextWithMath,
+  normalizeMathToLatex,
+  isCodeSnippet
 } from './mathRenderer';
 import { Marked } from 'marked';
 
@@ -194,5 +196,85 @@ Negative exponent	(x^{-n}=\\frac{1}{x^n}).`;
     const html = renderTextWithMath("Find the **hypotenuse** when \\(c = \\sqrt{a^2 + b^2}\\).");
     expect(html).toContain('<strong>hypotenuse</strong>');
     expect(html).toContain('class="katex"');
+  });
+
+  it('renders inline backtick math as proper KaTeX and strips backticks (MCR3U lesson 2.1 example)', () => {
+    // The exact broken pattern from the user request: " ` -b^4 = -(b^4)` "
+    const input = 'Parentheses change the base: ` -b^4 = -(b^4)`, while `(-b)^4` applies the exponent.';
+    const result = renderFull(input);
+
+    expect(result).toContain('class="katex"');
+    // Ensure backticks are NOT rendered literally
+    expect(result).not.toContain('` -b^4');
+    expect(result).not.toContain('`(-b)^4`');
+    expect(result).not.toContain('<code> -b^4');
+    // Ensure KaTeX generated HTML with the formula
+    expect(result).toContain('annotation encoding="application/x-tex">-b^4 = -(b^4)<');
+    expect(result).toContain('annotation encoding="application/x-tex">(-b)^4<');
+  });
+
+  it('renders full MCR3U 02.01 markdown table with backtick math into KaTeX', () => {
+    const tableMd = `
+| Success criterion / concept | Essential rule or definition | Quick example / note |
+| --- | --- | --- |
+| Multiply powers with the same base | \`b^x · b^y = b^(x+y)\` | \`2^7 · 2^5 = 2^12\` |
+| Divide powers with the same base | \`b^x / b^y = b^(x-y)\` | \`3^11 / 3^7 = 3^4 = 81\` |
+| Power of a power | \`(b^x)^y = b^(xy)\` | \`(2^3)^4 = 2^12\` |
+| Negative exponents | \`b^(-x) = 1/b^x\`; \`(a/b)^(-x) = (b/a)^x\` | \`2^(-5) = 1/32\` |
+| Zero exponent | \`b^0 = 1\`, where \`b ≠ 0\` | \`(-2)^0 = 1\`; \`-2^0 = -1\` |
+| Rational exponents and radicals | \`x^(1/n) = n√x\`; \`x^(a/n) = n√(x^a) = (n√x)^a\` | \`81^(3/2) = (√81)^3 = 729\` |
+| Simplify radical expressions | \`√a · √b = √(ab)\`; \`√a / √b = √(a/b)\` | \`√12 = 2√3\`; \`5√3 + 2√3 = 7√3\` |
+`;
+
+    const result = renderFull(tableMd);
+
+    // Verify it is still rendered as an HTML table
+    expect(result).toContain('<table>');
+    expect(result).toContain('<th>Success criterion / concept</th>');
+
+    // Verify backticks are eliminated and converted to KaTeX
+    expect(result).not.toContain('`b^x');
+    expect(result).not.toContain('`2^7');
+    expect(result).not.toContain('`√12');
+
+    // Count KaTeX occurrences - all math cells must be KaTeX
+    const katexCount = (result.match(/class="katex"/g) || []).length;
+    expect(katexCount).toBeGreaterThanOrEqual(15);
+
+    // Verify specific normalized formulas are inside KaTeX annotations
+    expect(result).toContain('b^x \\cdot b^y = b^{x+y}');
+    expect(result).toContain('2^7 \\cdot 2^5 = 2^{12}');
+    expect(result).toContain('3^{11} / 3^7 = 3^4 = 81');
+    expect(result).toContain('b^{xy}');
+    expect(result).toContain('2^{-5} = 1/32');
+    expect(result).toContain('b \\neq 0');
+    expect(result).toContain('\\sqrt{12} = 2\\sqrt{3}');
+  });
+
+  it('preserves code snippets in backticks and fenced blocks without treating them as math', () => {
+    const md = `
+Code block:
+\`\`\`
+const total = items.reduce((a, b) => a + b, 0);
+\`\`\`
+
+Inline code: \`npm run build\`, \`path/to/file.ts\`, \`class="katex"\`, and \`<Button />\`.
+`;
+    const result = renderFull(md);
+
+    expect(result).not.toContain('class="katex"');
+    expect(result).toContain('<code>const total = items.reduce');
+    expect(result).toContain('<code>npm run build</code>');
+    expect(result).toContain('<code>path/to/file.ts</code>');
+  });
+
+  it('normalizeMathToLatex correctly normalizes exponents, roots, and unicode operators', () => {
+    expect(normalizeMathToLatex('b^(x+y)')).toBe('b^{x+y}');
+    expect(normalizeMathToLatex('2^12')).toBe('2^{12}');
+    expect(normalizeMathToLatex('√12')).toBe('\\sqrt{12}');
+    expect(normalizeMathToLatex('n√x')).toBe('\\sqrt[n]{x}');
+    expect(normalizeMathToLatex('b ≠ 0')).toBe('b \\neq 0');
+    expect(normalizeMathToLatex('a · b')).toBe('a \\cdot b');
+    expect(normalizeMathToLatex('x² + y² = r²')).toBe('x^2 + y^2 = r^2');
   });
 });

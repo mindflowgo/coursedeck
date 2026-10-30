@@ -10,7 +10,142 @@ export interface MathToken {
 }
 
 /**
- * Determines whether text between $...$ delimiters is genuinely LaTeX / mathematical notation
+ * Normalizes ASCII and plain-text math notation (e.g. from backtick expressions or LLM summaries)
+ * into standard LaTeX syntax compatible with KaTeX.
+ *
+ * Examples:
+ * - "b^(x+y)" -> "b^{x+y}"
+ * - "2^7 · 2^5 = 2^12" -> "2^7 \cdot 2^5 = 2^{12}"
+ * - "√12 = 2√3" -> "\sqrt{12} = 2\sqrt{3}"
+ * - "x^(1/n) = n√x" -> "x^{1/n} = \sqrt[n]{x}"
+ * - "b ≠ 0" -> "b \neq 0"
+ * - "-b^4 = -(b^4)" -> "-b^4 = -(b^4)"
+ */
+export function normalizeMathToLatex(expr: string): string {
+  let s = expr.trim();
+
+  // 1. Unicode minus, dashes, arrows, relations, arithmetic operators
+  s = s.replace(/−/g, '-');
+  s = s.replace(/·/g, ' \\cdot ');
+  s = s.replace(/×/g, ' \\times ');
+  s = s.replace(/÷/g, ' \\div ');
+  s = s.replace(/≠/g, ' \\neq ');
+  s = s.replace(/≥/g, ' \\ge ');
+  s = s.replace(/≤/g, ' \\le ');
+  s = s.replace(/≈/g, ' \\approx ');
+  s = s.replace(/±/g, ' \\pm ');
+  s = s.replace(/→/g, ' \\rightarrow ');
+  s = s.replace(/←/g, ' \\leftarrow ');
+  s = s.replace(/⇒/g, ' \\implies ');
+  s = s.replace(/⇔/g, ' \\iff ');
+
+  // 2. Unicode superscripts to ^...
+  const unicodeSuperscripts: Record<string, string> = {
+    '⁰': '0', '¹': '1', '²': '2', '³': '3', '⁴': '4',
+    '⁵': '5', '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9',
+    '⁺': '+', '⁻': '-', 'ⁿ': 'n', 'ⁱ': 'i', 'ˣ': 'x', 'ʸ': 'y'
+  };
+  s = s.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻ⁿⁱˣʸ]+/g, (match) => {
+    const converted = match.split('').map((ch) => unicodeSuperscripts[ch] || ch).join('');
+    return converted.length > 1 ? `^{${converted}}` : `^${converted}`;
+  });
+
+  // 3. Greek letters (isolated or with math symbols)
+  s = s.replace(/\bθ\b|θ/g, ' \\theta ');
+  s = s.replace(/\bπ\b|π/g, ' \\pi ');
+  s = s.replace(/\bα\b|α/g, ' \\alpha ');
+  s = s.replace(/\bβ\b|β/g, ' \\beta ');
+  s = s.replace(/\bγ\b|γ/g, ' \\gamma ');
+  s = s.replace(/\bλ\b|λ/g, ' \\lambda ');
+  s = s.replace(/\bμ\b|μ/g, ' \\mu ');
+  s = s.replace(/\bσ\b|σ/g, ' \\sigma ');
+  s = s.replace(/\bω\b|ω/g, ' \\omega ');
+  s = s.replace(/\bΔ\b|Δ/g, ' \\Delta ');
+
+  // 4. Square roots and nth roots:
+  // e.g., n√(x^a) -> \sqrt[n]{x^a}, n√x -> \sqrt[n]{x}
+  s = s.replace(/([a-zA-Z])√\(([^)]+)\)/g, '\\sqrt[$1]{$2}');
+  s = s.replace(/([a-zA-Z])√([a-zA-Z0-9]+)/g, '\\sqrt[$1]{$2}');
+  // General square roots: √12 -> \sqrt{12}, √(ab) -> \sqrt{ab}
+  s = s.replace(/√\(([^)]+)\)/g, '\\sqrt{$1}');
+  s = s.replace(/√([a-zA-Z0-9]+)/g, '\\sqrt{$1}');
+
+  // 5. Exponents:
+  // Parenthesized exponents: ^(...) -> ^{...} e.g. b^(x+y) -> b^{x+y}, 81^(3/2) -> 81^{3/2}
+  s = s.replace(/\^\(([^)]+)\)/g, '^{$1}');
+
+  // Multi-digit or negative-digit exponents without braces: e.g. 2^12 -> 2^{12}, 10^-5 -> 10^{-5}
+  s = s.replace(/\^(\d{2,}|-\d+)/g, '^{$1}');
+
+  // 6. Common functions: sin, cos, tan when followed by a variable/expression
+  s = s.replace(/\b(sin|cos|tan|cot|sec|csc|log|ln)\b(?!\s*[\w(]*\s*=[^=])/g, '\\$1');
+
+  // Clean up excessive whitespace
+  s = s.replace(/\s+/g, ' ').trim();
+
+  return s;
+}
+
+/**
+ * Checks whether text inside backticks is a software code snippet rather than math.
+ */
+export function isCodeSnippet(content: string): boolean {
+  const trimmed = content.trim();
+  if (!trimmed) return true;
+
+  // 1. Programming keywords
+  if (/\b(const|let|var|function|class|return|import|export|from|default|if|else|for|while|switch|case|break|continue|new|this|typeof|instanceof|void|async|await|try|catch|finally|throw|yield|package|interface|type|public|private|protected|readonly|enum|namespace|def|elif|lambda|echo|print|console)\b/.test(trimmed)) {
+    return true;
+  }
+
+  // 2. CLI commands
+  if (/\b(npm|bun|pnpm|yarn|npx|git|sudo|cd|ls|mkdir|rm|cp|mv|chmod|chown|curl|wget|grep|docker|kubectl)\b/.test(trimmed)) {
+    return true;
+  }
+
+  // 3. File extensions or paths
+  if (/\.(ts|js|jsx|tsx|json|svelte|vue|html|css|scss|py|rs|go|c|cpp|h|java|rb|php|sh|md|yml|yaml|toml|lock)\b/.test(trimmed)) {
+    return true;
+  }
+  if (/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+/.test(trimmed)) {
+    return true;
+  }
+
+  // 4. HTML/XML tags
+  if (/^<[\s\S]+>$/.test(trimmed) || /<\/[a-zA-Z]+>/.test(trimmed)) {
+    return true;
+  }
+
+  // 5. Code operators / syntax (===, !==, &&, ||, =>, etc.)
+  if (/(===|!==|&&|\|\||=>|\+\+|--|\+=|-=|\*=|\/=)/.test(trimmed)) {
+    return true;
+  }
+
+  // 6. String literals in quotes
+  if (/^["'].*["']$/.test(trimmed)) {
+    return true;
+  }
+
+  // 7. CLI flags (e.g. --flag, --save-dev)
+  if (/^--[a-zA-Z0-9]/.test(trimmed)) {
+    return true;
+  }
+
+  // 8. HTML attributes or CSS properties: e.g. class="...", style="..."
+  if (/\b(class|style|id|href|src)=["']/.test(trimmed)) {
+    return true;
+  }
+
+  // 9. Method invocation on an identifier: e.g. obj.method() or console.log()
+  if (/\b[a-zA-Z_]\w*\.[a-zA-Z_]\w*\(/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Determines whether text between $...$ or `...` delimiters is genuinely LaTeX / mathematical notation
  * and NOT plain text or accounting currency (e.g. "$1500 and then $2500").
  *
  * Math-structure evidence (LaTeX commands, exponents, subscripts, TeX grouping, relations)
@@ -28,31 +163,37 @@ export function isLikelyInlineMath(content: string): boolean {
   // 2. Mathematical structural notation: exponents (^), subscripts (_), or TeX grouping ({})
   if (/[\^_{}]/.test(trimmed)) return true;
 
-  // 3. TeX escaped symbols or unicode math symbols
+  // 3. TeX escaped symbols or unicode math symbols, Greek letters, superscripts, arrows
   if (/\\([\\$&#%_{}[\]|<>~^+-/*=])/.test(trimmed)) return true;
-  if (/[≠≈≤≥±×÷·√∞∫∑∏∂∇∈∉⊂⊃∪∩∧∨]/.test(trimmed)) return true;
+  if (/[≠≈≤≥±×÷·√∞∫∑∏∂∇∈∉⊂⊃∪∩∧∨→←⇒⇔θπμβγαδλεσλωΔΩΦ⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻ⁿⁱ]/.test(trimmed)) return true;
 
-  // 4. Symbolic expressions with a relation or variable: $x = 2$, $a + b = c$, $1 + 1 = 2$.
-  //    A lone operator between digits ("5+") is too currency-adjacent to accept.
+  // 4. Common mathematical functions: sin, cos, tan, log, ln
+  if (/\b(sin|cos|tan|cot|sec|csc|log|ln|arcsin|arccos|arctan)\b/.test(trimmed)) return true;
+
+  // 5. Binary arithmetic operations between alphanumeric tokens or parens: e.g. p/q, x/k, a + b, x - y
+  if (/[a-zA-Z0-9)\]]\s*[\/+\-*−–]\s*[a-zA-Z0-9(\[]/.test(trimmed) && !/[a-zA-Z]{4,}/.test(trimmed)) {
+    return true;
+  }
+
+  // 6. Symbolic expressions with an explicit relation: $x = 2$, $a < b$, $y = f(x)$, $1 + 1 = 2$
   if (
-    /[=<>+*]/.test(trimmed) &&
-    (/[=<>]/.test(trimmed) || /[a-zA-Z]/.test(trimmed)) &&
-    !/[a-zA-Z]{3,}/.test(trimmed)
+    /[=<>≤≥≠≈→←⇒⇔]/.test(trimmed) &&
+    (/[a-zA-Z]/.test(trimmed) || /\d/.test(trimmed)) &&
+    !/[a-zA-Z]{4,}/.test(trimmed)
   ) {
     return true;
   }
 
-  // 5. Single algebraic variable: $x$, $y$, $z$, $n$, $t$, $k$
-  if (/^[a-zA-Z]$/.test(trimmed)) return true;
+  // 7. Single algebraic variable with optional unicode sign: $x$, $y$, $z$, $n$, $−r$
+  if (/^[a-zA-Z]$/.test(trimmed) || /^[+−][a-zA-Z]$/.test(trimmed)) return true;
 
-  // 6. Numeric coefficient with a variable ($5x$, $2n$) — but not $5k/$2m/$3b,
-  //    where the trailing letter reads as a currency magnitude (thousand/million/billion).
-  if (/^\d+(?:\.\d+)?[a-zA-Z]$/.test(trimmed) && !/[kmb]$/i.test(trimmed)) return true;
+  // 8. Numeric coefficient with a variable ($5x$, $2n$) — but not $5k/$2m/$3b
+  if (/^[+-]?\d+(?:\.\d+)?[a-zA-Z]$/.test(trimmed) && !/[kmb]$/i.test(trimmed)) return true;
 
-  // 7. Comma-separated single-letter lists: $a, k, d, c$
+  // 9. Comma-separated single-letter lists: $a, k, d, c$
   if (/^[a-zA-Z](?:\s*,\s*[a-zA-Z])+$/.test(trimmed)) return true;
 
-  // 8. Currency / plain-prose guards (applied only when no math structure matched above)
+  // 10. Currency / plain-prose guards (applied only when no math structure matched above)
   if (/^[\d,.]/.test(trimmed)) return false;
   if (/\b(and|then|the|or|of|in|to|for|with|by|at|from|is|are|was|were|assets|cash|debt|revenue|cost|expense|expenses|inventory)\b/i.test(trimmed)) {
     return false;
@@ -77,54 +218,71 @@ export function extractMathFromMarkdown(markdown: string): {
   mathTokens: MathToken[];
 } {
   const mathTokens: MathToken[] = [];
-
-  // Protect pre and code blocks so code snippets are never interpreted as math
   const codeBlocks: string[] = [];
-  let cleaned = markdown.replace(/(```[\s\S]*?```|`[^`\n]+`)/g, (match) => {
+
+  // 1. Protect multi-line fenced code blocks (``` ... ```) so code blocks are never interpreted as math
+  let cleaned = markdown.replace(/(```+[\s\S]*?```+)/g, (match) => {
     codeBlocks.push(match);
     return `%%%MATH_CODE_${codeBlocks.length - 1}%%%`;
   });
 
-  // 1. Display math: $$...$$
+  // 2. Inline backticks: if the content is mathematical notation and not a code snippet,
+  // extract it into a MathToken with proper LaTeX normalization so KaTeX renders it.
+  cleaned = cleaned.replace(/`([^`\n]+)`/g, (match, inner) => {
+    const trimmed = inner.trim();
+    if (!isCodeSnippet(trimmed) && isLikelyInlineMath(trimmed)) {
+      const normalized = normalizeMathToLatex(trimmed);
+      mathTokens.push({
+        id: `%%%MATH_TOKEN_${mathTokens.length}%%%`,
+        math: normalized,
+        display: false
+      });
+      return mathTokens[mathTokens.length - 1].id;
+    }
+    codeBlocks.push(match);
+    return `%%%MATH_CODE_${codeBlocks.length - 1}%%%`;
+  });
+
+  // 3. Display math: $$...$$
   cleaned = cleaned.replace(/\$\$([\s\S]+?)\$\$/g, (match, math) => {
     mathTokens.push({
       id: `%%%MATH_TOKEN_${mathTokens.length}%%%`,
-      math: math.trim(),
+      math: normalizeMathToLatex(math.trim()),
       display: true
     });
     return mathTokens[mathTokens.length - 1].id;
   });
 
-  // 2. LaTeX Display math: \[...\]
+  // 4. LaTeX Display math: \[...\]
   cleaned = cleaned.replace(/\\\[([\s\S]+?)\\\]/g, (match, math) => {
     mathTokens.push({
       id: `%%%MATH_TOKEN_${mathTokens.length}%%%`,
-      math: math.trim(),
+      math: normalizeMathToLatex(math.trim()),
       display: true
     });
     return mathTokens[mathTokens.length - 1].id;
   });
 
-  // 3. LaTeX Inline math: \(...\)
+  // 5. LaTeX Inline math: \(...\)
   cleaned = cleaned.replace(/\\\(([\s\S]+?)\\\)/g, (match, math) => {
     mathTokens.push({
       id: `%%%MATH_TOKEN_${mathTokens.length}%%%`,
-      math: math.trim(),
+      math: normalizeMathToLatex(math.trim()),
       display: false
     });
     return mathTokens[mathTokens.length - 1].id;
   });
 
-  // 4. Inline dollar math: $...$ with strict accounting currency guards
+  // 6. Inline dollar math: $...$ with strict accounting currency guards
   // Opening $ cannot be preceded by word char or backslash and cannot be followed by a space;
   // digits ARE allowed after the opening $ so $30^\circ$-style math matches — the
-  // isLikelyInlineMath currency guards below decide whether it renders.
+  // isLikelyInlineMath currency guards decide whether it renders.
   // Closing $ cannot be preceded by space, cannot be followed by digit.
   cleaned = cleaned.replace(/(?<![\w\\])\$(?!\s)([^\$\n]+?)(?<!\s)\$(?!\d)/g, (match, math) => {
     if (isLikelyInlineMath(math)) {
       mathTokens.push({
         id: `%%%MATH_TOKEN_${mathTokens.length}%%%`,
-        math: math.trim(),
+        math: normalizeMathToLatex(math.trim()),
         display: false
       });
       return mathTokens[mathTokens.length - 1].id;
@@ -132,7 +290,7 @@ export function extractMathFromMarkdown(markdown: string): {
     return match;
   });
 
-  // 5. Parenthesized LaTeX expressions: ( ... ) with balanced inner parentheses
+  // 7. Parenthesized LaTeX expressions: ( ... ) with balanced inner parentheses
   // Matches expressions like:
   //   (\frac{P(x)}{Q(x)})
   //   (Q(x)\neq0)
@@ -166,7 +324,7 @@ export function extractMathFromMarkdown(markdown: string): {
         if ((hasLatex || hasExponentFraction) && isNotProse) {
           mathTokens.push({
             id: `%%%MATH_TOKEN_${mathTokens.length}%%%`,
-            math: inner,
+            math: normalizeMathToLatex(inner),
             display: false
           });
           res += mathTokens[mathTokens.length - 1].id;

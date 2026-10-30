@@ -635,7 +635,7 @@ The rendering lifecycle in both the on-screen reader (`MarkdownViewer.svelte`) a
 3. **Asset Route Rewriting**: Rewrites relative `assets/` paths into active API URLs (`/api/courses/:id/assets/...`).
 4. **Callout & Post-It Isolation**: Extracts `> [!NOTE]` callouts and `> [!USERNOTE]` AI study notes into structured blocks, substituting them with collision-proof markers (`%%%USERNOTE_N%%%` or `%%%PDFBOX_N%%%`).
 5. **Table Normalization (`tableRepair.ts`)**: Reconstructs broken multiline tables, balances columns, and separates stacked tables before Markdown tokenization.
-6. **Pre-Parsing Math Extraction (`mathRenderer.ts`)**: Detects LaTeX expressions (`$$...$$`, `\[...\]`, `\(...\)`, `$formula$`, `(formula)`) and substitutes them with `%%%MATH_TOKEN_N%%%` tokens. This shields LaTeX backslashes (`\(`) and underscores (`x_1`) from CommonMark parsers.
+6. **Pre-Parsing Math Extraction (`mathRenderer.ts`)**: Detects LaTeX and plain-text math notation (`$$...$$`, `\[...\]`, `\(...\)`, `$formula$`, `(formula)`, and inline backtick math like `` ` -b^4 = -(b^4)` ``) and substitutes them with `%%%MATH_TOKEN_N%%%` tokens after LaTeX normalization (`normalizeMathToLatex`). This shields LaTeX backslashes (`\(`) and underscores (`x_1`) from CommonMark parsers, converts informal ASCII/plain-text math into valid KaTeX syntax, and eliminates raw backticks.
 7. **Marked GFM Parsing (`markedParser.parse()`)**: Parses the cleaned, math-isolated Markdown into clean HTML / AST tokens with GitHub Flavored Markdown rules.
 8. **KaTeX Formula Restoration (`restoreMathTokens`)**: Replaces math tokens with server-rendered KaTeX HTML (`katex.renderToString()`).
 9. **Component Re-Injection & Sanitization**: Restores callouts/post-its and runs DOMPurify with whitelisted tags (`<details>`, `<summary>`, `<mark>`).
@@ -667,10 +667,25 @@ The rendering lifecycle in both the on-screen reader (`MarkdownViewer.svelte`) a
 - **The Pitfall**: Marked's default tokenizer treats `\(` as an escaped parenthesis `(`, stripping the backslash and destroying `\frac`, `\alpha`, or `\sqrt` commands. Furthermore, subscripts like `x_1 + x_2` are misparsed into italic `<em>` tags.
 - **The Defense**: `extractMathFromMarkdown` extracts math *before* Marked processes the string, replacing formulas with inert tokens (`%%%MATH_TOKEN_N%%%`). KaTeX renders the math *after* Marked completes.
 
-#### 5. Code Block Shielding
-- **The Rule**: Any pre-processor that scans for pipes, math dollars, or markdown markers must first protect code blocks (fenced ```...``` and inline `...`) with placeholders (`%%%TABLE_CODE_N%%%` / `%%%MATH_CODE_N%%%`). Code snippets illustrating markdown, shell scripts, or programming syntax must never be altered by table or math normalizers.
+#### 5. Code Block Shielding vs. Inline Backtick Math Disambiguation
+- **The Pitfall**: LLMs and curriculum authors frequently write mathematical formulas inside inline markdown backticks (e.g. `` `-b^4 = -(b^4)` ``, `` `b^x · b^y = b^(x+y)` ``, `` `2^7 · 2^5 = 2^12` ``) rather than TeX delimiters (`$...$`). Naive code shielding treats all backtick spans as code, which renders them with monospace code styling and literal backticks instead of rendered KaTeX math.
+- **The Defense**:
+  - Multi-line fenced code blocks (```` ```...``` ````) are always protected first with `%%%MATH_CODE_N%%%`.
+  - Inline backticks (`` `...` ``) are checked through `isCodeSnippet`: if the span contains programming keywords, CLI commands, file paths, HTML tags, or code operators (`===`, `=>`, `++`), it remains protected as code.
+  - If `isCodeSnippet` is false and `isLikelyInlineMath` confirms mathematical notation, the expression is extracted into a `MathToken`, normalized to LaTeX, and rendered via KaTeX without displaying backticks.
 
-#### 6. Escaped Pipes in Table Cells
+#### 6. ASCII/Plain-Text Math Normalization (`normalizeMathToLatex`)
+- **The Pitfall**: Plain-text math notation in course summaries and tables frequently uses conventions that break or misrender in standard LaTeX/KaTeX:
+  - Multi-digit unbraced exponents (e.g. `2^12`, `3^11`): Raw TeX treats `^` as binding only to the next single character, rendering $2^1 2$ instead of $2^{12}$.
+  - Parenthesized exponents (e.g. `b^(x+y)`, `b^(-x)`, `81^(3/2)`): Raw TeX superscripts only the opening parenthesis `(`, rendering $b^{(} x + y)$ instead of $b^{x+y}$.
+  - Radicals (e.g. `√12 = 2√3`, `x^(1/n) = n√x`): Unicode radical `√` is not a TeX command and does not draw a square root over the radicand; nth-root index `n√x` is not recognized.
+  - Unicode operators: `·`, `≠`, `≥`, `≤`, `→`, `−`.
+- **The Solution**: `normalizeMathToLatex` (`app/src/lib/markdown/mathRenderer.ts`) transforms these constructs into valid KaTeX before rendering:
+  - `\^\(([^)]+)\)` $\to$ `^{$1}` and `\^(\d{2,}|-\d+)` $\to$ `^{$1}`.
+  - Radicals: `√(...)` $\to$ `\sqrt{...}`, `([a-zA-Z])√...` $\to$ `\sqrt[$1]{...}`.
+  - Operators: `·` $\to$ `\cdot`, `≠` $\to$ `\neq`, `≥` $\to$ `\ge`, `≤` $\to$ `\le`, `→` $\to$ `\rightarrow`, `−` $\to$ `-`.
+
+#### 7. Escaped Pipes in Table Cells
 - **The Rule**: Table cells containing literal pipes must escape them as `\|`. The helper `splitTableCells` respects escaped pipes when parsing cells so column counts remain accurate.
 
 

@@ -6,6 +6,7 @@
  *   bun run scripts/fetch-pdfium.ts          # fetches current platform + stages for desktop
  *   bun run scripts/fetch-pdfium.ts --all    # fetches all platforms (desktop + iOS)
  *   bun run scripts/fetch-pdfium.ts --ios    # fetches iOS frameworks and creates XCFramework
+ *   bun run scripts/fetch-pdfium.ts --force  # re-downloads even if binaries already exist
  */
 
 import fs from 'node:fs';
@@ -67,12 +68,24 @@ async function downloadAndExtract(url: string, extractSubpath: string, outDest: 
   }
 }
 
-async function fetchDesktopTarget(targetKey: string) {
+async function fetchDesktopTarget(targetKey: string, force = false) {
   const target = DESKTOP_TARGETS[targetKey];
   if (!target) {
     console.warn(`[fetch-pdfium] Unknown target: ${targetKey}`);
     return;
   }
+
+  if (!force && fs.existsSync(target.destFile) && fs.statSync(target.destFile).size > 0) {
+    console.log(`[fetch-pdfium] ${target.name} binary already present at ${path.relative(ROOT_DIR, target.destFile)} (skipping download)`);
+    if (targetKey.startsWith('darwin') && process.platform === 'darwin') {
+      const rootDylib = path.join(TAURI_DIR, 'libpdfium.dylib');
+      if (!fs.existsSync(rootDylib)) {
+        fs.copyFileSync(target.destFile, rootDylib);
+      }
+    }
+    return;
+  }
+
   const url = `${BASE_URL}/${target.archive}`;
   await downloadAndExtract(url, target.extractPath, target.destFile);
 
@@ -83,7 +96,13 @@ async function fetchDesktopTarget(targetKey: string) {
   }
 }
 
-async function fetchIosFrameworks() {
+async function fetchIosFrameworks(force = false) {
+  const xcframeworkPath = path.join(TAURIPAD_FRAMEWORKS_DIR, 'pdfium.xcframework');
+  if (!force && fs.existsSync(xcframeworkPath)) {
+    console.log(`[fetch-pdfium] iOS framework already present at ${path.relative(ROOT_DIR, xcframeworkPath)} (skipping download)`);
+    return;
+  }
+
   console.log('[fetch-pdfium] Preparing iOS PDFium frameworks...');
   fs.mkdirSync(TAURIPAD_FRAMEWORKS_DIR, { recursive: true });
 
@@ -102,7 +121,6 @@ async function fetchIosFrameworks() {
     stdio: 'inherit'
   });
 
-  const xcframeworkPath = path.join(TAURIPAD_FRAMEWORKS_DIR, 'pdfium.xcframework');
   if (fs.existsSync(xcframeworkPath)) {
     fs.rmSync(xcframeworkPath, { recursive: true, force: true });
   }
@@ -149,25 +167,26 @@ async function main() {
   const args = process.argv.slice(2);
   const isAll = args.includes('--all');
   const isIos = args.includes('--ios');
+  const isForce = args.includes('--force');
 
   fs.mkdirSync(TAURI_BIN_DIR, { recursive: true });
 
   if (isIos || isAll) {
-    await fetchIosFrameworks();
+    await fetchIosFrameworks(isForce);
   }
 
   if (isAll) {
     for (const key of Object.keys(DESKTOP_TARGETS)) {
-      await fetchDesktopTarget(key);
+      await fetchDesktopTarget(key, isForce);
     }
   } else if (!isIos) {
     const currentKey = `${process.platform}-${process.arch}`;
     if (DESKTOP_TARGETS[currentKey]) {
-      console.log(`[fetch-pdfium] Fetching PDFium for current platform (${currentKey})...`);
-      await fetchDesktopTarget(currentKey);
+      console.log(`[fetch-pdfium] Checking PDFium for current platform (${currentKey})...`);
+      await fetchDesktopTarget(currentKey, isForce);
     } else {
       console.log(`[fetch-pdfium] Current platform ${currentKey} not in presets, defaulting to darwin-arm64`);
-      await fetchDesktopTarget('darwin-arm64');
+      await fetchDesktopTarget('darwin-arm64', isForce);
     }
   }
 

@@ -1,0 +1,154 @@
+{
+    "manifestVersion":  1,
+    "generatedAt":  "2026-10-25T15:34:08Z",
+    "sourceRoot":  "C:\\Users\\Meeoowz\\Documents\\ILC\\_ILC-APP-DATA\\prompts",
+    "destination":  "CourseDeck/Resources/Prompts",
+    "requiredPrompts":  [
+                            "cheatsheet",
+                            "course_cheatsheet",
+                            "course_schedule",
+                            "course_summary",
+                            "course_test",
+                            "popquiz",
+                            "summary",
+                            "test",
+                            "unit_assignments",
+                            "unit_test"
+                        ],
+    "optionalProtected":  [
+                              "lesson",
+                              "test_kica"
+                          ],
+    "excluded":  [
+                     "mcp_prompt_instructions.md",
+                     "promtps.zip",
+                     ".DS_Store",
+                     ".mcp-token",
+                     "backup/"
+                 ],
+    "expectedQuestionCounts":  {
+                                   "test":  {
+                                                "multipleChoice":  6,
+                                                "fillInTheBlank":  4,
+                                                "total":  10
+                                            },
+                                   "course_test":  {
+                                                       "multipleChoice":  12,
+                                                       "multiPart":  4,
+                                                       "total":  16
+                                                   },
+                                   "unit_test":  {
+                                                     "multipleChoice":  8,
+                                                     "fillInTheBlank":  2,
+                                                     "shortAnswer":  2,
+                                                     "total":  12
+                                                 },
+                                   "popquiz":  {
+                                                   "multipleChoice":  4,
+                                                   "fillInTheBlank":  2,
+                                                   "total":  6
+                                               }
+                               },
+    "prompts":  [
+                    {
+                        "id":  "summary",
+                        "file":  "summary.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "9031da36757cfa60651d00aa598491900a1d0ab3ecc291573a222b927f58c54f",
+                        "bytes":  1068
+                    },
+                    {
+                        "id":  "cheatsheet",
+                        "file":  "cheatsheet.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "9451a4f5434b42b383670e1904bd28d322188ec38d06b2941c08aa412f998b92",
+                        "bytes":  668
+                    },
+                    {
+                        "id":  "popquiz",
+                        "file":  "popquiz.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "def0475ba721fef3778a59697152743d611aa388381f621a5f5ee9f4cd712942",
+                        "bytes":  2446
+                    },
+                    {
+                        "id":  "unit_assignments",
+                        "file":  "unit_assignments.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "a82b1559d1d7c3e78d7efa44486da19bddacef30fd85dd6d53eb131bffbe0068",
+                        "bytes":  1193
+                    },
+                    {
+                        "id":  "unit_test",
+                        "file":  "unit_test.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "bf4464aeee7727d44b65165169654e2c1331970a060a1878e911132e580171e9",
+                        "bytes":  2797
+                    },
+                    {
+                        "id":  "course_summary",
+                        "file":  "course_summary.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "28302c97a4bc8f16f242bac47222920be02d0be333b76617c2b7ccf32046ac76",
+                        "bytes":  1567
+                    },
+                    {
+                        "id":  "course_test",
+                        "file":  "course_test.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  true,
+                        "schemaPatch":  "schema-counts-v1",
+                        "sha256":  "af4826ec6965ffd5478afd8131c4f74e6ec8b448662a3ff6633e6b4b59004e04",
+                        "bytes":  4518
+                    },
+                    {
+                        "id":  "course_schedule",
+                        "file":  "course_schedule.md",
+                        "source":  "active",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "4bc139e2ad4e152310ae021b309ccb6a28a0ac388b15b54e295acad7f838c947",
+                        "bytes":  1165
+                    },
+                    {
+                        "id":  "course_cheatsheet",
+                        "file":  "course_cheatsheet.md",
+                        "source":  "backup",
+                        "protected":  true,
+                        "patched":  false,
+                        "schemaPatch":  null,
+                        "sha256":  "1cbb31ca2edfb713edebcf912073aa90f78940bd5d485139d182dc2f0649444a",
+                        "bytes":  1180
+                    },
+                    {
+                        "id":  "test",
+                        "file":  "test.md",
+                        "source":  "backup",
+                        "protected":  true,
+                        "patched":  true,
+                        "schemaPatch":  "schema-counts-v1",
+                        "sha256":  "6de94f9b5f2cf6f3ea95c355cde3eea8a614321c10e03a32f0f2080b1e1b3483",
+                        "bytes":  2846
+                    }
+                ]
+}

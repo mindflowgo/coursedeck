@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun --cwd ../app dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "bun --cwd ../app build",
+    "beforeBuildCommand": "bun run ../scripts/fetch-pdfium.ts && bun --cwd ../app build",
     "frontendDist": "../app/build"
   },
   "app": {
