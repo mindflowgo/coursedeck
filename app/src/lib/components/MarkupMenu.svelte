@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, ChevronDown, Eraser, Eye, EyeOff, Highlighter, Pencil, Redo2, Trash2, Undo2, X } from 'lucide-svelte';
+  import { Check, ChevronDown, Eraser, Eye, EyeOff, Highlighter, Pencil, Redo2, Trash2, Undo2 } from 'lucide-svelte';
   import AppleLogo from '$lib/components/icons/AppleLogo.svelte';
   import { confirmDialog } from '$lib/dialog';
   import {
@@ -16,7 +16,7 @@
   } from '$lib/markup/annotationStore.svelte';
   import { MARKUP_PRESETS } from '$lib/markup/render';
   import { PALETTE_COLORS, type MarkupColor, type MarkupTool } from '$lib/markup/types';
-  import { isPencilKitAvailable, setPencilKitExcludedRects, setPencilKitTool } from '$lib/markup/pencilKit';
+  import { isIPad, isPencilKitAvailable, setPencilKitExcludedRects, setPencilKitTool } from '$lib/markup/pencilKit';
 
   /**
    * Top-bar markup dropdown: marker + highlighter swatches, eraser, undo/redo,
@@ -30,6 +30,14 @@
 
   let isOpen = $state(false);
   let popoverEl = $state<HTMLDivElement>();
+  let isAnIPad = $state(false);
+
+  $effect(() => {
+    isAnIPad = isIPad();
+    if (!isAnIPad && markupUi.pencilOnly) {
+      setPencilOnly(false);
+    }
+  });
 
   // Synchronize excluded rects for open popover so Apple Pencil taps on swatches/Done work
   $effect(() => {
@@ -62,9 +70,11 @@
     if (isPencilKitAvailable() && markupUi.pencilOnly) {
       setPencilKitTool(markupUi.tool, color);
     }
+    isOpen = false;
   }
 
   function selectTool(tool: MarkupTool): void {
+    setPencilOnly(false);
     markupUi.tool = tool;
     markupUi.eraser = false;
     if (!markupUi.mode) enterMarkupMode();
@@ -73,10 +83,25 @@
     }
   }
 
-  function handlePencilModeToggle(enabled: boolean): void {
-    setPencilOnly(enabled);
-    if (enabled) {
-      isOpen = false;
+  function selectPencilTab(): void {
+    setPencilOnly(true);
+    markupUi.eraser = false;
+    enterMarkupMode();
+    isOpen = false;
+  }
+
+  function selectEraser(): void {
+    if (!markupUi.mode) enterMarkupMode();
+    markupUi.eraser = true;
+    isOpen = false;
+  }
+
+  function handleMainButtonClick(): void {
+    if (markupUi.mode && markupUi.eraser) {
+      markupUi.eraser = false;
+    } else if (markupUi.mode) {
+      exitMarkupMode();
+    } else {
       enterMarkupMode();
     }
   }
@@ -181,22 +206,18 @@
     >
       <button
         type="button"
-        onclick={() => {
-          if (markupUi.mode) {
-            exitMarkupMode();
-          } else {
-            enterMarkupMode();
-          }
-        }}
+        onclick={handleMainButtonClick}
         class="flex items-center space-x-1.5 px-2.5 py-1.5 text-xs font-medium transition cursor-pointer hover:bg-stone-100/70 dark:hover:bg-stone-800/70"
-        title={markupUi.mode ? 'Exit Markup mode' : 'Tap to start marking with finger/pen'}
+        title={markupUi.mode ? (markupUi.eraser ? 'Exit Erase mode' : 'Exit Markup mode') : 'Tap to start marking with finger/pen'}
       >
-        {#if markupUi.tool === 'highlighter'}
+        {#if markupUi.eraser && markupUi.mode}
+          <Eraser class="w-3.5 h-3.5" />
+        {:else if markupUi.tool === 'highlighter'}
           <Highlighter class="w-3.5 h-3.5" />
         {:else}
           <Pencil class="w-3.5 h-3.5" />
         {/if}
-        <span class="hidden sm:inline">Markup</span>
+        <span class="hidden sm:inline">{markupUi.eraser && markupUi.mode ? 'Erase' : 'Markup'}</span>
       </button>
       <button
         type="button"
@@ -217,59 +238,51 @@
     <div
       bind:this={popoverEl}
       use:ensureInViewport
-      class="absolute right-0 mt-1.5 w-[250px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-5rem)] overflow-y-auto rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden"
+      class="absolute right-0 mt-1.5 w-[280px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-5rem)] overflow-y-auto rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden"
     >
-      {#if markupUi.pencilOnly}
-        <!-- In Apple Pencil mode: only show the selected Apple Pencil (which can be de-selected) -->
-        <div class="p-3">
-          <label
-            class="flex items-center space-x-2 text-xs font-medium text-stone-800 dark:text-stone-200 cursor-pointer select-none"
-            title="Uncheck to switch back to standard touch/web markup"
+      <!-- 1. Tool Selection: Pen vs Highlighter (vs Apple Pencil on iPad) -->
+      <div class="px-3 pt-2.5 pb-2">
+        <div class="text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500 mb-1.5">Tool</div>
+        <div class="grid {isAnIPad ? 'grid-cols-3' : 'grid-cols-2'} gap-1 p-0.5 rounded-lg bg-stone-100 dark:bg-stone-800/80">
+          <button
+            type="button"
+            onclick={() => selectTool('marker')}
+            class="flex items-center justify-center space-x-1 py-1.5 px-1.5 rounded-md text-[11px] sm:text-xs font-medium transition cursor-pointer {!markupUi.pencilOnly && markupUi.tool === 'marker' && !markupUi.eraser
+              ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
+              : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'}"
           >
-            <input
-              type="checkbox"
-              checked={markupUi.pencilOnly}
-              onchange={(e) => handlePencilModeToggle(e.currentTarget.checked)}
-              class="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-500 w-4 h-4 cursor-pointer accent-amber-600"
-            />
-            <div class="flex items-center space-x-1.5 font-semibold">
-              <AppleLogo class="w-3.5 h-3.5 text-stone-900 dark:text-stone-100 shrink-0" />
-              <span>Apple Pencil Mode</span>
-            </div>
-          </label>
-        </div>
-      {:else}
-        <!-- Standard Touch/Web mode: tool selector, color swatches, and action controls -->
-        <!-- 1. Tool Selection: Pen vs Highlighter -->
-        <div class="px-3 pt-2.5 pb-2">
-          <div class="text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500 mb-1.5">Tool</div>
-          <div class="grid grid-cols-2 gap-1.5 p-0.5 rounded-lg bg-stone-100 dark:bg-stone-800/80">
+            <Pencil class="w-3.5 h-3.5 shrink-0" />
+            <span>Pen</span>
+          </button>
+          <button
+            type="button"
+            onclick={() => selectTool('highlighter')}
+            class="flex items-center justify-center space-x-1 py-1.5 px-1.5 rounded-md text-[11px] sm:text-xs font-medium transition cursor-pointer {!markupUi.pencilOnly && markupUi.tool === 'highlighter' && !markupUi.eraser
+              ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
+              : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'}"
+          >
+            <Highlighter class="w-3.5 h-3.5 shrink-0" />
+            <span>Highlighter</span>
+          </button>
+          {#if isAnIPad}
             <button
               type="button"
-              onclick={() => selectTool('marker')}
-              class="flex items-center justify-center space-x-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer {markupUi.tool === 'marker' && !markupUi.eraser
+              onclick={selectPencilTab}
+              class="flex items-center justify-center space-x-1 py-1.5 px-1.5 rounded-md text-[11px] sm:text-xs font-medium transition cursor-pointer {markupUi.pencilOnly
                 ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
                 : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'}"
+              title="Apple Pencil mode"
             >
-              <Pencil class="w-3.5 h-3.5" />
-              <span>Pen</span>
+              <AppleLogo class="w-3.5 h-3.5 shrink-0" />
+              <span>Pencil</span>
             </button>
-            <button
-              type="button"
-              onclick={() => selectTool('highlighter')}
-              class="flex items-center justify-center space-x-1.5 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer {markupUi.tool === 'highlighter' && !markupUi.eraser
-                ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-xs'
-                : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-100'}"
-            >
-              <Highlighter class="w-3.5 h-3.5" />
-              <span>Highlighter</span>
-            </button>
-          </div>
+          {/if}
         </div>
+      </div>
 
-        <!-- 2. Color Palette (5 colors from Apple Markup) -->
+      <!-- 2. Color Palette (5 colors from Apple Markup) - hidden when Apple Pencil is selected -->
+      {#if !markupUi.pencilOnly}
         <div class="px-3 py-2 border-t border-stone-100 dark:border-stone-800">
-          <div class="text-[10px] font-semibold uppercase tracking-wide text-stone-400 dark:text-stone-500 mb-2">Color</div>
           <div class="flex items-center justify-between gap-1.5 px-0.5">
             {#each PALETTE_COLORS as c (c.id)}
               {@const isSelected = markupUi.color === c.id}
@@ -280,7 +293,7 @@
                 title={c.label}
                 aria-label={c.label}
               >
-                <!-- Outer concentric selection ring matching Apple Markup style in image -->
+                <!-- Outer concentric selection ring matching Apple Markup style -->
                 <div class="w-8 h-8 rounded-full flex items-center justify-center transition-all {isSelected
                   ? 'ring-2 ring-offset-2 ring-stone-400 dark:ring-stone-400 dark:ring-offset-stone-900'
                   : 'hover:scale-105'}">
@@ -293,15 +306,14 @@
             {/each}
           </div>
         </div>
+      {/if}
 
-        <!-- 3. Actions: Eraser, Undo, Redo, Show/Hide, Clear -->
-        <div class="flex items-center gap-1 px-3 py-2 border-t border-stone-100 dark:border-stone-800 mt-1">
+      <!-- 3. Actions: Eraser, Undo, Redo, Show/Hide, Clear -->
+      <div class="flex items-center gap-1 px-3 py-2 border-t border-stone-100 dark:border-stone-800">
+        {#if !markupUi.pencilOnly}
           <button
             type="button"
-            onclick={() => {
-              if (!markupUi.mode) enterMarkupMode();
-              markupUi.eraser = !markupUi.eraser;
-            }}
+            onclick={selectEraser}
             class="w-8 h-8 rounded-lg flex items-center justify-center transition cursor-pointer {markupUi.eraser && markupUi.mode
               ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900'
               : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'}"
@@ -327,58 +339,38 @@
           >
             <Redo2 class="w-4 h-4" />
           </button>
-          <span class="flex-1"></span>
-          <button
-            type="button"
-            onclick={() => setShowMarkings(!markupUi.show)}
-            class="w-8 h-8 rounded-lg flex items-center justify-center transition text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"
-            title={markupUi.show ? 'Hide all markings' : 'Show markings'}
-          >
-            {#if markupUi.show}<Eye class="w-4 h-4" />{:else}<EyeOff class="w-4 h-4" />{/if}
-          </button>
-          <button
-            type="button"
-            onclick={() => void handleClearAll()}
-            class="w-8 h-8 rounded-lg flex items-center justify-center transition text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
-            title="Clear all markings on this document"
-          >
-            <Trash2 class="w-4 h-4" />
-          </button>
-        </div>
+        {/if}
+        <span class="flex-1"></span>
+        <button
+          type="button"
+          onclick={() => setShowMarkings(!markupUi.show)}
+          class="w-8 h-8 rounded-lg flex items-center justify-center transition text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"
+          title={markupUi.show ? 'Hide all markings' : 'Show markings'}
+        >
+          {#if markupUi.show}<Eye class="w-4 h-4" />{:else}<EyeOff class="w-4 h-4" />{/if}
+        </button>
+        <button
+          type="button"
+          onclick={() => void handleClearAll()}
+          class="w-8 h-8 rounded-lg flex items-center justify-center transition text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer"
+          title="Clear all markings on this document"
+        >
+          <Trash2 class="w-4 h-4" />
+        </button>
+      </div>
 
-        <!-- 4. Apple Pencil Mode Option (selecting closes dropdown & enables markup) -->
-        <div class="px-3 py-2 border-t border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950/40">
-          <label
-            class="flex items-center space-x-1.5 text-[11px] font-medium text-stone-700 dark:text-stone-300 cursor-pointer select-none"
-            title="When checked: Native Apple Pencil mode with sub-9ms latency, Metal drawing, and tool palette. When unchecked: Standard touch handwriting mode."
-          >
-            <input
-              type="checkbox"
-              checked={markupUi.pencilOnly}
-              onchange={(e) => handlePencilModeToggle(e.currentTarget.checked)}
-              class="rounded border-stone-300 dark:border-stone-600 text-amber-600 focus:ring-amber-500 w-3.5 h-3.5 cursor-pointer accent-amber-600"
-            />
-            <div class="flex items-center space-x-1 text-stone-700 dark:text-stone-300 font-medium">
-              <AppleLogo class="w-3 h-3 text-stone-800 dark:text-stone-200 shrink-0" />
-              <span>Apple Pencil Mode</span>
-            </div>
-          </label>
-        </div>
-      {/if}
-
-      <!-- Footer: Done button (ENABLING markup in all cases) -->
+      <!-- Footer: Hide button -->
       <div class="flex items-center justify-end px-3 py-2 border-t border-stone-100 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950/40">
         <button
           type="button"
           onclick={() => {
-            enterMarkupMode();
+            if (!markupUi.pencilOnly && !markupUi.mode) enterMarkupMode();
             isOpen = false;
           }}
           class="flex items-center space-x-1 px-3 py-1.5 rounded-md bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-semibold hover:opacity-90 transition cursor-pointer"
-          title="Enable markup and close"
+          title="Hide menu"
         >
-          <Check class="w-3.5 h-3.5 stroke-[2.5]" />
-          <span>Done</span>
+          <span>Hide</span>
         </button>
       </div>
     </div>

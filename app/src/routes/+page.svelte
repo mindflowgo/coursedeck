@@ -44,6 +44,7 @@
   import { confirmDialog } from '$lib/dialog';
   import { buildCourseAggregatedMarkdown, type CoursePdfExportType } from '$lib/pdf/coursePdfAggregator';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
+  import { getResumeLastPosition, buildCourseResumeUrl } from '$lib/preferences';
 
   const isTauri = isTauriEnvironment();
   let courses: CourseManifest[] = $state(cachedCoursesList || []);
@@ -146,6 +147,14 @@
 
   function openCourseDoc(courseId: string, tab: 'test' | 'logs') {
     goto(`/courses/${courseId.toLowerCase()}/course/${tab}`);
+  }
+
+  function openCourse(courseId: string) {
+    if (getResumeLastPosition()) {
+      goto(buildCourseResumeUrl(courseId));
+    } else {
+      goto(`/courses/${courseId}`);
+    }
   }
 
   async function handleDownloadCoursePdf(course: CourseManifest, type: CoursePdfExportType) {
@@ -419,11 +428,11 @@
           role="button"
           tabindex="0"
           aria-label="Open course {course.id}"
-          onclick={() => goto(`/courses/${course.id}`)}
+          onclick={() => openCourse(course.id)}
           onkeydown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              goto(`/courses/${course.id}`);
+              openCourse(course.id);
             }
           }}
           class="group relative px-1.5 py-4 border-0 rounded-none bg-transparent shadow-none sm:rounded-2xl sm:border sm:border-stone-200 sm:dark:border-stone-800 sm:bg-white sm:dark:bg-stone-900 sm:p-6 sm:shadow-2xs sm:hover:shadow-md sm:hover:border-stone-300 sm:dark:hover:border-stone-700 transition flex flex-col justify-between cursor-pointer text-left {course.archived ? 'opacity-60 hover:opacity-100' : ''}"

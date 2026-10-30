@@ -17,6 +17,10 @@
     isPanMode?: boolean;
     scrollerEl?: HTMLElement | null;
     courseId?: string;
+    /** Viewer-supplied scheduler: text extraction yields to page renders
+     *  (both contend for the pdfium document mutex). Falls back to a direct
+     *  fetch when absent. */
+    requestPageText?: (pageIndex: number) => Promise<TextSpan[] | null>;
     onStrokeDrawn?: (file: string) => void;
   }
 
@@ -32,11 +36,12 @@
     isPanMode = false,
     scrollerEl,
     courseId = '',
+    requestPageText,
     onStrokeDrawn
   }: Props = $props();
 
   let textSpans = $state<TextSpan[]>([]);
-  let hasFetchedText = false;
+  let hasFetchedText = $state(false);
 
   // Calculate target display dimensions based on PDF point size and zoom scale
   const displayWidth = $derived(Math.round(pageWidth * zoomScale));
@@ -56,9 +61,12 @@
   $effect(() => {
     if (imgUrl && !hasFetchedText) {
       hasFetchedText = true;
-      pdfGetPageText(docPath, pageIndex)
+      const fetchText = requestPageText
+        ? requestPageText(pageIndex)
+        : pdfGetPageText(docPath, pageIndex).catch(() => [] as TextSpan[]);
+      fetchText
         .then((spans) => {
-          textSpans = spans;
+          textSpans = spans ?? [];
         })
         .catch(() => {});
     }
@@ -67,7 +75,7 @@
 
 <div
   data-page-index={pageIndex}
-  class="relative bg-white dark:bg-stone-900 shadow-md rounded-xs overflow-hidden mx-auto transition-all duration-75 select-none shrink-0"
+  class="relative bg-white shadow-md rounded-xs overflow-hidden mx-auto select-none shrink-0"
   style:width="{displayWidth}px"
   style:height="{displayHeight}px"
 >
@@ -76,7 +84,7 @@
       src={imgUrl}
       alt="Page {pageIndex + 1}"
       class="w-full h-full object-contain pointer-events-none block"
-      loading="lazy"
+      decoding="async"
     />
 
     <!-- Transparent Native Text Selection Layer -->

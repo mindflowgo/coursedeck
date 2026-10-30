@@ -4,6 +4,9 @@ import {
   setResumeLastPosition,
   getMostRecentPositionCheckpoint,
   resolveLastAccessedCourseRoute,
+  getCourseLastLocation,
+  setCourseLastLocation,
+  buildCourseResumeUrl,
   RESUME_LAST_POSITION_STORAGE_KEY
 } from './preferences';
 import type { Checkpoint } from './checkpoint';
@@ -187,5 +190,107 @@ describe('User Preferences - Course Position Resume', () => {
 
     const target = resolveLastAccessedCourseRoute('clm3u', checkpoints, lessons);
     expect(target).toBeNull();
+  });
+
+  it('persists and retrieves getCourseLastLocation', () => {
+    expect(getCourseLastLocation('CLN4U')).toBeNull();
+
+    setCourseLastLocation('CLN4U', {
+      lessonId: '02.04',
+      tab: 'notes',
+      isCourseScope: false,
+      isUnitScope: false
+    });
+
+    const loc = getCourseLastLocation('cln4u');
+    expect(loc).not.toBeNull();
+    expect(loc?.courseId).toBe('cln4u');
+    expect(loc?.lessonId).toBe('02.04');
+    expect(loc?.tab).toBe('notes');
+    expect(loc?.isCourseScope).toBe(false);
+    expect(loc?.pdfPage).toBeNull();
+  });
+
+  it('buildCourseResumeUrl constructs correct routes with tabs and pdfPage', () => {
+    // Empty / default fallback
+    expect(buildCourseResumeUrl('cln4u', null)).toBe('/courses/cln4u');
+
+    // Standard lesson tab
+    expect(
+      buildCourseResumeUrl('cln4u', {
+        courseId: 'cln4u',
+        lessonId: '01.02',
+        tab: 'summary',
+        isCourseScope: false,
+        isUnitScope: false,
+        updatedAt: Date.now()
+      })
+    ).toBe('/courses/cln4u/01.02/summary');
+
+    // Default lesson tab omits /lesson suffix
+    expect(
+      buildCourseResumeUrl('cln4u', {
+        courseId: 'cln4u',
+        lessonId: '01.02',
+        tab: 'lesson',
+        isCourseScope: false,
+        isUnitScope: false,
+        updatedAt: Date.now()
+      })
+    ).toBe('/courses/cln4u/01.02');
+
+    // Unit scope
+    expect(
+      buildCourseResumeUrl('cln4u', {
+        courseId: 'cln4u',
+        lessonId: 'unit_2',
+        tab: 'assignments',
+        isCourseScope: false,
+        isUnitScope: true,
+        updatedAt: Date.now()
+      })
+    ).toBe('/courses/cln4u/unit_2/assignments');
+
+    // Course scope book with exact PDF page
+    expect(
+      buildCourseResumeUrl('cln4u', {
+        courseId: 'cln4u',
+        lessonId: 'course',
+        tab: 'book',
+        isCourseScope: true,
+        isUnitScope: false,
+        pdfPage: 142,
+        updatedAt: Date.now()
+      })
+    ).toBe('/courses/cln4u/course/book?page=142');
+  });
+
+  it('resolveLastAccessedCourseRoute prioritizes explicit last location over checkpoints', () => {
+    const checkpoints: Checkpoint[] = [
+      {
+        id: 'pos_old',
+        file: '01.01.lesson.md',
+        verticalPosition: 200,
+        type: 'position',
+        date: '2026-10-16T10:00:00Z'
+      }
+    ];
+    const lessons = [{ id: '01.01' }, { id: '02.05' }];
+
+    // Set explicit location to book page 77
+    setCourseLastLocation('CLN4U', {
+      lessonId: 'course',
+      tab: 'book',
+      isCourseScope: true,
+      isUnitScope: false,
+      pdfPage: 77
+    });
+
+    const target = resolveLastAccessedCourseRoute('CLN4U', checkpoints, lessons);
+    expect(target).not.toBeNull();
+    expect(target?.isCourseScope).toBe(true);
+    expect(target?.tab).toBe('book');
+    expect(target?.pdfPage).toBe(77);
+    expect(target?.href).toBe('/courses/cln4u/course/book?page=77');
   });
 });

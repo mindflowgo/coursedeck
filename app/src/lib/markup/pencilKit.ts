@@ -85,11 +85,25 @@ const toolListeners = new Set<ToolCallback>();
 let isInitialized = false;
 
 /**
+ * Checks if the current client is an iPad device (or simulated iPad).
+ */
+export function isIPad(): boolean {
+  if (!browser || typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const w = window as any;
+  if (typeof w.__isIPad === 'boolean') return w.__isIPad;
+  if (w.__pencilKitReady) return true;
+  return (
+    /iPad/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  );
+}
+
+/**
  * Checks if native Apple PencilKit is available in the current environment
  * (Tauri iOS running on an iPad).
  */
 export function isPencilKitAvailable(): boolean {
-  if (!browser) return false;
+  if (!browser || typeof window === 'undefined' || typeof navigator === 'undefined') return false;
   const w = window as any;
   if (w.__pencilKitReady) return true;
   const isTauri = '__TAURI_INTERNALS__' in window || 'isTauri' in window;

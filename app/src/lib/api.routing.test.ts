@@ -42,10 +42,16 @@ const windowStub = {
 
 // No real Tauri runtime here: make the native bridges throw so smartFetch
 // exercises its window.fetch fallback (that IS the network path we assert on).
+// Keep every named export other suites link against (e.g. pencilKit's
+// addPluginListener): bun runs all test files in one process, and a partial
+// core mock replaces the real module for files that load later.
 await mock.module('@tauri-apps/api/core', () => ({
   invoke: async () => {
     throw new Error('no tauri runtime in tests');
-  }
+  },
+  addPluginListener: async () => () => {},
+  convertFileSrc: (path: string) => path,
+  transformCallback: () => 0
 }));
 await mock.module('@tauri-apps/plugin-http', () => ({
   fetch: async () => {

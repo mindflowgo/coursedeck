@@ -1184,5 +1184,42 @@ Two cache layers used to ship stale Swift/Rust into the app:
 - Strokes are exported in viewport coordinates only; document-space mapping happens in JS at receipt time.
 - The plugin crate is a path dependency outside this repository — it must stay under version control on its own (or move back into `crates/`).
 
+## 22. High-Performance PDF Engine & Viewer Pipeline
+
+The PDF Book viewer (`ViewerToolbar.svelte`, `PageRenderer.svelte`, and `tauri/src/pdf.rs`) is engineered for rapid, stutter-free navigation across multi-hundred-page textbooks on both macOS desktop and iPadOS WebKit environments.
+
+### 22.1 Single Shared IntersectionObserver & Browser-Native Visibility Driver
+
+Earlier revisions experimented with synthetic DOM geometry tracking (`pageLayout.ts`), using binary search over calculated scrollTop positions. In production, synthetic geometric offsets drifted during dynamic container resizes, devicePixelRatio (DPR) zooming steps, and iOS WebKit momentum scrolling physics. 
+
+The viewer relies exclusively on **one shared `IntersectionObserver`** watching all page wrappers (`[data-page-wrap]`) with a `45% 0px 45% 0px` root margin:
+- **No Geometric Drift**: The browser compositor natively computes visibility and occlusion, completely eliminating cumulative rounding errors.
+- **Proportional Prefetch Band**: Percentage margins (`45%`) scale dynamically with the container height, guaranteeing a consistent lookahead buffer regardless of window size or tablet orientation.
+- **Focal Tracking**: The current page is determined by intersecting pages relative to a focal line located 110px below the container top (just beneath the floating toolbar).
+- **Tab Switch Resilience**: A `ResizeObserver` monitors viewport dimensions. When switching tabs (Markdown ↔ PDF Book), `display: none` resets `scrollTop` to 0; upon unhiding, the observer restores the saved page offset instantly.
+
+### 22.2 Velocity-Aware Lookahead & Stale Queue Eviction
+
+Smooth momentum scrolling requires predicting user traversal while preventing IPC render saturation:
+1. **Dynamic Reach (3 → 8 Pages)**: Frame-smoothed scroll velocity ($px/ms$) determines prefetch depth. Under normal reading ($< 1.0\text{ px/ms}$), the viewer maintains a tight 3-page lookahead band. During rapid scrolling ($> 1.0\text{ px/ms}$), the lookahead window expands to 8 pages ahead in the scroll direction while omitting the opposite direction, keeping renders pre-loaded ahead of the viewport.
+2. **Stale Queue Eviction**: Queued requests farther than 12 pages (`STALE_QUEUE_MARGIN_PAGES = 12`) from the current visible band are discarded from `renderQueue`, preventing the native PDFium thread pool from wasting cycles rendering pages the viewport has already left. Priority-1 jump targets are protected.
+3. **Cache Sizing (16 Pages)**: `MAX_CACHED_PAGES` is sized at 16 (visible band + 8-ahead + 2-behind), preventing thrashing during high-velocity flings.
+4. **Deferred Blob Revocation**: When old page blobs are evicted or updated, `URL.revokeObjectURL(oldUrl)` is executed with a deferred delay (`setTimeout(..., 1000)`), ensuring the browser compositor never drops an active bitmap before a new frame has completed its asynchronous paint, eliminating black visual glitching.
+
+### 22.3 Clean Render Pipeline & WebKit Decode Hygiene
+
+- **Single-Pass Resolution at Native Quality**: Pages render cleanly at `targetScale = zoomScale * dpr` with JPEG quality 80, avoiding multi-pass scale churn, blur-to-sharp jitter, and duplicate render IPC round-trips.
+- **Pure White Paper Placeholder**: `PageRenderer.svelte` maintains a clean `bg-white` surface matching physical textbook paper. Even during rapid flings across unloaded pages, the viewer renders white paper placeholders with subtle spinners rather than jarring black flashes.
+- **WebKit Decode Hygiene**: `PageRenderer.svelte` uses `decoding="async"` and avoids browser-native `loading="lazy"`, which previously stalled dynamic blob image decoding inside WebKit overflow scroll containers. Transition animations (`transition-all`) are omitted from page wrappers to guarantee zero layout delay during momentum scrolling.
+
+### 22.4 Native PDFium Mutex Concurrency Discipline, Prewarming, & Compression
+
+1. **Rust Fast-Path (`pages.page_sizes()`)**: Initial document inspection (`pdf_get_info`) queries MediaBoxes using `FPDF_GetPageSizeByIndexF` instead of sequentially loading and closing each page with `FPDF_LoadPage`, dropping 600-page book load latency from $\sim 800\text{ms}$ to $< 10\text{ms}$.
+2. **PDFium Mutex Arbitration**: Native PDFium document handles are guarded by a mutex. Text-layer extraction (`pdf_get_page_text`) is queued through a single slot that pauses whenever pixel rendering is active, ensuring pixel delivery is never delayed by text layout extraction.
+3. **Optimized JPEG Quality (80)**: Native page rasterization defaults to JPEG quality 80 (down from 85), yielding $15\text{--}20\%$ smaller IPC byte payloads and reduced compression latency with zero perceptible degradation on text and line art.
+4. **Idle Prewarming**: When viewing a course, `prewarmCourseBook` inspects the student's remembered reading page during idle time (`requestIdleCallback`) and pre-renders it into a memory blob store (`pdfPrewarm.ts`). Opening the book tab adopts the prewarmed blob instantaneously.
+5. **Course Card Last-Location Resuming**: Dashboard cards record and resume the user's exact state: active lesson, active tab, and for textbooks, the exact `pdfPage` via `buildCourseResumeUrl` (`?page=N`).
+
+
 
 

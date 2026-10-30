@@ -13,8 +13,16 @@
     Search as SearchIcon,
     Loader2
   } from 'lucide-svelte';
-  import type { PdfDocumentInfo } from '$lib/pdfClient';
-  import { pdfRenderPage, pdfRenderThumbnail, getCoursePdfState, setCoursePdfState } from '$lib/pdfClient';
+  import type { PdfDocumentInfo, TextSpan } from '$lib/pdfClient';
+  import {
+    pdfRenderPage,
+    pdfRenderThumbnail,
+    pdfGetPageText,
+    getCoursePdfState,
+    setCoursePdfState,
+    consumePrewarmedPage
+  } from '$lib/pdfClient';
+  import { setCourseLastLocation } from '$lib/preferences';
   import {
     markupUi,
     addStrokes,
@@ -204,16 +212,109 @@
   let activeSearchRects = $state<[number, number, number, number][]>([]);
 
   let viewportContainerEl = $state<HTMLDivElement>();
-  let pageElements = new Map<number, HTMLDivElement>();
   let thumbnailUrls = $state<Record<number, string>>({});
 
-  function registerPage(el: HTMLDivElement, pageIdx: number) {
-    pageElements.set(pageIdx, el);
-    return {
-      destroy() {
-        pageElements.delete(pageIdx);
+  // ── Page visibility via one shared IntersectionObserver ──────────────────
+  // The browser owns visibility: one observer instance watches every page
+  // wrapper with a 45%-of-viewport prefetch margin. Entries drive
+  // current-page tracking, the render scheduler, and pruning — no geometry
+  // math, so nothing can drift from the real DOM.
+  let pageEls: HTMLElement[] = [];
+  const visiblePageIndices = new Set<number>();
+  let sharedPageObserver: IntersectionObserver | undefined;
+  let scrollRafId: number | null = null;
+  let containerResizeObserver: ResizeObserver | undefined;
+  let wasContainerHidden = false;
+
+  /** Focal line for "current page": 110px below the container top, under
+   *  the floating toolbar and reading guide. */
+  const FOCAL_OFFSET_PX = 110;
+
+  /** Caches every page wrapper in index order (also used by scrollIntoView
+   *  and PencilKit stroke matching). */
+  function collectPageEls(): void {
+    if (!viewportContainerEl) return;
+    pageEls = Array.from(
+      viewportContainerEl.querySelectorAll<HTMLElement>('[data-page-wrap]')
+    );
+  }
+
+  /** Current page = the intersecting page containing the focal line. */
+  function updateCurrentPage() {
+    if (isProgrammaticScroll || !viewportContainerEl || visiblePageIndices.size === 0) return;
+    const containerRect = viewportContainerEl.getBoundingClientRect();
+    const focalY = containerRect.top + FOCAL_OFFSET_PX;
+    let bestPage = -1;
+    let minDistance = Infinity;
+    for (const idx of visiblePageIndices) {
+      const el = pageEls[idx];
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top <= focalY && rect.bottom > focalY) {
+        bestPage = idx + 1;
+        break;
       }
-    };
+      const dist = Math.abs(rect.top - focalY);
+      if (dist < minDistance) {
+        minDistance = dist;
+        bestPage = idx + 1;
+      }
+    }
+    if (bestPage > 0 && bestPage !== currentPage) {
+      currentPage = bestPage;
+    }
+  }
+
+  /** Bounds of the pages currently intersecting (prefetch margin included),
+   *  or null when nothing intersects. */
+  function visibleBounds(): [number, number] | null {
+    if (visiblePageIndices.size === 0) return null;
+    let minVis = Infinity;
+    let maxVis = -Infinity;
+    for (const idx of visiblePageIndices) {
+      if (idx < minVis) minVis = idx;
+      if (idx > maxVis) maxVis = idx;
+    }
+    return [minVis, maxVis];
+  }
+
+  function initPageObserver(): void {
+    sharedPageObserver?.disconnect();
+    sharedPageObserver = undefined;
+    visiblePageIndices.clear();
+    if (!viewportContainerEl) return;
+    sharedPageObserver = new IntersectionObserver(
+      (entries) => {
+        let changed = false;
+        for (const entry of entries) {
+          const idx = Number((entry.target as HTMLElement).dataset.pageIndex);
+          if (!Number.isFinite(idx)) continue;
+          if (entry.isIntersecting) {
+            if (!visiblePageIndices.has(idx)) {
+              visiblePageIndices.add(idx);
+              changed = true;
+            }
+          } else if (visiblePageIndices.delete(idx)) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          updateCurrentPage();
+          scheduleLookahead();
+        }
+      },
+      {
+        root: viewportContainerEl,
+        // Percentage margins resolve against the root's own height, so the
+        // prefetch band scales with the viewport instead of a fixed pixel
+        // margin that only suits phone-sized pages.
+        rootMargin: '45% 0px 45% 0px',
+        threshold: 0.01
+      }
+    );
+    for (const el of pageEls) {
+      sharedPageObserver.observe(el);
+    }
   }
 
   const totalPages = $derived(docInfo.pages.length);
@@ -225,155 +326,132 @@
 
   // ── Central Lookahead Page Scheduler & Two-Tier LRU Cache ──────────────────
   const MAX_CONCURRENT_RENDERS = 2;
-  const MAX_CACHED_PAGES = 12;
+  // Sized to hold the visible band plus the widest fast-scroll lookahead so
+  // pages rendered ahead of a fling are not pruned before they arrive.
+  const MAX_CACHED_PAGES = 16;
+  /** Scroll speed above which the lookahead extends further in the scroll
+   *  direction (px/ms, measured per animation frame). */
+  const FAST_SCROLL_VELOCITY_PX_PER_MS = 1.0;
+  /** Queued pages farther than this from the visible band are stale and get
+   *  dropped instead of rendered. */
+  const STALE_QUEUE_MARGIN_PAGES = 12;
 
   let pageBlobUrls = $state<Record<number, string>>({});
   let pageScales = $state<Record<number, number>>({});
   let pageLoading = $state<Record<number, boolean>>({});
 
-  const visiblePageIndices = new Set<number>();
   const activeRenders = new Set<number>();
-
   interface QueueItem {
     pageIndex: number;
     priority: number;
     scale: number;
     epoch: number;
   }
-  let renderQueue: QueueItem[] = [];
+  let renderQueue = $state<QueueItem[]>([]);
   let isQueueRunning = false;
-  let zoomEpoch = 0;
+  let zoomEpoch = $state(0);
 
   let lastScrollTop = 0;
   let lastScrollTime = 0;
+  let scrollVelocity = 0;
   let scrollDirection: 'down' | 'up' | 'idle' = 'idle';
-  let isFlinging = false;
-  let flingTimer: ReturnType<typeof setTimeout> | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let zoomDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
-  let sharedPageObserver: IntersectionObserver | undefined;
   let isProgrammaticScroll = false;
   let programmaticScrollTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function updateCurrentPage() {
-    if (isProgrammaticScroll || !viewportContainerEl || totalPages === 0) return;
-    const containerRect = viewportContainerEl.getBoundingClientRect();
-    // Focal line: 110px below container top (just under floating toolbar and guide)
-    const focalY = containerRect.top + 110;
-
-    // Fast check: is currentPage already correct?
-    const currentEl = pageElements.get(currentPage - 1);
-    if (currentEl) {
-      const r = currentEl.getBoundingClientRect();
-      if (r.top <= focalY && r.bottom > focalY) {
-        return;
-      }
-    }
-
-    let bestPage = -1;
-    let minDistance = Infinity;
-
-    for (let i = 0; i < totalPages; i++) {
-      const el = pageElements.get(i);
-      if (!el) continue;
-      const rect = el.getBoundingClientRect();
-
-      if (rect.top <= focalY && rect.bottom > focalY) {
-        bestPage = i + 1;
-        break;
-      }
-
-      const dist = Math.abs(rect.top - focalY);
-      if (dist < minDistance) {
-        minDistance = dist;
-        bestPage = i + 1;
-      }
-    }
-
-    if (bestPage > 0 && bestPage !== currentPage) {
-      currentPage = bestPage;
-    }
-  }
-
-  function initPageObserver() {
-    if (sharedPageObserver) {
-      sharedPageObserver.disconnect();
-      sharedPageObserver = undefined;
-    }
-    if (!viewportContainerEl) return;
-
-    sharedPageObserver = new IntersectionObserver(
-      (entries) => {
-        let changed = false;
-        for (const entry of entries) {
-          const idx = Number((entry.target as HTMLElement).dataset.pageIndex);
-          if (Number.isFinite(idx)) {
-            if (entry.isIntersecting) {
-              if (!visiblePageIndices.has(idx)) {
-                visiblePageIndices.add(idx);
-                changed = true;
-              }
-            } else {
-              if (visiblePageIndices.has(idx)) {
-                visiblePageIndices.delete(idx);
-                changed = true;
-              }
-            }
-          }
-        }
-        if (changed) {
-          updateCurrentPage();
-          scheduleLookahead();
-        }
-      },
-      {
-        root: viewportContainerEl,
-        // Percentage margins resolve against the root's own height, so the
-        // prefetch window scales with the viewport (≈615px on a 12.9" iPad)
-        // instead of a fixed 250px that only suits phone-sized pages.
-        rootMargin: '45% 0px 45% 0px',
-        threshold: 0.01
-      }
-    );
-
-    for (const el of pageElements.values()) {
-      sharedPageObserver.observe(el);
-    }
-  }
-
-  function observePage(node: HTMLElement, pageIdx: number) {
-    node.dataset.pageIndex = String(pageIdx);
-    pageElements.set(pageIdx, node as HTMLDivElement);
-    sharedPageObserver?.observe(node);
-
-    return {
-      destroy() {
-        sharedPageObserver?.unobserve(node);
-        pageElements.delete(pageIdx);
-        visiblePageIndices.delete(pageIdx);
-      }
-    };
-  }
-
+  // Scroll events can fire per frame during momentum scrolling; coalesce the
+  // bookkeeping to one pass per animation frame. Visibility itself is driven
+  // by the IntersectionObserver, so this only tracks direction and velocity
+  // (for lookahead ordering).
   function handleCanvasScroll() {
-    if (!viewportContainerEl) return;
-    const currentScrollTop = viewportContainerEl.scrollTop;
-    const dy = currentScrollTop - lastScrollTop;
+    if (scrollRafId !== null) return;
+    scrollRafId = requestAnimationFrame(() => {
+      scrollRafId = null;
+      if (!viewportContainerEl) return;
+      const currentScrollTop = viewportContainerEl.scrollTop;
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const dt = now - lastScrollTime;
+      const dy = currentScrollTop - lastScrollTop;
 
-    if (Math.abs(dy) > 4) {
-      scrollDirection = dy > 0 ? 'down' : 'up';
+      if (Math.abs(dy) > 4) {
+        scrollDirection = dy > 0 ? 'down' : 'up';
+      }
+      // px/ms, smoothed so a single janky frame doesn't flip the fast path
+      if (dt > 0 && dt < 100) {
+        const instantVelocity = dy / dt;
+        scrollVelocity = scrollVelocity * 0.6 + instantVelocity * 0.4;
+      }
+
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        scrollDirection = 'idle';
+        scrollVelocity = 0;
+        scheduleLookahead();
+      }, 250);
+
+      lastScrollTop = currentScrollTop;
+      lastScrollTime = now;
+    });
+  }
+
+  // ── Text-layer extraction scheduler ──────────────────────────────────────
+  // pdfGetPageText contends for the same pdfium document mutex as page
+  // renders, so extraction runs through a single slot that pauses while any
+  // page render is in flight.
+  const pendingTextRequests: number[] = [];
+  const activeTextRequests = new Set<number>();
+  const textDeferreds = new Map<number, (spans: TextSpan[] | null) => void>();
+  let textDrainTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function pumpTextQueue() {
+    if (activeTextRequests.size > 0) return;
+    if (activeRenders.size > 0) {
+      // Page renders take priority — retry shortly after they settle
+      clearTimeout(textDrainTimer);
+      textDrainTimer = setTimeout(pumpTextQueue, 300);
+      return;
     }
+    const nextIdx = pendingTextRequests.shift();
+    if (nextIdx === undefined) return;
+    const resolve = textDeferreds.get(nextIdx);
+    textDeferreds.delete(nextIdx);
+    if (!resolve) {
+      pumpTextQueue();
+      return;
+    }
+    activeTextRequests.add(nextIdx);
+    pdfGetPageText(docPath, nextIdx)
+      .then((spans) => resolve(spans), () => resolve(null))
+      .finally(() => {
+        activeTextRequests.delete(nextIdx);
+        pumpTextQueue();
+      });
+  }
 
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      scrollDirection = 'idle';
-      scheduleLookahead();
-    }, 250);
+  function requestPageText(pageIndex: number): Promise<TextSpan[] | null> {
+    return new Promise((resolve) => {
+      textDeferreds.set(pageIndex, resolve);
+      if (!pendingTextRequests.includes(pageIndex)) {
+        pendingTextRequests.push(pageIndex);
+      }
+      pumpTextQueue();
+    });
+  }
 
-    lastScrollTop = currentScrollTop;
-    updateCurrentPage();
-    scheduleLookahead();
+  /** Adopts the idle-prewarmed blob for a page when it matches the wanted
+   *  scale; the blob URL becomes owned by pageBlobUrls on success. */
+  function tryAdoptPrewarmed(pageIndex: number, scale: number): boolean {
+    const url = consumePrewarmedPage(docPath, pageIndex, scale);
+    if (!url) return false;
+    const oldUrl = pageBlobUrls[pageIndex];
+    pageBlobUrls = { ...pageBlobUrls, [pageIndex]: url };
+    pageScales = { ...pageScales, [pageIndex]: scale };
+    if (oldUrl && oldUrl !== url) {
+      URL.revokeObjectURL(oldUrl);
+    }
+    return true;
   }
 
   async function drainQueue() {
@@ -414,7 +492,11 @@
         // Asynchronously render page on native thread pool
         void (async () => {
           try {
-            const url = await pdfRenderPage(docPath, pageIndex, scale, 85);
+            // The idle prewarm may have landed since this was queued
+            if (tryAdoptPrewarmed(pageIndex, scale)) {
+              return;
+            }
+            const url = await pdfRenderPage(docPath, pageIndex, scale, 80);
             // Drop stale render if zoom scale changed while in flight
             if (epoch !== zoomEpoch) {
               URL.revokeObjectURL(url);
@@ -424,18 +506,28 @@
             pageBlobUrls = { ...pageBlobUrls, [pageIndex]: url };
             pageScales = { ...pageScales, [pageIndex]: scale };
             if (oldUrl && oldUrl !== url) {
-              URL.revokeObjectURL(oldUrl);
+              // Defer revocation so the compositor paints the new image before old blob is freed
+              setTimeout(() => URL.revokeObjectURL(oldUrl), 1000);
             }
           } catch (err) {
             console.error(`[ViewerToolbar] Error rendering page ${pageIndex + 1}:`, err);
           } finally {
-            pageLoading = { ...pageLoading, [pageIndex]: false };
+            // Remove the key entirely — keeps this map tiny (only in-flight
+            // pages), so the per-render object copies stay cheap.
+            const nextLoading = { ...pageLoading };
+            delete nextLoading[pageIndex];
+            pageLoading = nextLoading;
             activeRenders.delete(pageIndex);
             pruneCache();
             if (epoch !== zoomEpoch) {
               scheduleLookahead();
             } else {
               void drainQueue();
+            }
+            // With all render slots free the pdfium mutex is idle — let the
+            // text-layer queue take its turn
+            if (activeRenders.size === 0) {
+              pumpTextQueue();
             }
           }
         })();
@@ -449,10 +541,10 @@
     const loaded = Object.keys(pageBlobUrls).map(Number);
     if (loaded.length <= MAX_CACHED_PAGES) return;
 
-    const visible = Array.from(visiblePageIndices);
-    if (visible.length === 0) return;
-    const minVis = Math.min(...visible);
-    const maxVis = Math.max(...visible);
+    const visible = visibleBounds();
+    if (!visible) return;
+    const minVis = visible[0];
+    const maxVis = visible[1];
 
     const scored = loaded.map((idx) => {
       const dist = idx < minVis ? (minVis - idx) : idx > maxVis ? (idx - maxVis) : 0;
@@ -466,13 +558,13 @@
       if (dist >= 4 && !activeRenders.has(idx)) {
         const url = pageBlobUrls[idx];
         if (url) {
-          URL.revokeObjectURL(url);
           const nextUrls = { ...pageBlobUrls };
           delete nextUrls[idx];
           pageBlobUrls = nextUrls;
           const nextScales = { ...pageScales };
           delete nextScales[idx];
           pageScales = nextScales;
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
         }
       }
     }
@@ -484,12 +576,12 @@
     let minVis: number;
     let maxVis: number;
 
-    if (visiblePageIndices.size > 0) {
-      const visible = Array.from(visiblePageIndices);
-      minVis = Math.min(...visible);
-      maxVis = Math.max(...visible);
+    const visible = visibleBounds();
+    if (visible) {
+      minVis = visible[0];
+      maxVis = visible[1];
     } else {
-      // Fallback anchor to currentPage if observer hasn't yet reported entries
+      // Fallback anchor to currentPage while the observer hasn't reported yet
       const anchor = Math.max(0, Math.min(totalPages - 1, currentPage - 1));
       minVis = anchor;
       maxVis = anchor;
@@ -498,8 +590,16 @@
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
     const targetScale = Math.min(3.0, Math.max(0.75, zoomScale * dpr));
 
-    // Retain only requests matching the current zoom epoch
-    renderQueue = renderQueue.filter((q) => q.epoch === zoomEpoch);
+    // Keep only current-epoch requests near the visible band: during fast
+    // scrolling the band moves faster than renders complete, so pages the
+    // viewport already left are dropped instead of burning render slots.
+    renderQueue = renderQueue.filter(
+      (q) =>
+        q.epoch === zoomEpoch &&
+        (q.priority === 1 ||
+          (q.pageIndex >= minVis - STALE_QUEUE_MARGIN_PAGES &&
+            q.pageIndex <= maxVis + STALE_QUEUE_MARGIN_PAGES))
+    );
 
     const needed: { pageIndex: number; priority: number }[] = [];
 
@@ -510,17 +610,25 @@
       }
     }
 
-    // 2. Lookahead pages (scroll direction aware)
+    // 2. Lookahead pages (scroll direction aware). A fast fling extends the
+    //    prefetch window so pages arrive ahead of the viewport; the opposite
+    //    side is skipped while moving fast.
+    const fastScroll = Math.abs(scrollVelocity) > FAST_SCROLL_VELOCITY_PX_PER_MS;
+    const reach = fastScroll ? 8 : 3;
     if (scrollDirection === 'down') {
-      if (maxVis + 1 < totalPages) needed.push({ pageIndex: maxVis + 1, priority: 2 });
-      if (maxVis + 2 < totalPages) needed.push({ pageIndex: maxVis + 2, priority: 3 });
-      if (maxVis + 3 < totalPages) needed.push({ pageIndex: maxVis + 3, priority: 3 });
-      if (minVis - 1 >= 0) needed.push({ pageIndex: minVis - 1, priority: 4 });
+      for (let d = 1; d <= reach; d++) {
+        if (maxVis + d < totalPages) {
+          needed.push({ pageIndex: maxVis + d, priority: d <= 2 ? 2 : 3 });
+        }
+      }
+      if (!fastScroll && minVis - 1 >= 0) needed.push({ pageIndex: minVis - 1, priority: 4 });
     } else if (scrollDirection === 'up') {
-      if (minVis - 1 >= 0) needed.push({ pageIndex: minVis - 1, priority: 2 });
-      if (minVis - 2 >= 0) needed.push({ pageIndex: minVis - 2, priority: 3 });
-      if (minVis - 3 >= 0) needed.push({ pageIndex: minVis - 3, priority: 3 });
-      if (maxVis + 1 < totalPages) needed.push({ pageIndex: maxVis + 1, priority: 4 });
+      for (let d = 1; d <= reach; d++) {
+        if (minVis - d >= 0) {
+          needed.push({ pageIndex: minVis - d, priority: d <= 2 ? 2 : 3 });
+        }
+      }
+      if (!fastScroll && maxVis + 1 < totalPages) needed.push({ pageIndex: maxVis + 1, priority: 4 });
     } else {
       if (minVis - 1 >= 0) needed.push({ pageIndex: minVis - 1, priority: 2 });
       if (maxVis + 1 < totalPages) needed.push({ pageIndex: maxVis + 1, priority: 2 });
@@ -570,6 +678,9 @@
 
       clearTimeout(zoomDebounceTimer);
       zoomDebounceTimer = setTimeout(() => {
+        // Page heights changed; the IntersectionObserver re-reports the
+        // visible set once layout settles, and this kicks the re-render pass
+        // for whatever is now on screen.
         scheduleLookahead();
       }, 60);
     }
@@ -590,6 +701,12 @@
           zoomScale: z,
           sideBarThumbnails: thumbs
         });
+        if (resolvedCourseId) {
+          setCourseLastLocation(resolvedCourseId, {
+            tab: 'book',
+            pdfPage: p
+          });
+        }
       }, 200);
     }
   });
@@ -598,7 +715,7 @@
     const clamped = Math.max(1, Math.min(totalPages, pageNum));
     currentPage = clamped;
 
-    // Prevent observer/scroll events during smooth scroll animation from overriding currentPage
+    // Prevent scroll events during smooth scroll animation from overriding currentPage
     isProgrammaticScroll = true;
     clearTimeout(programmaticScrollTimer);
     programmaticScrollTimer = setTimeout(() => {
@@ -606,8 +723,8 @@
       updateCurrentPage();
     }, instant ? 50 : 450);
 
-    // Fast-path: immediately queue target page at Priority 1 without contaminating
-    // visiblePageIndices (which is strictly managed by sharedPageObserver).
+    // Fast-path: adopt the idle-prewarmed blob, or queue the target page at
+    // Priority 1 so jumps never land on a skeleton.
     const targetIdx = clamped - 1;
     const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
     const targetScale = Math.min(3.0, Math.max(0.75, zoomScale * dpr));
@@ -616,22 +733,17 @@
       Math.abs(currentScale - targetScale) < 0.10 * targetScale;
 
     if (!alreadyLoaded && !activeRenders.has(targetIdx)) {
-      renderQueue = renderQueue.filter((q) => q.pageIndex !== targetIdx);
-      renderQueue.unshift({ pageIndex: targetIdx, priority: 1, scale: targetScale, epoch: zoomEpoch });
-      void drainQueue();
+      if (!tryAdoptPrewarmed(targetIdx, targetScale)) {
+        renderQueue = renderQueue.filter((q) => q.pageIndex !== targetIdx);
+        renderQueue.unshift({ pageIndex: targetIdx, priority: 1, scale: targetScale, epoch: zoomEpoch });
+        void drainQueue();
+      }
     }
 
-    const targetEl = pageElements.get(targetIdx);
-    if (targetEl && viewportContainerEl) {
-      targetEl.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
-    } else if (viewportContainerEl) {
-      requestAnimationFrame(() => {
-        const el = pageElements.get(targetIdx);
-        if (el && viewportContainerEl) {
-          el.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
-        }
-      });
-    }
+    // Let the browser position the page: scroll-mt-20 on the wrappers keeps
+    // the usual 80px breathing room above it.
+    const targetEl = pageEls[targetIdx];
+    targetEl?.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
   }
 
   function handlePageInputChange(e: KeyboardEvent | FocusEvent) {
@@ -723,16 +835,52 @@
     }
   }
 
-  // Fetch thumbnail for sidebar
-  async function loadThumbnail(pageIdx: number) {
-    if (thumbnailUrls[pageIdx]) return;
-    try {
-      const url = await pdfRenderThumbnail(docPath, pageIdx, 120);
-      thumbnailUrls = { ...thumbnailUrls, [pageIdx]: url };
-    } catch (err) {
-      console.error(`[Thumbnail] Failed page ${pageIdx + 1}:`, err);
+  // ── Thumbnail scheduler: capped, prioritized by proximity to the current
+  // page. Unthrottled thumbnail renders used to starve full-page renders of
+  // the pdfium document mutex when the sidebar restored open.
+  const MAX_CONCURRENT_THUMBNAIL_RENDERS = 2;
+  let thumbnailQueue = $state<number[]>([]);
+  const activeThumbnailRenders = new Set<number>();
+
+  function drainThumbnailQueue() {
+    while (
+      thumbnailQueue.length > 0 &&
+      activeThumbnailRenders.size < MAX_CONCURRENT_THUMBNAIL_RENDERS
+    ) {
+      const anchor = currentPage - 1;
+      thumbnailQueue.sort((a, b) => Math.abs(a - anchor) - Math.abs(b - anchor));
+      const idx = thumbnailQueue.shift()!;
+      if (thumbnailUrls[idx]) continue;
+      activeThumbnailRenders.add(idx);
+      void pdfRenderThumbnail(docPath, idx, 120)
+        .then((url) => {
+          thumbnailUrls = { ...thumbnailUrls, [idx]: url };
+        })
+        .catch((err) => {
+          console.error(`[Thumbnail] Failed page ${idx + 1}:`, err);
+        })
+        .finally(() => {
+          activeThumbnailRenders.delete(idx);
+          drainThumbnailQueue();
+        });
     }
   }
+
+  // Queue a sidebar thumbnail render (triggered lazily by the sidebar's own
+  // IntersectionObserver)
+  function loadThumbnail(pageIdx: number) {
+    if (thumbnailUrls[pageIdx] || activeThumbnailRenders.has(pageIdx)) return;
+    if (thumbnailQueue.includes(pageIdx)) return;
+    thumbnailQueue.push(pageIdx);
+    drainThumbnailQueue();
+  }
+
+  // Sidebar closed: pending thumbnails are irrelevant
+  $effect(() => {
+    if (!sideBarThumbnails) {
+      thumbnailQueue = [];
+    }
+  });
 
   let thumbnailObserver: IntersectionObserver | undefined;
 
@@ -762,8 +910,6 @@
   }
 
   onMount(() => {
-    initPageObserver();
-
     const remembered = getCoursePdfState(docPath);
     if (remembered) {
       previousZoomScale = remembered.zoomScale;
@@ -793,9 +939,38 @@
     }
 
     currentPage = targetPage;
+
+    // After Svelte flushes the zoom-derived page heights: jump to the target
+    // page FIRST, then attach the observer. Initial entries therefore
+    // describe the target neighborhood — nothing renders at the top of the
+    // book before the remembered-page jump.
     tick().then(() => {
+      collectPageEls();
       scrollToPage(targetPage, true);
+      initPageObserver();
+      scheduleLookahead();
     });
+
+    // display:none (tab switched away) resets scrollTop; restore the page
+    // when the viewport becomes visible again.
+    containerResizeObserver = new ResizeObserver(() => {
+      const el = viewportContainerEl;
+      if (!el) return;
+      const hidden = el.clientWidth === 0 || el.clientHeight === 0;
+      if (hidden) {
+        wasContainerHidden = true;
+        return;
+      }
+      if (wasContainerHidden) {
+        wasContainerHidden = false;
+        collectPageEls();
+        scrollToPage(currentPage, true);
+        scheduleLookahead();
+      }
+    });
+    if (viewportContainerEl) {
+      containerResizeObserver.observe(viewportContainerEl);
+    }
 
     if (typeof document !== 'undefined') {
       document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -808,35 +983,33 @@
       const vx0 = pts[0];
       const vy0 = pts[1];
 
-      // Match the page that contains (vx0, vy0)
-      let matchedIdx = -1;
-      let matchedRect: DOMRect | null = null;
-
-      for (const [idx, el] of pageElements) {
-        const r = el.getBoundingClientRect();
-        if (vx0 >= r.left && vx0 <= r.right && vy0 >= r.top && vy0 <= r.bottom) {
-          matchedIdx = idx;
-          matchedRect = r;
-          break;
-        }
-      }
-
-      // If stroke started slightly outside exact box, match closest page vertically
-      if (matchedIdx === -1) {
-        let minDist = Infinity;
-        for (const [idx, el] of pageElements) {
-          const r = el.getBoundingClientRect();
-          const centerY = (r.top + r.bottom) / 2;
-          const dist = Math.abs(vy0 - centerY);
-          if (dist < minDist) {
-            minDist = dist;
-            matchedIdx = idx;
-            matchedRect = r;
+      // Attribute the stroke to the visible page containing its first point;
+      // a stroke can only start on a page that is on screen, so the visible
+      // set is a tiny (2-5 entry) search space.
+      const matched = (() => {
+        let closest = -1;
+        let closestDist = Infinity;
+        for (const idx of visiblePageIndices) {
+          const el = pageEls[idx];
+          if (!el) continue;
+          const rect = el.getBoundingClientRect();
+          if (vx0 >= rect.left && vx0 <= rect.right && vy0 >= rect.top && vy0 <= rect.bottom) {
+            return { idx, rect };
+          }
+          const dist = Math.abs(vy0 - (rect.top + rect.bottom) / 2);
+          if (dist < closestDist) {
+            closestDist = dist;
+            closest = idx;
           }
         }
-      }
-
-      if (matchedIdx === -1 || !matchedRect) return;
+        if (closest >= 0 && pageEls[closest]) {
+          return { idx: closest, rect: pageEls[closest].getBoundingClientRect() };
+        }
+        return null;
+      })();
+      if (!matched) return;
+      const matchedIdx = matched.idx;
+      const matchedRect = matched.rect;
 
       const page = docInfo.pages[matchedIdx];
       if (!page) return;
@@ -915,9 +1088,17 @@
     if (typeof document !== 'undefined') {
       document.removeEventListener('fullscreenchange', handleFullscreenChange);
     }
+    if (scrollRafId !== null) {
+      cancelAnimationFrame(scrollRafId);
+      scrollRafId = null;
+    }
+    containerResizeObserver?.disconnect();
     sharedPageObserver?.disconnect();
+    sharedPageObserver = undefined;
+    visiblePageIndices.clear();
     thumbnailObserver?.disconnect();
-    clearTimeout(flingTimer);
+    thumbnailQueue = [];
+    clearTimeout(textDrainTimer);
     clearTimeout(idleTimer);
     clearTimeout(zoomDebounceTimer);
     clearTimeout(programmaticScrollTimer);
@@ -988,6 +1169,7 @@
     />
 
     <!-- Top Floating Control Bar (Right-side, under tabs) -->
+
     <div
       data-pdf-floating-bar
       class="absolute top-3 right-4 z-30 pointer-events-auto inline-flex items-center space-x-1.5 p-1 rounded-xl bg-white/90 dark:bg-stone-900/90 backdrop-blur-md border border-stone-200/90 dark:border-stone-800/90 shadow-lg text-stone-700 dark:text-stone-200"
@@ -1173,7 +1355,7 @@
     >
       <div class="min-w-full w-max mx-auto flex flex-col items-center space-y-8 px-4">
         {#each docInfo.pages as page, idx}
-          <div use:registerPage={idx} use:observePage={idx} class="flex justify-center w-full scroll-mt-20">
+          <div data-page-wrap={idx} data-page-index={idx} class="flex justify-center w-full scroll-mt-20">
             <PageRenderer
               {docPath}
               pageIndex={idx}
@@ -1186,6 +1368,7 @@
               isLoading={Boolean(pageLoading[idx])}
               searchRects={activeSearchPage === idx ? activeSearchRects : []}
               courseId={resolvedCourseId}
+              {requestPageText}
               onStrokeDrawn={(f) => (lastDrawnFile = f)}
             />
           </div>

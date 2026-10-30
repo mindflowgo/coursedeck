@@ -44,6 +44,7 @@ export async function pdfGetInfo(path: string): Promise<PdfDocumentInfo> {
 
 export async function pdfCloseDocument(path: string): Promise<void> {
   docInfoCache.delete(path);
+  discardPrewarmedPages(path);
   if (!isTauriEnvironment()) return;
   try {
     await invoke('pdf_close_document', { path });
@@ -56,7 +57,7 @@ export async function pdfRenderPage(
   path: string,
   pageIndex: number,
   scale = 1.5,
-  quality = 85
+  quality = 80
 ): Promise<string> {
   const rawBytes = await invoke<ArrayBuffer>('pdf_render_page', {
     path,
@@ -142,6 +143,15 @@ export function setCoursePdfState(docPath: string, state: CoursePdfState): void 
   } catch {}
 }
 
+export {
+  shouldAdoptPrewarmedPage,
+  storePrewarmedPage,
+  consumePrewarmedPage,
+  discardPrewarmedPages,
+  type PrewarmedPageBlob
+} from './pdfPrewarm';
+import { storePrewarmedPage, discardPrewarmedPages } from './pdfPrewarm';
+
 export function prewarmCourseBook(courseId: string): void {
   if (typeof window === 'undefined' || !isTauriEnvironment() || !courseId) return;
   const key = `coursedeck_opened_book_${courseId.toLowerCase()}`;
@@ -150,7 +160,21 @@ export function prewarmCourseBook(courseId: string): void {
       const url = `/api/courses/${courseId}/assets/locker_docs/course.pdf`;
       const idle = (window as any).requestIdleCallback || ((cb: () => void) => setTimeout(cb, 1200));
       idle(() => {
-        void pdfGetInfo(url).catch(() => {});
+        void pdfGetInfo(url)
+          .then((info) => {
+            // Warm the remembered reading page too: parse + raster + JPEG
+            // once during idle so the book opens on a ready image.
+            const remembered = getCoursePdfState(url);
+            const page = remembered?.page;
+            if (!page || page < 1 || page > info.page_count) return;
+            const dpr = window.devicePixelRatio || 1;
+            const zoom = remembered?.zoomScale || 1;
+            const scale = Math.min(3.0, Math.max(0.75, zoom * dpr));
+            return pdfRenderPage(url, page - 1, scale, 80).then((blobUrl) => {
+              storePrewarmedPage(url, { pageIndex: page - 1, url: blobUrl, scale });
+            });
+          })
+          .catch(() => {});
       });
     }
   } catch {

@@ -93,7 +93,7 @@
   import FloatingCheckpointTrigger from '$lib/components/FloatingCheckpointTrigger.svelte';
   import CheckpointMarker from '$lib/components/CheckpointMarker.svelte';
   import CheckpointModal from '$lib/components/CheckpointModal.svelte';
-  import { getResumeLastPosition, resolveLastAccessedCourseRoute } from '$lib/preferences';
+  import { getResumeLastPosition, resolveLastAccessedCourseRoute, setCourseLastLocation } from '$lib/preferences';
 
   let courseId = $derived($page.params.course_id);
   let course: CourseManifest | null = $state(null);
@@ -928,6 +928,14 @@
     activeTab = tab;
     isEditing = false;
     showPromptCard = false;
+    if (courseId) {
+      setCourseLastLocation(courseId, {
+        tab,
+        lessonId: isCourseScope ? 'course' : selectedLessonId,
+        isCourseScope,
+        isUnitScope
+      });
+    }
     const tabSuffix = (tab !== 'lesson' || isUnitScope) ? `/${tab}` : '';
     if (isCourseScope) {
       loadCourseDocument(tab);
@@ -959,6 +967,14 @@
       if (activeTab !== 'test' && activeTab !== 'logs' && activeTab !== 'book') {
         activeTab = 'test';
       }
+      if (courseId) {
+        setCourseLastLocation(courseId, {
+          tab: activeTab,
+          lessonId: 'course',
+          isCourseScope: true,
+          isUnitScope: false
+        });
+      }
       await loadCourseDocument(activeTab);
       const targetUrl = `/courses/${(courseId || '').toLowerCase()}/course/${activeTab}`;
       if ($page.url.pathname !== targetUrl) {
@@ -983,6 +999,14 @@
     await loadLesson(lessonId);
     console.log(`[NAV] selectLesson loaded → tab=${activeTab}`);
     const targetTab = activeTab;
+    if (courseId) {
+      setCourseLastLocation(courseId, {
+        tab: targetTab,
+        lessonId,
+        isCourseScope: false,
+        isUnitScope: isUnitScopeId(lessonId)
+      });
+    }
     const tabSuffix = targetTab && (targetTab !== 'lesson' || isUnitScopeId(lessonId)) ? `/${targetTab}` : '';
     const targetUrl = `/courses/${(courseId || '').toLowerCase()}/${encodeURIComponent(lessonId)}${tabSuffix}`;
     if ($page.url.pathname !== targetUrl) {
@@ -2057,6 +2081,21 @@
           showPromptCard = false;
         }
 
+        if (targetTab === 'book' && course?.id) {
+          hasLoadedBookOnce = true;
+          lastLoadedBookCourseId = course.id;
+          recordCourseBookOpened(course.id);
+        }
+
+        if (courseId) {
+          setCourseLastLocation(courseId, {
+            tab: targetTab,
+            lessonId: 'course',
+            isCourseScope: true,
+            isUnitScope: false
+          });
+        }
+
         if (scopeChanged || tabChanged || !tabContents[targetTab]) {
           await loadCourseDocument(targetTab);
           if (routeMovedOn()) throw ROUTE_MOVED_ON;
@@ -2098,6 +2137,15 @@
           if (isCustomTabSlug(targetTab) && lessonBundle && !lessonBundle.tabs?.[targetTab]) {
             await createCustomTab(targetTab, customTabDisplayName(targetTab));
             if (routeMovedOn()) throw ROUTE_MOVED_ON;
+          }
+
+          if (courseId) {
+            setCourseLastLocation(courseId, {
+              tab: targetTab,
+              lessonId: targetLesson,
+              isCourseScope: false,
+              isUnitScope: true
+            });
           }
 
           const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}/${targetTab}`;
@@ -2162,6 +2210,14 @@
           }
 
           if (targetLesson) {
+            if (courseId) {
+              setCourseLastLocation(courseId, {
+                tab: targetTab,
+                lessonId: targetLesson,
+                isCourseScope: false,
+                isUnitScope: false
+              });
+            }
             const tabSuffix = targetTab !== 'lesson' ? `/${targetTab}` : '';
             const canonical = `/courses/${courseId.toLowerCase()}/${encodeURIComponent(targetLesson)}${tabSuffix}`;
             const canonicalTarget = getCanonicalTarget(canonical);

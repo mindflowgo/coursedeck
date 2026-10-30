@@ -44,6 +44,100 @@ export interface ResolvedCourseResumeTarget {
   tab: string;
   verticalPosition: number;
   href: string;
+  pdfPage?: number | null;
+}
+
+export interface CourseLastLocation {
+  courseId: string;
+  lessonId: string;
+  tab: string;
+  isCourseScope: boolean;
+  isUnitScope: boolean;
+  pdfPage?: number | null;
+  updatedAt: number;
+}
+
+export function getCourseLastLocation(courseId: string): CourseLastLocation | null {
+  if (typeof localStorage === 'undefined' || !courseId) return null;
+  try {
+    const raw = localStorage.getItem(`coursedeck_last_location_${courseId.toLowerCase().trim()}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.tab === 'string') {
+        return {
+          courseId: String(parsed.courseId || courseId).toLowerCase(),
+          lessonId: String(parsed.lessonId || ''),
+          tab: String(parsed.tab),
+          isCourseScope: Boolean(parsed.isCourseScope),
+          isUnitScope: Boolean(parsed.isUnitScope),
+          pdfPage: typeof parsed.pdfPage === 'number' && Number.isFinite(parsed.pdfPage) ? parsed.pdfPage : null,
+          updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : Date.now()
+        };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export function setCourseLastLocation(
+  courseId: string,
+  loc: {
+    lessonId?: string;
+    tab: string;
+    isCourseScope?: boolean;
+    isUnitScope?: boolean;
+    pdfPage?: number | null;
+  }
+): void {
+  if (typeof localStorage === 'undefined' || !courseId) return;
+  try {
+    const cleanId = courseId.toLowerCase().trim();
+    const prev = getCourseLastLocation(cleanId);
+    const updated: CourseLastLocation = {
+      courseId: cleanId,
+      lessonId: loc.lessonId !== undefined ? loc.lessonId : (prev?.lessonId || ''),
+      tab: loc.tab,
+      isCourseScope: loc.isCourseScope !== undefined ? loc.isCourseScope : Boolean(prev?.isCourseScope),
+      isUnitScope: loc.isUnitScope !== undefined ? loc.isUnitScope : Boolean(prev?.isUnitScope),
+      pdfPage: loc.pdfPage !== undefined ? loc.pdfPage : (prev?.pdfPage ?? null),
+      updatedAt: Date.now()
+    };
+    localStorage.setItem(`coursedeck_last_location_${cleanId}`, JSON.stringify(updated));
+  } catch {}
+}
+
+export function buildCourseResumeUrl(
+  courseId: string,
+  location?: CourseLastLocation | null
+): string {
+  const cleanId = (courseId || '').toLowerCase().trim();
+  if (!cleanId) return '/';
+
+  const loc = location !== undefined ? location : getCourseLastLocation(cleanId);
+  if (!loc) return `/courses/${cleanId}`;
+
+  const pageParam = (loc.tab === 'book' && typeof loc.pdfPage === 'number' && loc.pdfPage > 0)
+    ? `?page=${loc.pdfPage}`
+    : '';
+
+  if (loc.isCourseScope || loc.lessonId === 'course') {
+    const tab = loc.tab || 'lesson';
+    return `/courses/${cleanId}/course/${tab}${pageParam}`;
+  }
+
+  if (loc.isUnitScope) {
+    const unitLesson = loc.lessonId || 'unit_1';
+    const tab = loc.tab || 'assignments';
+    return `/courses/${cleanId}/${encodeURIComponent(unitLesson)}/${tab}${pageParam}`;
+  }
+
+  if (loc.lessonId) {
+    const tab = loc.tab || 'lesson';
+    const tabSuffix = tab !== 'lesson' ? `/${tab}` : '';
+    return `/courses/${cleanId}/${encodeURIComponent(loc.lessonId)}${tabSuffix}${pageParam}`;
+  }
+
+  return `/courses/${cleanId}`;
 }
 
 /**
@@ -92,13 +186,41 @@ export function resolveLastAccessedCourseRoute(
   checkpoints: Checkpoint[],
   allLessons: Array<{ id: string; code?: string }>
 ): ResolvedCourseResumeTarget | null {
+  const cleanCourseId = (courseId || '').toLowerCase().trim();
+
+  // 1. Explicit last visited location takes precedence
+  const lastLoc = getCourseLastLocation(cleanCourseId);
+  if (lastLoc) {
+    if (!lastLoc.isCourseScope && !lastLoc.isUnitScope && lastLoc.lessonId) {
+      const matched = matchLessonId(allLessons, lastLoc.lessonId);
+      if (matched) {
+        return {
+          isCourseScope: false,
+          lessonId: matched.id,
+          tab: lastLoc.tab,
+          verticalPosition: 0,
+          href: buildCourseResumeUrl(cleanCourseId, { ...lastLoc, lessonId: matched.id }),
+          pdfPage: lastLoc.pdfPage ?? null
+        };
+      }
+    } else {
+      return {
+        isCourseScope: lastLoc.isCourseScope,
+        lessonId: lastLoc.lessonId,
+        tab: lastLoc.tab,
+        verticalPosition: 0,
+        href: buildCourseResumeUrl(cleanCourseId, lastLoc),
+        pdfPage: lastLoc.pdfPage ?? null
+      };
+    }
+  }
+
+  // 2. Fall back to checkpoint-based resolution
   const mostRecent = getMostRecentPositionCheckpoint(checkpoints);
   if (!mostRecent) return null;
 
   const parsed = parseDocFileName(mostRecent.file);
   if (!parsed) return null;
-
-  const cleanCourseId = (courseId || '').toLowerCase();
 
   if (parsed.isCourseScope) {
     if (parsed.tab !== 'test') return null;

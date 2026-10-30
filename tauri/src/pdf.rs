@@ -143,15 +143,22 @@ impl PdfEngine {
         self.with_document(path, |doc| {
             let pages = doc.pages();
             let page_count = pages.len();
-            let mut page_infos = Vec::with_capacity(page_count as usize);
 
-            for (idx, page) in pages.iter().enumerate() {
-                page_infos.push(PdfPageInfo {
+            // page_sizes() reads each MediaBox via FPDF_GetPageSizeByIndexF.
+            // Iterating pages instead (FPDF_LoadPage + close per page) made
+            // get_info latency scale with page count on large course books.
+            let sizes = pages
+                .page_sizes()
+                .map_err(|e| format!("Failed to read page dimensions: {e}"))?;
+            let page_infos = sizes
+                .iter()
+                .enumerate()
+                .map(|(idx, size)| PdfPageInfo {
                     page_index: idx as u16,
-                    width: page.width().value,
-                    height: page.height().value,
-                });
-            }
+                    width: size.width().value,
+                    height: size.height().value,
+                })
+                .collect::<Vec<_>>();
 
             Ok(PdfDocumentInfo {
                 page_count,
@@ -674,7 +681,7 @@ pub async fn pdf_render_page(
     let engine = engine_from_state(&state)?;
     let resolved = resolve_pdf_path(&app, &path);
     let scale_factor = scale.unwrap_or(1.5).clamp(0.2, 4.0);
-    let q = quality.unwrap_or(85).clamp(20, 100);
+    let q = quality.unwrap_or(80).clamp(20, 100);
 
     tauri::async_runtime::spawn_blocking(move || {
         let bytes = engine.render_page_jpeg(&resolved, page_index, scale_factor, q)?;
