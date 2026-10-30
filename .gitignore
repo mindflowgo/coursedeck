@@ -16,8 +16,8 @@ tauripad/gen/apple/assets
 tauri/server
 tauri/server.exe
 tauri/server-*.exe
-tauri/gen/schemas
-tauripad/gen/schemas
+tauri/gen/
+tauripad/gen/
 *.data.zip
 data/**/*.zip
 tauri/bin/
