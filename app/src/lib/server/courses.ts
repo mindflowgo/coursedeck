@@ -190,7 +190,7 @@ export class CourseService {
    */
   static updateCourseMeta(
     courseId: string,
-    patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF'>>
+    patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF' | 'group'>>
   ): CourseManifest | null {
     const courseFolder = this.courseDir(courseId);
     const metaPath = safeJoin(courseFolder, 'meta.json');
@@ -212,6 +212,13 @@ export class CourseService {
           manifest.coursePDF = true;
         } else {
           delete manifest.coursePDF;
+        }
+      }
+      if (patch.group !== undefined) {
+        if (patch.group && patch.group.trim()) {
+          manifest.group = patch.group.trim();
+        } else {
+          delete manifest.group;
         }
       }
       fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');

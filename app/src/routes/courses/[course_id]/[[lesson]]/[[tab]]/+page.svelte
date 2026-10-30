@@ -60,7 +60,7 @@
     Book,
     BookOpen,
     FileText,
-    ListCollapse,
+    UserPen,
     Sparkles,
     CheckCircle2,
     Eye,
@@ -2491,8 +2491,10 @@
         {/if}
       </div>
 
-      <!-- Middle: Study Tabs (Course | Unit | Lesson) - Desktop / Tablet (>= 480px) -->
-      <div class="hidden xs:block max-w-full overflow-x-auto scrollbar-none py-0.5">
+      <!-- Right: Study Tabs (Desktop >= 480px) & Tab Dropdown (Mobile < 480px) -->
+      <div class="flex items-center space-x-1.5 sm:space-x-2 shrink min-w-0 ml-auto justify-end">
+        <!-- Desktop / Tablet (>= 480px) -->
+        <div class="hidden xs:block max-w-full overflow-x-auto scrollbar-none py-0.5">
         <div class="inline-flex rounded-lg border border-stone-200 dark:border-stone-800 p-0.5 bg-stone-100 dark:bg-stone-800/70 text-xs font-medium shrink-0">
         {#if isCourseScope}
           {#if course?.coursePDF}
@@ -2615,7 +2617,7 @@
             onclick={() => switchTab('notes')}
             class="flex items-center space-x-1.5 px-3 py-1 rounded-md transition {activeTab === 'notes' ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 shadow-2xs font-semibold' : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'}"
           >
-            <ListCollapse class="w-3.5 h-3.5" />
+            <UserPen class="w-3.5 h-3.5" />
             <span><i>My</i>Work</span>
           </button>
 
@@ -2649,10 +2651,8 @@
         </div>
       </div>
 
-      <!-- Right: Mobile Tab Dropdown & Markup / Done Controls -->
-      <div class="flex items-center space-x-1.5 sm:space-x-2 shrink-0">
-        <!-- Mobile Compact Tab Dropdown (< 480px) -->
-        <div class="block xs:hidden relative shrink-0 {isMobileTabDropdownOpen ? 'z-50' : ''}">
+      <!-- Mobile Compact Tab Dropdown (< 480px) -->
+      <div class="block xs:hidden relative shrink-0 {isMobileTabDropdownOpen ? 'z-50' : ''}">
         <button
           type="button"
           onclick={() => (isMobileTabDropdownOpen = !isMobileTabDropdownOpen)}
@@ -2667,7 +2667,7 @@
           {:else if activeTab === 'summary'}
             <Sparkles class="w-3.5 h-3.5 shrink-0 text-amber-500" />
           {:else if activeTab === 'notes' || activeTab === 'studysheet'}
-            <ListCollapse class="w-3.5 h-3.5 shrink-0 text-blue-500" />
+            <UserPen class="w-3.5 h-3.5 shrink-0 text-blue-500" />
           {:else if activeTab === 'schedule'}
             <CalendarDays class="w-3.5 h-3.5 shrink-0 text-stone-600 dark:text-stone-300" />
           {:else if activeTab === 'assignments'}
@@ -2855,7 +2855,7 @@
                   class="flex w-full items-center justify-between px-3 py-2 text-left transition cursor-pointer {activeTab === 'notes' ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800/60'}"
                 >
                   <div class="flex items-center space-x-2 truncate">
-                    <ListCollapse class="w-3.5 h-3.5 text-stone-500 shrink-0" />
+                    <UserPen class="w-3.5 h-3.5 text-stone-500 shrink-0" />
                     <span class="truncate"><i>My</i>Work</span>
                   </div>
                   {#if activeTab === 'notes'}

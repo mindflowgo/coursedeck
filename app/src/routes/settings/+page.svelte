@@ -4,6 +4,7 @@
   import Header from '$lib/components/Header.svelte';
   import PromptsManager from '$lib/components/PromptsManager.svelte';
   import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
+  import CourseGroupsSettings from '$lib/components/settings/CourseGroupsSettings.svelte';
   import { onMount } from 'svelte';
   import { apiFetch, isTauriEnvironment, isTauriDesktop } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
@@ -849,6 +850,9 @@
         </select>
       </div>
     {/if}
+
+    <!-- Course Groups Row -->
+    <CourseGroupsSettings />
 
     <!-- Return to Most Recent Position in Course Row -->
     <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

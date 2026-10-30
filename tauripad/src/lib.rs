@@ -224,6 +224,12 @@ fn extract_sync_zip(app: &tauri::AppHandle, bytes: &[u8]) -> Result<SyncZipSumma
                 if let Some(list) = value.get("prompts").and_then(|v| v.as_array()) {
                     prompts = list.clone();
                 }
+                if let Some(groups_val) = value.get("groups") {
+                    let data_dir = courses_dir.parent().unwrap_or(&courses_dir);
+                    if let Ok(json_str) = serde_json::to_string_pretty(groups_val) {
+                        let _ = std::fs::write(data_dir.join("groups.json"), json_str);
+                    }
+                }
             }
             continue;
         }
@@ -889,6 +895,29 @@ fn get_storage_path(app: tauri::AppHandle) -> Result<String, String> {
     Ok(courses_dir.to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn get_groups_json(app: tauri::AppHandle) -> Result<String, String> {
+    let courses_dir = get_courses_dir(&app)?;
+    let data_dir = courses_dir.parent().unwrap_or(&courses_dir);
+    let path = data_dir.join("groups.json");
+    if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
+    } else {
+        Ok("[]".to_string())
+    }
+}
+
+#[tauri::command]
+fn save_groups_json(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    let courses_dir = get_courses_dir(&app)?;
+    let data_dir = courses_dir.parent().unwrap_or(&courses_dir);
+    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+    let path = data_dir.join("groups.json");
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    eprintln!("[tauripad-fs] save_groups_json: saved {:?}", path);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[allow(unused_mut)]
@@ -926,6 +955,8 @@ pub fn run() {
             get_annotations,
             save_annotations,
             get_storage_path,
+            get_groups_json,
+            save_groups_json,
             save_prompts,
             list_prompts,
             save_prompt,

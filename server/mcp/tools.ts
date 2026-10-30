@@ -263,6 +263,7 @@ export function registerMcpTools(mcp: McpServer): void {
       grade: z.string().optional().default('11').describe("Grade level, e.g. '11' or '12'"),
       level: z.string().optional().default('University').describe("Academic level, e.g. 'University', 'College', or 'Open'"),
       description: z.string().optional().default('').describe('Optional course syllabus description'),
+      group: z.string().optional().describe('Optional course group name'),
       format: z.enum(['markdown', 'json']).default('markdown').describe('Output format: "markdown" (default, human-readable confirmation) or "json" (structured result)')
     }),
     handler: async (args) => {

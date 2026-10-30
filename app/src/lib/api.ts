@@ -159,7 +159,6 @@ const ONLINE_ONLY: Array<{ methods?: string[]; pattern: RegExp }> = [
   { pattern: /^\/api\/courses\/[^/]+\/prompt-context/ },
   { methods: ['POST'], pattern: /^\/api\/courses\/[^/]+\/course-docs$/ },
   // Course lifecycle (backend-managed ingest)
-  { methods: ['POST'], pattern: /^\/api\/courses$/ },
   { pattern: /^\/api\/courses\/[^/]+\/open/ },
   { pattern: /^\/api\/courses\/[^/]+\/schedule\/mark-lesson-done$/ },
   // Server & external services
@@ -278,12 +277,15 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     if (!title) return jsonRes({ message: 'Course title is required.' }, 400);
 
     const units = Array.isArray(body.units) ? body.units : [];
+    const group = typeof body.group === 'string' && body.group.trim() ? body.group.trim() : undefined;
     const manifest = {
       id: courseId,
       title,
       grade: body.grade || '11',
       level: body.level || 'University',
       description: body.description || '',
+      ...(group ? { group } : {}),
+      coursePDF: Boolean(body.coursePDF),
       updatedAt: new Date().toISOString(),
       units: units.map((u: any, uIdx: number) => ({
         number: Number(u.number) || uIdx + 1,
@@ -291,10 +293,16 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
         lessons: (Array.isArray(u.lessons) ? u.lessons : []).map((l: any, lIdx: number) => ({
           id: l.id || `${String(uIdx + 1).padStart(2, '0')}.${String(lIdx + 1).padStart(2, '0')}`,
           title: l.title || `Lesson ${lIdx + 1}`,
-          type: l.type === 'assignment' ? 'assignment' : 'lesson'
+          type: l.type === 'assignment' ? 'assignment' : 'lesson',
+          pageRange: typeof l.pageRange === 'string' && l.pageRange.trim() ? l.pageRange.trim() : undefined,
+          readingDescription: typeof l.readingDescription === 'string' && l.readingDescription.trim() ? l.readingDescription.trim() : undefined
         }))
       }))
     };
+
+    if (group) {
+      await store.addGroupLocally('course', group);
+    }
 
     await store.saveCourseManifestLocally(courseId, manifest);
 
@@ -374,6 +382,15 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
       if (typeof body.title === 'string') course.title = body.title;
       if (typeof body.description === 'string') course.description = body.description;
       if (typeof body.archived === 'boolean') course.archived = body.archived;
+      if (body.group !== undefined) {
+        const trimmedGroup = typeof body.group === 'string' ? body.group.trim() : '';
+        if (trimmedGroup) {
+          course.group = trimmedGroup;
+          await store.addGroupLocally('course', trimmedGroup);
+        } else {
+          delete course.group;
+        }
+      }
       await store.saveCourseManifestLocally(courseId, course);
       return jsonRes({ success: true, course });
     }
@@ -607,6 +624,55 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
       localStorage.setItem('app_theme', theme);
     }
     return jsonRes({ success: true, theme });
+  }
+
+  // GET /api/settings/groups
+  if (method === 'GET' && (pathname === '/api/settings/groups' || pathname === '/api/settings/course-groups')) {
+    const type = searchParams.get('type') || (pathname.includes('course-groups') ? 'course' : undefined);
+    const groups = await store.getGroupsLocally(type);
+    const names = groups.map((g) => g.name);
+    return jsonRes({ success: true, names, groups });
+  }
+
+  // POST /api/settings/groups
+  if (method === 'POST' && (pathname === '/api/settings/groups' || pathname === '/api/settings/course-groups')) {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const type = body.type || (pathname.includes('course-groups') ? 'course' : 'course');
+    const action = body.action || (body.name ? 'add' : 'groups');
+
+    if (action === 'add') {
+      const name = (body.name || '').trim();
+      if (!name) return jsonRes({ message: 'Group name is required' }, 400);
+      const { group, groups } = await store.addGroupLocally(type, name);
+      const names = groups.filter((g) => g.type.toLowerCase() === type.toLowerCase()).map((g) => g.name);
+      return jsonRes({ success: true, group, groups, names });
+    }
+
+    if (action === 'rename') {
+      const oldName = (body.oldName || '').trim();
+      const newName = (body.newName || '').trim();
+      if (!oldName || !newName) return jsonRes({ message: 'Both oldName and newName are required' }, 400);
+      const { groups, updatedCount } = await store.renameGroupLocally(type, oldName, newName);
+      const names = groups.filter((g) => g.type.toLowerCase() === type.toLowerCase()).map((g) => g.name);
+      return jsonRes({ success: true, groups, names, updatedCount });
+    }
+
+    if (action === 'delete') {
+      const name = (body.name || '').trim();
+      if (!name) return jsonRes({ message: 'Group name is required' }, 400);
+      const clearEntities = body.clearEntities !== false;
+      const { groups, updatedCount } = await store.deleteGroupLocally(type, name, clearEntities);
+      const names = groups.filter((g) => g.type.toLowerCase() === type.toLowerCase()).map((g) => g.name);
+      return jsonRes({ success: true, groups, names, updatedCount });
+    }
+
+    if (action === 'groups' || Array.isArray(body.names)) {
+      const names = Array.isArray(body.names) ? body.names : [];
+      const updatedNames = await store.reorderGroupsLocally(type, names);
+      return jsonRes({ success: true, names: updatedNames });
+    }
+
+    return jsonRes({ message: 'Invalid action' }, 400);
   }
 
   // GET /api/llm

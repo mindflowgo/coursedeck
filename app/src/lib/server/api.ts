@@ -41,6 +41,7 @@ import { QuestionParser } from '../parser/questionParser';
 import { formatUnitScopeId, courseDocFileName } from '../tabs';
 import { NotFoundError, ConflictError, ValidationError } from './services/errors';
 import { CourseService as CourseManagerService } from './services/course.service';
+import { GroupService } from './services/group.service';
 import { extractTextFromPdf } from './pdfText';
 
 /**
@@ -643,7 +644,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               apiKey: includeLlmKeys ? card.apiKey : undefined
             }))
           },
-          prompts: PromptService.listPrompts()
+          prompts: PromptService.listPrompts(),
+          groups: GroupService.getAllGroups()
         }
       });
 
@@ -1643,6 +1645,83 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       return json({ success: true, message: `Opened ${dataDir}`, path: dataDir });
     }
 
+    // ---- /api/settings/groups (or legacy /api/settings/course-groups) ----
+    if (pathname === '/api/settings/groups' || pathname === '/api/settings/course-groups') {
+      const type = (url.searchParams.get('type') || '').toLowerCase().trim();
+      if (method === 'GET') {
+        const groups = type ? GroupService.getGroups(type) : GroupService.getAllGroups();
+        return json({
+          success: true,
+          type: type || undefined,
+          groups,
+          names: groups.map((g) => g.name)
+        });
+      }
+      if (method === 'POST') {
+        const body = (await req.json().catch(() => ({}))) as Record<string, any>;
+        const groupType = (body.type || type || 'course').toLowerCase().trim();
+
+        if (body.action === 'add') {
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!name) return error(400, 'Group name cannot be empty');
+          const result = GroupService.addGroup(groupType, name);
+          const typeGroups = GroupService.getGroups(groupType);
+          return json({
+            success: true,
+            type: groupType,
+            group: result.group,
+            groups: typeGroups,
+            names: typeGroups.map((g) => g.name)
+          });
+        }
+
+        if (body.action === 'rename') {
+          const oldName = typeof body.oldName === 'string' ? body.oldName.trim() : '';
+          const newName = typeof body.newName === 'string' ? body.newName.trim() : '';
+          if (!oldName || !newName) return error(400, 'oldName and newName are required');
+          const result = GroupService.renameGroup(groupType, oldName, newName);
+          const typeGroups = GroupService.getGroups(groupType);
+          return json({
+            success: true,
+            type: groupType,
+            groups: typeGroups,
+            names: typeGroups.map((g) => g.name),
+            updatedCount: result.updatedCount
+          });
+        }
+
+        if (body.action === 'delete') {
+          const name = typeof body.name === 'string' ? body.name.trim() : '';
+          if (!name) return error(400, 'Group name cannot be empty');
+          const result = GroupService.deleteGroup(groupType, name, Boolean(body.clearEntities ?? true));
+          const typeGroups = GroupService.getGroups(groupType);
+          return json({
+            success: true,
+            type: groupType,
+            groups: typeGroups,
+            names: typeGroups.map((g) => g.name),
+            updatedCount: result.updatedCount
+          });
+        }
+
+        if (Array.isArray(body.groups)) {
+          const names = body.groups
+            .map((g: any) => (typeof g === 'string' ? g : g?.name || ''))
+            .filter(Boolean);
+          GroupService.reorderGroups(groupType, names);
+          const typeGroups = GroupService.getGroups(groupType);
+          return json({
+            success: true,
+            type: groupType,
+            groups: typeGroups,
+            names: typeGroups.map((g) => g.name)
+          });
+        }
+
+        return error(400, "Invalid action or payload. Expected 'add', 'rename', 'delete', or 'groups' array.");
+      }
+    }
+
     // ---- /api/settings/mcp ----
     if (pathname === '/api/settings/mcp') {
       const mcpInfo = getMcpServerInfo();
@@ -2029,6 +2108,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       const grade = typeof body.grade === 'string' ? body.grade.trim() : '11';
       const level = typeof body.level === 'string' ? body.level.trim() : 'University';
       const description = typeof body.description === 'string' ? body.description.trim() : '';
+      const group = typeof body.group === 'string' && body.group.trim() ? body.group.trim() : undefined;
 
       try {
         CourseManagerService.createCourse({
@@ -2037,8 +2117,13 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           grade,
           level,
           description,
-          coursePDF: Boolean(body.coursePDF)
+          coursePDF: Boolean(body.coursePDF),
+          group
         });
+
+        if (group) {
+          GroupService.addGroup('course', group);
+        }
 
         // If units or lessons are provided, inject them
         const lessonsToInject: Array<{
@@ -2333,7 +2418,7 @@ Grade/Level: ${grade || 'High School'}`;
       if (subpath === 'meta' && method === 'PUT') {
         const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
-        const patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF'>> = {};
+        const patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF' | 'group'>> = {};
         if (body.title !== undefined) {
           if (typeof body.title !== 'string' || !body.title.trim()) {
             return error(400, 'title must be a non-empty string');
@@ -2358,8 +2443,17 @@ Grade/Level: ${grade || 'High School'}`;
           }
           patch.coursePDF = body.coursePDF;
         }
+        if (body.group !== undefined) {
+          if (body.group === null || (typeof body.group === 'string' && !body.group.trim())) {
+            patch.group = '';
+          } else if (typeof body.group === 'string') {
+            patch.group = body.group.trim();
+          } else {
+            return error(400, 'group must be a string or null');
+          }
+        }
         if (Object.keys(patch).length === 0) {
-          return error(400, "Nothing to update — provide 'title', 'description', 'archived', or 'coursePDF'");
+          return error(400, "Nothing to update — provide 'title', 'description', 'archived', 'coursePDF', or 'group'");
         }
 
         if (!CourseService.getCourse(courseId)) {
@@ -2368,6 +2462,10 @@ Grade/Level: ${grade || 'High School'}`;
         const updated = CourseService.updateCourseMeta(courseId, patch);
         if (!updated) {
           return error(500, `Failed to update metadata for course ${courseId}`);
+        }
+
+        if (patch.group) {
+          GroupService.addGroup('course', patch.group);
         }
         return json({ success: true, course: CourseService.getCourse(courseId) });
       }

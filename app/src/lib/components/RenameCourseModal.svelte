@@ -1,20 +1,35 @@
 <script lang="ts">
   import { PenLine, X, AlertCircle, Loader2 } from 'lucide-svelte';
+  import GroupSelector from '$lib/components/groups/GroupSelector.svelte';
+  import { apiFetch } from '$lib/api';
 
   interface Props {
     isOpen: boolean;
     onClose: () => void;
     /** Persist the new metadata; resolve false to surface an error in the modal. */
-    onSave: (title: string, description: string) => Promise<boolean>;
+    onSave: (title: string, description: string, group?: string) => Promise<boolean>;
     courseId: string;
     title: string;
     description: string;
+    group?: string;
+    availableGroups?: string[];
   }
 
-  let { isOpen, onClose, onSave, courseId, title, description }: Props = $props();
+  let {
+    isOpen,
+    onClose,
+    onSave,
+    courseId,
+    title,
+    description,
+    group = '',
+    availableGroups = []
+  }: Props = $props();
 
   let titleValue = $state('');
   let descriptionValue = $state('');
+  let groupValue = $state('');
+  let localGroups = $state<string[]>([]);
   let validationError = $state<string | null>(null);
   let isSaving = $state(false);
 
@@ -22,10 +37,32 @@
     if (isOpen) {
       titleValue = title;
       descriptionValue = description;
+      groupValue = group || '';
+      localGroups = [...availableGroups];
       validationError = null;
       isSaving = false;
     }
   });
+
+  async function handleCreateGroup(name: string) {
+    const res = await apiFetch('/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'course', action: 'add', name })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'Failed to create group');
+    }
+    const data = await res.json();
+    if (Array.isArray(data.names)) {
+      localGroups = data.names;
+    } else if (Array.isArray(data.groups)) {
+      localGroups = data.groups.map((g: any) => (typeof g === 'string' ? g : g?.name || ''));
+    } else if (!localGroups.includes(name)) {
+      localGroups = [...localGroups, name];
+    }
+  }
 
   async function handleSave() {
     const trimmedTitle = titleValue.trim();
@@ -35,7 +72,7 @@
     }
     validationError = null;
     isSaving = true;
-    const ok = await onSave(trimmedTitle, descriptionValue.trim());
+    const ok = await onSave(trimmedTitle, descriptionValue.trim(), groupValue);
     isSaving = false;
     if (ok) onClose();
     else validationError = 'Could not save — please try again.';
@@ -105,6 +142,18 @@
             placeholder="Short description shown in course listings and AI prompts"
             class="w-full px-3 py-2 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-xs text-stone-900 dark:text-stone-100 focus:ring-1 focus:ring-stone-400 outline-none resize-none"
           ></textarea>
+        </div>
+
+        <div>
+          <GroupSelector
+            id="rename-group"
+            value={groupValue}
+            groups={localGroups}
+            label="Course Group"
+            noneLabel="None (Ungrouped)"
+            onSelect={(g) => (groupValue = g)}
+            onCreateGroup={handleCreateGroup}
+          />
         </div>
 
         {#if validationError}

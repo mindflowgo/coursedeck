@@ -9,6 +9,8 @@ mod settings;
 mod window_state;
 mod courses_fs;
 pub mod pdf;
+#[cfg(target_os = "windows")]
+mod windows_process;
 
 /// Writes a base64-encoded file (e.g. an exported PDF) to a user-chosen path
 /// coming from the save dialog. Runs with extension and destination validation.
@@ -219,7 +221,11 @@ fn open_course_folder(app: tauri::AppHandle, course_id: String, path: Option<Str
     open_directory(&dir_to_open)
 }
 
-struct BackendProcess(std::sync::Mutex<Option<std::process::Child>>);
+struct BackendProcess {
+    child: std::sync::Mutex<Option<std::process::Child>>,
+    #[cfg(target_os = "windows")]
+    _job: std::sync::Mutex<Option<windows_process::JobObjectHandle>>,
+}
 
 const BACKEND_PORT: u16 = 3182;
 
@@ -526,6 +532,42 @@ fn wait_for_backend(timeout: std::time::Duration) -> bool {
     false
 }
 
+/// Terminate the backend server and its entire process tree cleanly.
+///
+/// Thread-safe and idempotent: takes the Child handle from the managed
+/// mutex, ensuring the termination logic runs at most once regardless
+/// of which lifecycle hook (WindowEvent::Destroyed, RunEvent::ExitRequested,
+/// RunEvent::Exit) triggers it first.
+pub fn terminate_backend(app_handle: &tauri::AppHandle) {
+    if let Some(proc) = app_handle.try_state::<BackendProcess>() {
+        let child_opt = if let Ok(mut lock) = proc.child.lock() {
+            lock.take()
+        } else {
+            None
+        };
+
+        if let Some(mut child) = child_opt {
+            let pid = child.id();
+            println!("[Tauri] Terminating backend server (pid: {pid})...");
+
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                let _ = std::process::Command::new("taskkill")
+                    .args(["/F", "/T", "/PID", &pid.to_string()])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output();
+            }
+
+            let _ = child.kill();
+            let _ = child.wait();
+
+            println!("[Tauri] Backend server terminated.");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -557,6 +599,8 @@ pub fn run() {
             courses_fs::list_prompts,
             courses_fs::save_prompt,
             courses_fs::delete_prompt,
+            courses_fs::get_groups_json,
+            courses_fs::save_groups_json,
             pdf::pdf_get_info,
             pdf::pdf_render_page,
             pdf::pdf_render_thumbnail,
@@ -574,7 +618,15 @@ pub fn run() {
             // Start local backend server for packaged app
             let child = start_backend_process(app);
             let backend_spawned = child.is_some();
-            app.manage(BackendProcess(std::sync::Mutex::new(child)));
+
+            #[cfg(target_os = "windows")]
+            let job = child.as_ref().and_then(windows_process::assign_to_job_object);
+
+            app.manage(BackendProcess {
+                child: std::sync::Mutex::new(child),
+                #[cfg(target_os = "windows")]
+                _job: std::sync::Mutex::new(job),
+            });
 
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
@@ -607,13 +659,7 @@ pub fn run() {
         .expect("error while running tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
-                if let Some(proc) = app_handle.try_state::<BackendProcess>() {
-                    if let Ok(mut lock) = proc.0.lock() {
-                        if let Some(mut child) = lock.take() {
-                            let _ = child.kill();
-                        }
-                    }
-                }
+                terminate_backend(app_handle);
             }
         });
 }

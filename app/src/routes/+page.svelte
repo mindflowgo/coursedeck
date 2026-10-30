@@ -30,7 +30,9 @@
     QrCode,
     Download,
     ChevronDown,
-    ListCollapse,
+    ChevronRight,
+    Check,
+    UserPen,
     Paperclip,
     FileCode,
     ScrollText,
@@ -38,6 +40,8 @@
   } from 'lucide-svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
   import RenameCourseModal from '$lib/components/RenameCourseModal.svelte';
+  import GroupSection from '$lib/components/groups/GroupSection.svelte';
+  import { createGroupCollapseStore } from '$lib/components/groups/groupState.svelte';
   import { apiFetch, isTauriDesktop, isTauriEnvironment } from '$lib/api';
   import { openScanDesktopModal } from '$lib/modalState.svelte';
   import { stripCourseCodePrefix } from '$lib/courses';
@@ -45,6 +49,7 @@
   import { buildCourseAggregatedMarkdown, type CoursePdfExportType } from '$lib/pdf/coursePdfAggregator';
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { getResumeLastPosition, buildCourseResumeUrl } from '$lib/preferences';
+  import { edgeIndent } from '$lib/edgeIndent';
 
   const isTauri = isTauriEnvironment();
   let courses: CourseManifest[] = $state(cachedCoursesList || []);
@@ -58,6 +63,115 @@
   let exportingType = $state<CoursePdfExportType | null>(null);
   let renamingCourse = $state<CourseManifest | null>(null);
   let isRenameModalOpen = $state(false);
+  let groupMenuCourseId = $state<string | null>(null);
+  let isCreatingGroupInMenu = $state<string | null>(null);
+  let newGroupNameInput = $state('');
+  let isSubmittingNewGroup = $state(false);
+
+  const groupState = createGroupCollapseStore('coursedeck_courses_collapsed_groups', false);
+  let allGroups = $state<Array<{ id: string; name: string; type: string }>>([]);
+  let courseGroups = $derived(
+    allGroups.filter((g) => g.type === 'course').map((g) => g.name)
+  );
+
+  let availableCourseGroups = $derived.by(() => {
+    const set = new Set<string>();
+    const list: string[] = [];
+    for (const g of courseGroups) {
+      if (!set.has(g.toLowerCase())) {
+        set.add(g.toLowerCase());
+        list.push(g);
+      }
+    }
+    for (const c of courses) {
+      if (c.group && c.group.trim() && !set.has(c.group.trim().toLowerCase())) {
+        set.add(c.group.trim().toLowerCase());
+        list.push(c.group.trim());
+      }
+    }
+    return list;
+  });
+
+  async function loadGroups() {
+    try {
+      const res = await apiFetch('/api/settings/groups');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.groups)) {
+          allGroups = data.groups;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load groups for courses page:', e);
+    }
+  }
+
+  async function handleSetCourseGroup(course: CourseManifest, targetGroupName: string) {
+    const trimmed = targetGroupName.trim();
+    if (trimmed === (course.group || '').trim()) {
+      openMenuCourseId = null;
+      groupMenuCourseId = null;
+      isCreatingGroupInMenu = null;
+      return;
+    }
+
+    const previousGroup = course.group;
+    if (trimmed) {
+      course.group = trimmed;
+      groupState.setCollapsed(trimmed, false);
+    } else {
+      delete course.group;
+      groupState.setCollapsed('__ungrouped__', false);
+    }
+    courses = [...courses];
+    openMenuCourseId = null;
+    groupMenuCourseId = null;
+    isCreatingGroupInMenu = null;
+
+    try {
+      const res = await apiFetch(`/api/courses/${course.id}/meta`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group: trimmed })
+      });
+      if (!res.ok) {
+        throw new Error('Failed to update course group');
+      }
+      void loadCourses();
+    } catch (err) {
+      console.error('Failed to update course group:', err);
+      course.group = previousGroup;
+      courses = [...courses];
+    }
+  }
+
+  async function handleCreateAndAssignGroup(course: CourseManifest) {
+    const trimmed = newGroupNameInput.trim();
+    if (!trimmed) return;
+
+    isSubmittingNewGroup = true;
+    try {
+      const res = await apiFetch('/api/settings/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add', type: 'course', name: trimmed })
+      });
+
+      if (res.ok) {
+        if (!allGroups.some((g) => g.type === 'course' && g.name.toLowerCase() === trimmed.toLowerCase())) {
+          allGroups = [...allGroups, { id: trimmed.toLowerCase(), name: trimmed, type: 'course' }];
+        }
+      }
+
+      await handleSetCourseGroup(course, trimmed);
+    } catch (err) {
+      console.error('Failed to create and assign group:', err);
+    } finally {
+      isSubmittingNewGroup = false;
+      isCreatingGroupInMenu = null;
+      newGroupNameInput = '';
+    }
+  }
 
   interface LockerDoc {
     filename: string;
@@ -229,6 +343,7 @@
 
   onMount(() => {
     loadCourses();
+    loadGroups();
   });
 
   function handleCourseUploaded(courseId: string) {
@@ -300,7 +415,7 @@
     }
   }
 
-  async function handleRenameSave(title: string, description: string): Promise<boolean> {
+  async function handleRenameSave(title: string, description: string, group?: string): Promise<boolean> {
     if (!renamingCourse) return false;
     const courseId = renamingCourse.id;
     busyCourseId = courseId;
@@ -308,14 +423,18 @@
       const res = await apiFetch(`/api/courses/${courseId}/meta`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, description })
+        body: JSON.stringify({
+          title,
+          description,
+          group: group !== undefined ? group : renamingCourse.group
+        })
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         console.error('Failed to rename course:', data.message || res.statusText);
         return false;
       }
-      await loadCourses();
+      await Promise.all([loadCourses(), loadGroups()]);
       return true;
     } catch (e) {
       console.error('Failed to rename course:', e);
@@ -336,12 +455,87 @@
     const archived = courses.filter((c) => c.archived && matches(c));
     return [...active, ...archived];
   });
+
+  interface CourseGroupBucket {
+    id: string;
+    name: string;
+    courses: CourseManifest[];
+    isUngrouped?: boolean;
+  }
+
+  let groupedCourses = $derived.by<CourseGroupBucket[]>(() => {
+    const list = filteredCourses;
+    if (list.length === 0) return [];
+
+    const hasAnyGrouped = list.some((c) => Boolean(c.group && c.group.trim()));
+    if (courseGroups.length === 0 && !hasAnyGrouped) {
+      return [
+        {
+          id: '__all__',
+          name: '',
+          courses: list,
+          isUngrouped: true
+        }
+      ];
+    }
+
+    const buckets: CourseGroupBucket[] = [];
+    const seenCourseIds = new Set<string>();
+
+    // 1. Configured course groups in defined order
+    for (const groupName of courseGroups) {
+      const matching = list.filter(
+        (c) => c.group && c.group.trim().toLowerCase() === groupName.toLowerCase()
+      );
+      if (matching.length > 0) {
+        buckets.push({
+          id: groupName,
+          name: groupName,
+          courses: matching
+        });
+        matching.forEach((c) => seenCourseIds.add(c.id));
+      }
+    }
+
+    // 2. Extra groups present on courses
+    for (const c of list) {
+      if (c.group && c.group.trim() && !seenCourseIds.has(c.id)) {
+        const gName = c.group.trim();
+        const existing = buckets.find((b) => b.name.toLowerCase() === gName.toLowerCase());
+        if (existing) {
+          existing.courses.push(c);
+        } else {
+          buckets.push({
+            id: gName,
+            name: gName,
+            courses: [c]
+          });
+        }
+        seenCourseIds.add(c.id);
+      }
+    }
+
+    // 3. Ungrouped courses
+    const ungrouped = list.filter((c) => !seenCourseIds.has(c.id));
+    if (ungrouped.length > 0) {
+      buckets.push({
+        id: '__ungrouped__',
+        name: buckets.length > 0 ? 'Ungrouped' : '',
+        courses: ungrouped,
+        isUngrouped: true
+      });
+    }
+
+    return buckets;
+  });
 </script>
 
 <svelte:window
   onkeydown={(e) => {
     if (e.key === 'Escape') {
       openMenuCourseId = null;
+      groupMenuCourseId = null;
+      isCreatingGroupInMenu = null;
       openDownloadCourseId = null;
     }
   }}
@@ -421,8 +615,9 @@
       {/if}
     </div>
   {:else}
-    <div class="flex flex-col divide-y divide-stone-200/60 dark:divide-stone-800/60 sm:grid sm:grid-cols-2 lg:grid-cols-3 sm:gap-6 sm:divide-y-0">
-      {#each filteredCourses as course}
+    {#snippet courseGrid(coursesToRender: CourseManifest[])}
+      <div class="flex flex-col divide-y divide-stone-200/60 dark:divide-stone-800/60 sm:grid sm:grid-cols-2 lg:grid-cols-3 sm:gap-6 sm:divide-y-0">
+        {#each coursesToRender as course (course.id)}
         {@const totalLessons = course.units.reduce((acc, u) => acc + u.lessons.length, 0)}
         <div
           role="button"
@@ -442,10 +637,12 @@
                  without letting it navigate the card link. -->
             <div
               role="presentation"
-              class="fixed inset-0 z-10"
+              class="fixed inset-0 z-20"
               onclick={(e) => {
                 e.preventDefault();
                 openMenuCourseId = null;
+                groupMenuCourseId = null;
+                isCreatingGroupInMenu = null;
               }}
             ></div>
           {/if}
@@ -459,7 +656,15 @@
             onclick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              openMenuCourseId = openMenuCourseId === course.id ? null : course.id;
+              if (openMenuCourseId === course.id) {
+                openMenuCourseId = null;
+                groupMenuCourseId = null;
+                isCreatingGroupInMenu = null;
+              } else {
+                openMenuCourseId = course.id;
+                groupMenuCourseId = null;
+                isCreatingGroupInMenu = null;
+              }
             }}
             class="absolute top-3 right-3 z-20 p-1 rounded-md text-stone-300 dark:text-stone-600 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
           >
@@ -474,17 +679,22 @@
             <div
               role="menu"
               tabindex="-1"
-              class="absolute top-9 right-3 z-30 w-36 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-lg py-1 text-xs focus:outline-none"
+              use:edgeIndent
+              class="absolute top-9 right-3 z-30 w-40 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-lg py-1 text-xs focus:outline-none"
               onclick={(e) => e.preventDefault()}
               onkeydown={() => {}}
             >
               <button
                 type="button"
                 role="menuitem"
+                onmouseenter={() => {
+                  groupMenuCourseId = null;
+                }}
                 onclick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   openMenuCourseId = null;
+                  groupMenuCourseId = null;
                   renamingCourse = course;
                   isRenameModalOpen = true;
                 }}
@@ -494,14 +704,145 @@
                 <span>Rename</span>
               </button>
 
+              <!-- To Group item with cascading submenu -->
+              <div class="relative">
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={groupMenuCourseId === course.id}
+                  onmouseenter={() => {
+                    groupMenuCourseId = course.id;
+                  }}
+                  onclick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    groupMenuCourseId = groupMenuCourseId === course.id ? null : course.id;
+                  }}
+                  class="flex w-full items-center justify-between px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer {groupMenuCourseId === course.id ? 'bg-stone-100 dark:bg-stone-800' : ''}"
+                >
+                  <div class="flex items-center space-x-2">
+                    <Folder class="w-3.5 h-3.5 text-stone-400" />
+                    <span>To Group</span>
+                  </div>
+                  <ChevronRight class="w-3 h-3 text-stone-400" />
+                </button>
+
+                {#if groupMenuCourseId === course.id}
+                  <div
+                    role="menu"
+                    tabindex="-1"
+                    use:edgeIndent={{ isSubmenu: true }}
+                    class="absolute z-40 w-48 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-xl py-1 text-xs focus:outline-none max-h-64 overflow-y-auto"
+                    onclick={(e) => e.stopPropagation()}
+                    onkeydown={() => {}}
+                  >
+                    {#if availableCourseGroups.length > 0}
+                      {#each availableCourseGroups as groupName}
+                        {@const isCurrent = course.group?.trim().toLowerCase() === groupName.toLowerCase()}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onclick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            handleSetCourseGroup(course, groupName);
+                          }}
+                          class="flex w-full items-center justify-between px-3 py-1.5 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
+                        >
+                          <span class="truncate font-medium {isCurrent ? 'text-amber-600 dark:text-amber-400' : ''}">{groupName}</span>
+                          {#if isCurrent}
+                            <Check class="w-3.5 h-3.5 text-amber-500 shrink-0 ml-2" />
+                          {/if}
+                        </button>
+                      {/each}
+                    {:else}
+                      <div class="px-3 py-1.5 text-stone-400 dark:text-stone-500 text-[11px] italic">
+                        No groups yet
+                      </div>
+                    {/if}
+
+                    <div class="my-1 border-t border-stone-100 dark:border-stone-800"></div>
+
+                    {#if isCreatingGroupInMenu === course.id}
+                      <div
+                        role="presentation"
+                        class="p-2 space-y-1.5"
+                        onclick={(e) => e.stopPropagation()}
+                        onkeydown={(e) => e.stopPropagation()}
+                      >
+                        <input
+                          type="text"
+                          placeholder="New group name..."
+                          bind:value={newGroupNameInput}
+                          onkeydown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleCreateAndAssignGroup(course);
+                            } else if (e.key === 'Escape') {
+                              isCreatingGroupInMenu = null;
+                              newGroupNameInput = '';
+                            }
+                          }}
+                          class="w-full px-2 py-1 text-xs rounded border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800 text-stone-900 dark:text-stone-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
+                        />
+                        <div class="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onclick={() => {
+                              isCreatingGroupInMenu = null;
+                              newGroupNameInput = '';
+                            }}
+                            class="px-2 py-0.5 text-[11px] rounded text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            disabled={!newGroupNameInput.trim() || isSubmittingNewGroup}
+                            onclick={() => handleCreateAndAssignGroup(course)}
+                            class="px-2 py-0.5 text-[11px] rounded bg-amber-500 hover:bg-amber-600 text-white font-medium disabled:opacity-50 cursor-pointer"
+                          >
+                            {#if isSubmittingNewGroup}
+                              <Loader2 class="w-3 h-3 animate-spin inline" />
+                            {:else}
+                              Add
+                            {/if}
+                          </button>
+                        </div>
+                      </div>
+                    {:else}
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onclick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          isCreatingGroupInMenu = course.id;
+                          newGroupNameInput = '';
+                        }}
+                        class="flex w-full items-center space-x-2 px-3 py-1.5 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/30 transition cursor-pointer"
+                      >
+                        <Plus class="w-3.5 h-3.5" />
+                        <span>New Group...</span>
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
               {#if course.archived}
                 <button
                   type="button"
                   role="menuitem"
+                  onmouseenter={() => {
+                    groupMenuCourseId = null;
+                  }}
                   onclick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     openMenuCourseId = null;
+                    groupMenuCourseId = null;
                     handleRestoreClick(course);
                   }}
                   class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
@@ -513,10 +854,14 @@
                 <button
                   type="button"
                   role="menuitem"
+                  onmouseenter={() => {
+                    groupMenuCourseId = null;
+                  }}
                   onclick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
                     openMenuCourseId = null;
+                    groupMenuCourseId = null;
                     handleArchiveClick(course);
                   }}
                   class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
@@ -529,10 +874,14 @@
               <button
                 type="button"
                 role="menuitem"
+                onmouseenter={() => {
+                  groupMenuCourseId = null;
+                }}
                 onclick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   openMenuCourseId = null;
+                  groupMenuCourseId = null;
                   openCourseDoc(course.id, 'logs');
                 }}
                 class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
@@ -546,10 +895,14 @@
               <button
                 type="button"
                 role="menuitem"
+                onmouseenter={() => {
+                  groupMenuCourseId = null;
+                }}
                 onclick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   openMenuCourseId = null;
+                  groupMenuCourseId = null;
                   handleDeleteClick(course);
                 }}
                 class="flex w-full items-center space-x-2 px-3 py-2 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 transition cursor-pointer"
@@ -669,6 +1022,7 @@
                   <div
                     role="menu"
                     tabindex="-1"
+                    use:edgeIndent
                     class="absolute left-0 bottom-full mb-1.5 w-56 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 shadow-xl py-1 z-30 text-xs focus:outline-none divide-y divide-stone-100 dark:divide-stone-800"
                     onclick={(e) => e.stopPropagation()}
                     onkeydown={() => {}}
@@ -726,7 +1080,7 @@
                         class="flex w-full items-center justify-between px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer disabled:opacity-50"
                       >
                         <div class="flex items-center space-x-2">
-                          <ListCollapse class="w-3.5 h-3.5 text-blue-500" />
+                          <UserPen class="w-3.5 h-3.5 text-blue-500" />
                           <span class="font-medium">Study-Help Notes</span>
                         </div>
                         <span class="text-[10px] font-medium text-stone-400">PDF</span>
@@ -769,6 +1123,7 @@
                     role="dialog"
                     tabindex="-1"
                     aria-label="Locker Documents"
+                    use:edgeIndent
                     class="absolute right-0 bottom-full mb-1 sm:bottom-auto sm:top-full sm:mt-1 w-72 sm:w-80 rounded-xl bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 shadow-xl z-40 p-2 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100"
                     onclick={(e) => e.stopPropagation()}
                     onkeydown={(e) => {
@@ -863,8 +1218,26 @@
             </div>
           </div>
         </div>
+        {/each}
+      </div>
+    {/snippet}
+
+    <div class="space-y-6">
+      {#each groupedCourses as bucket (bucket.id)}
+        {#if bucket.name}
+          <GroupSection
+            title={bucket.name}
+            count={bucket.courses.length}
+            groupId={bucket.id}
+            isOpen={!groupState.isCollapsed(bucket.id) || Boolean(searchQuery.trim())}
+            onToggle={() => groupState.toggle(bucket.id)}
+          >
+            {@render courseGrid(bucket.courses)}
+          </GroupSection>
+        {:else}
+          {@render courseGrid(bucket.courses)}
+        {/if}
       {/each}
-     
     </div>
   {/if}
 </main>
@@ -882,6 +1255,8 @@
   courseId={renamingCourse?.id ?? ''}
   title={renamingCourse?.title ?? ''}
   description={renamingCourse?.description ?? ''}
+  group={renamingCourse?.group ?? ''}
+  availableGroups={courseGroups}
 />
 
 {#if activeDocument}

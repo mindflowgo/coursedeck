@@ -82,6 +82,8 @@
   let zoomScale = $state(1.0);
   let isPanMode = $state(false);
   let lastScrolledInitialPage = $state<number | null>(null);
+  let isPagePickerOpen = $state(false);
+  let pagePickerContainerEl = $state<HTMLDivElement | null>(null);
 
   $effect(() => {
     const target = initialPage;
@@ -747,20 +749,75 @@
     targetEl?.scrollIntoView({ behavior: instant ? 'auto' : 'smooth', block: 'start' });
   }
 
-  function handlePageInputChange(e: KeyboardEvent | FocusEvent) {
-    const target = e.currentTarget as HTMLInputElement | null;
-    const key = e instanceof KeyboardEvent ? e.key : undefined;
-    if (key === 'Escape') {
-      target?.blur();
+  // Close the enlarged page jumper when clicking/tapping away or pressing Escape
+  $effect(() => {
+    if (!isPagePickerOpen) return;
+
+    function handlePointerDown(e: PointerEvent) {
+      const target = e.target as Node | null;
+      if (pagePickerContainerEl && !pagePickerContainerEl.contains(target)) {
+        isPagePickerOpen = false;
+      }
+    }
+
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        isPagePickerOpen = false;
+        pageInputValue = String(currentPage);
+      }
+    }
+
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  });
+
+  function togglePagePicker() {
+    if (!isPagePickerOpen) {
+      pageInputValue = String(currentPage);
+      isPagePickerOpen = true;
+    } else {
+      isPagePickerOpen = false;
+    }
+  }
+
+  function goToPreviousPage() {
+    if (currentPage > 1) {
+      scrollToPage(currentPage - 1);
+    }
+  }
+
+  function goToNextPage() {
+    if (currentPage < totalPages) {
+      scrollToPage(currentPage + 1);
+    }
+  }
+
+  function handlePageInputChange(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      isPagePickerOpen = false;
       pageInputValue = String(currentPage);
       return;
     }
-    if (!key || key === 'Enter') {
-      const parsed = parseInt(target?.value || '', 10);
+    if (e.key === 'Enter') {
+      const parsed = parseInt(pageInputValue.trim(), 10);
       if (Number.isFinite(parsed)) {
         scrollToPage(parsed);
       }
-      target?.blur();
+      isPagePickerOpen = false;
+    }
+  }
+
+  function handlePageInputBlur() {
+    const parsed = parseInt(pageInputValue.trim(), 10);
+    if (Number.isFinite(parsed) && parsed >= 1 && parsed <= totalPages) {
+      pageInputValue = String(parsed);
+    } else {
+      pageInputValue = String(currentPage);
     }
   }
 
@@ -1309,40 +1366,67 @@
       </button>
     </div>
 
-    <!-- Bottom Floating Page Selector (Bottom Middle) -->
-    <div class="absolute bottom-5 left-1/2 -translate-x-1/2 z-30 pointer-events-auto inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-full bg-white/95 dark:bg-stone-900/95 backdrop-blur-md border border-stone-200/90 dark:border-stone-800/90 shadow-xl text-stone-700 dark:text-stone-200 select-none">
+    <!-- Bottom Floating Page Selector (Bottom Right) -->
+    <div
+      bind:this={pagePickerContainerEl}
+      class="absolute bottom-5 right-5 z-30 pointer-events-auto flex flex-col items-end gap-2"
+    >
+      {#if isPagePickerOpen}
+        <!-- Enlarged Navigation Box (Above Lower Page #) -->
+        <div
+          class="inline-flex items-center gap-2 p-1.5 rounded-2xl bg-white/95 dark:bg-stone-900/95 backdrop-blur-md border border-stone-200/90 dark:border-stone-800/90 shadow-2xl text-stone-700 dark:text-stone-200 select-none animate-in fade-in zoom-in-95 duration-150"
+        >
+          <!-- Bigger [<] (min 40px wide/high for touch devices) -->
+          <button
+            type="button"
+            disabled={currentPage <= 1}
+            onclick={goToPreviousPage}
+            class="min-w-[40px] min-h-[40px] w-10 h-10 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-stone-800/80 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400 text-stone-700 dark:text-stone-200 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
+            title="Previous Page"
+            aria-label="Previous Page"
+          >
+            <ChevronLeft class="w-5 h-5" />
+          </button>
+
+          <!-- Input page -->
+          <input
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            bind:value={pageInputValue}
+            onkeydown={handlePageInputChange}
+            onblur={handlePageInputBlur}
+            onfocus={(e) => (e.currentTarget as HTMLInputElement).select()}
+            aria-label="Target page number"
+            class="min-w-[52px] w-16 min-h-[40px] h-10 px-2 text-center font-mono font-semibold text-base rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-950 text-stone-900 dark:text-stone-100 focus:outline-hidden focus:ring-2 focus:ring-amber-500 shadow-inner"
+          />
+
+          <!-- Bigger [>] (min 40px wide/high for touch devices) -->
+          <button
+            type="button"
+            disabled={currentPage >= totalPages}
+            onclick={goToNextPage}
+            class="min-w-[40px] min-h-[40px] w-10 h-10 flex items-center justify-center rounded-xl bg-stone-100 dark:bg-stone-800/80 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400 text-stone-700 dark:text-stone-200 disabled:opacity-30 disabled:pointer-events-none transition cursor-pointer"
+            title="Next Page"
+            aria-label="Next Page"
+          >
+            <ChevronRight class="w-5 h-5" />
+          </button>
+        </div>
+      {/if}
+
+      <!-- Simple Page Displayer (Bottom-Right, Active Page / Total Pages) -->
       <button
         type="button"
-        disabled={currentPage <= 1}
-        onclick={() => scrollToPage(currentPage - 1)}
-        class="p-1 rounded-full hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 disabled:opacity-30 cursor-pointer transition"
-        title="Previous Page"
-        aria-label="Previous Page"
+        onclick={togglePagePicker}
+        class="inline-flex items-center px-3 py-1.5 rounded-full bg-white/95 dark:bg-stone-900/95 backdrop-blur-md border border-stone-200/90 dark:border-stone-800/90 shadow-lg text-stone-700 dark:text-stone-200 font-mono text-xs font-medium hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer select-none {isPagePickerOpen ? 'ring-2 ring-amber-500/50 border-amber-500/50' : ''}"
+        title="Page {currentPage} of {totalPages}. Click to jump to page."
+        aria-label="Current page {currentPage} of {totalPages}"
+        aria-expanded={isPagePickerOpen}
       >
-        <ChevronLeft class="w-4 h-4" />
-      </button>
-
-      <div class="flex items-center space-x-1.5 font-mono text-xs px-1">
-        <input
-          type="text"
-          value={pageInputValue}
-          onkeydown={handlePageInputChange}
-          onblur={handlePageInputChange}
-          aria-label="Current Page Number"
-          class="w-10 px-1 py-0.5 text-center font-mono font-medium rounded-md border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-950 text-stone-900 dark:text-stone-100 focus:outline-hidden focus:ring-1 focus:ring-amber-500 text-xs shadow-xs"
-        />
-        <span class="text-stone-400 font-medium">/ {totalPages}</span>
-      </div>
-
-      <button
-        type="button"
-        disabled={currentPage >= totalPages}
-        onclick={() => scrollToPage(currentPage + 1)}
-        class="p-1 rounded-full hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 disabled:opacity-30 cursor-pointer transition"
-        title="Next Page"
-        aria-label="Next Page"
-      >
-        <ChevronRight class="w-4 h-4" />
+        <span>{currentPage}</span>
+        <span class="mx-1 text-stone-400">/</span>
+        <span class="text-stone-400">{totalPages}</span>
       </button>
     </div>
 

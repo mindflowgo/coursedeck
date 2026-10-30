@@ -64,6 +64,7 @@ export interface AppSettings {
   theme?: string;
   mcp_enabled?: boolean;
   teacher_checkin?: TeacherCheckinConfig;
+  course_groups?: string[];
   [key: string]: any;
 }
 
@@ -289,6 +290,10 @@ export function getPromptsDir(): string {
 
 export function getLlmConfigPath(): string {
   return path.join(getDataDir(), 'llm_config.json');
+}
+
+export function getGroupsPath(): string {
+  return path.join(getDataDir(), 'groups.json');
 }
 
 /**

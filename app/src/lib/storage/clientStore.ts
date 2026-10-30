@@ -553,6 +553,264 @@ export async function deletePromptLocally(id: string): Promise<void> {
   await queuePendingPrompt(cleanId, null);
 }
 
+// ── Groups (offline groups.json storage) ────────────────────────────────────
+
+export interface ClientGroupItem {
+  id: string;
+  name: string;
+  type: string;
+}
+
+let _memoryGroupsJson = '[]';
+
+function slugifyGroup(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '') || `group-${Date.now().toString(36)}`
+  );
+}
+
+export async function getAllGroupsLocally(): Promise<ClientGroupItem[]> {
+  let raw = '';
+  if (isTauri()) {
+    try {
+      raw = await invoke<string>('get_groups_json');
+    } catch (err) {
+      console.warn('[NativeStore] get_groups_json failed, falling back to local storage:', err);
+    }
+  }
+
+  if (!raw) {
+    if (typeof localStorage !== 'undefined') {
+      raw = localStorage.getItem('coursedeck_groups_json') || '';
+    } else {
+      raw = _memoryGroupsJson;
+    }
+  }
+
+  let items: ClientGroupItem[] = [];
+  if (raw && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        items = parsed
+          .filter((item) => item && typeof item === 'object' && typeof item.name === 'string')
+          .map((item) => ({
+            id: typeof item.id === 'string' && item.id.trim() ? item.id.trim() : slugifyGroup(item.name),
+            name: String(item.name).trim(),
+            type: typeof item.type === 'string' && item.type.trim() ? item.type.trim().toLowerCase() : 'course'
+          }));
+      }
+    } catch (e) {
+      console.warn('[ClientStore] Failed to parse groups.json:', e);
+    }
+  }
+
+  // If no groups yet found, discover from cached courses
+  if (items.length === 0) {
+    try {
+      const courses = await listCachedCourses();
+      const discovered = new Set<string>();
+      for (const c of courses) {
+        if (c.group && c.group.trim()) {
+          const gName = c.group.trim();
+          if (!discovered.has(gName.toLowerCase())) {
+            discovered.add(gName.toLowerCase());
+            items.push({
+              id: slugifyGroup(gName),
+              name: gName,
+              type: 'course'
+            });
+          }
+        }
+      }
+      if (items.length > 0) {
+        await saveGroupsLocally(items);
+      }
+    } catch {}
+  }
+
+  return items;
+}
+
+export async function saveGroupsLocally(groups: ClientGroupItem[]): Promise<void> {
+  const json = JSON.stringify(groups, null, 2);
+  if (isTauri()) {
+    try {
+      await invoke('save_groups_json', { content: json });
+      console.log(`[NativeStore] saveGroupsLocally: saved ${groups.length} groups to filesystem`);
+    } catch (err) {
+      console.warn('[NativeStore] save_groups_json failed:', err);
+    }
+  }
+
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('coursedeck_groups_json', json);
+  }
+  _memoryGroupsJson = json;
+}
+
+export async function getGroupsLocally(type?: string): Promise<ClientGroupItem[]> {
+  const all = await getAllGroupsLocally();
+  if (!type) return all;
+  const cleanType = type.toLowerCase().trim();
+  return all.filter((g) => g.type.toLowerCase() === cleanType);
+}
+
+export async function getGroupNamesLocally(type?: string): Promise<string[]> {
+  const groups = await getGroupsLocally(type);
+  return groups.map((g) => g.name);
+}
+
+export async function addGroupLocally(
+  type: string,
+  name: string
+): Promise<{ group: ClientGroupItem; groups: ClientGroupItem[] }> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('Group name cannot be empty');
+  }
+  const cleanType = (type || 'course').toLowerCase().trim();
+  const all = await getAllGroupsLocally();
+
+  const existing = all.find(
+    (g) => g.type.toLowerCase() === cleanType && g.name.toLowerCase() === trimmed.toLowerCase()
+  );
+  if (existing) {
+    return { group: existing, groups: all };
+  }
+
+  const newItem: ClientGroupItem = {
+    id: slugifyGroup(trimmed),
+    name: trimmed,
+    type: cleanType
+  };
+  all.push(newItem);
+  await saveGroupsLocally(all);
+  return { group: newItem, groups: all };
+}
+
+export async function renameGroupLocally(
+  type: string,
+  oldName: string,
+  newName: string
+): Promise<{ groups: ClientGroupItem[]; updatedCount: number }> {
+  const trimmedOld = oldName.trim();
+  const trimmedNew = newName.trim();
+  if (!trimmedOld || !trimmedNew) {
+    throw new Error('Both oldName and newName are required');
+  }
+  const cleanType = (type || 'course').toLowerCase().trim();
+  const all = await getAllGroupsLocally();
+
+  const target = all.find(
+    (g) => g.type.toLowerCase() === cleanType && g.name.toLowerCase() === trimmedOld.toLowerCase()
+  );
+  if (target) {
+    target.name = trimmedNew;
+  } else {
+    all.push({
+      id: slugifyGroup(trimmedNew),
+      name: trimmedNew,
+      type: cleanType
+    });
+  }
+
+  await saveGroupsLocally(all);
+
+  let updatedCount = 0;
+  if (cleanType === 'course') {
+    try {
+      const courses = await listCachedCourses();
+      for (const c of courses) {
+        if (c.group && c.group.trim().toLowerCase() === trimmedOld.toLowerCase()) {
+          c.group = trimmedNew;
+          await saveCourseManifestLocally(c.id, c);
+          updatedCount++;
+        }
+      }
+    } catch (err) {
+      console.warn('[ClientStore] Failed to update course manifests after group rename:', err);
+    }
+  }
+
+  return { groups: all, updatedCount };
+}
+
+export async function deleteGroupLocally(
+  type: string,
+  name: string,
+  clearEntities = true
+): Promise<{ groups: ClientGroupItem[]; updatedCount: number }> {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Group name cannot be empty');
+  const cleanType = (type || 'course').toLowerCase().trim();
+  const all = await getAllGroupsLocally();
+
+  const filtered = all.filter(
+    (g) => !(g.type.toLowerCase() === cleanType && g.name.toLowerCase() === trimmed.toLowerCase())
+  );
+  await saveGroupsLocally(filtered);
+
+  let updatedCount = 0;
+  if (cleanType === 'course' && clearEntities) {
+    try {
+      const courses = await listCachedCourses();
+      for (const c of courses) {
+        if (c.group && c.group.trim().toLowerCase() === trimmed.toLowerCase()) {
+          delete c.group;
+          await saveCourseManifestLocally(c.id, c);
+          updatedCount++;
+        }
+      }
+    } catch (err) {
+      console.warn('[ClientStore] Failed to clear group in course manifests after deletion:', err);
+    }
+  }
+
+  return { groups: filtered, updatedCount };
+}
+
+export async function reorderGroupsLocally(type: string, names: string[]): Promise<string[]> {
+  const cleanType = (type || 'course').toLowerCase().trim();
+  const all = await getAllGroupsLocally();
+
+  const otherGroups = all.filter((g) => g.type.toLowerCase() !== cleanType);
+  const currentTyped = all.filter((g) => g.type.toLowerCase() === cleanType);
+
+  const reordered: ClientGroupItem[] = [];
+  const seen = new Set<string>();
+
+  for (const n of names) {
+    const trimmed = typeof n === 'string' ? n.trim() : '';
+    if (!trimmed || seen.has(trimmed.toLowerCase())) continue;
+    seen.add(trimmed.toLowerCase());
+    const existing = currentTyped.find((g) => g.name.toLowerCase() === trimmed.toLowerCase());
+    if (existing) {
+      reordered.push(existing);
+    } else {
+      reordered.push({
+        id: slugifyGroup(trimmed),
+        name: trimmed,
+        type: cleanType
+      });
+    }
+  }
+
+  for (const g of currentTyped) {
+    if (!seen.has(g.name.toLowerCase())) {
+      reordered.push(g);
+    }
+  }
+
+  const finalGroups = [...reordered, ...otherGroups];
+  await saveGroupsLocally(finalGroups);
+  return reordered.map((g) => g.name);
+}
+
 export async function hasCachedData(): Promise<boolean> {
   try {
     const courses = await listCachedCourses();

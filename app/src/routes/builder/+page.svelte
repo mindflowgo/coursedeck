@@ -34,6 +34,7 @@
     RotateCcw
   } from 'lucide-svelte';
   import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
+  import GroupSelector from '$lib/components/groups/GroupSelector.svelte';
 
   // --- Types ---
   interface BuilderLesson {
@@ -95,9 +96,45 @@
   let grade = $state('11');
   let level = $state('University');
   let description = $state('');
+  let selectedGroup = $state('');
+  let availableGroups = $state<string[]>([]);
   let hasCourseBook = $state(false);
   let bookFile = $state<File | null>(null);
   let queueStudyMaterials = $state(true);
+
+  async function loadCourseGroups() {
+    try {
+      const res = await apiFetch('/api/settings/groups?type=course');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.names)) {
+          availableGroups = data.names;
+        } else if (Array.isArray(data.groups)) {
+          availableGroups = data.groups.map((g: any) => (typeof g === 'string' ? g : g?.name || ''));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load course groups for builder:', e);
+    }
+  }
+
+  async function handleCreateGroup(name: string) {
+    const res = await apiFetch('/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'course', action: 'add', name })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.message || 'Failed to create group');
+    }
+    const data = await res.json();
+    if (Array.isArray(data.names)) {
+      availableGroups = data.names;
+    } else if (!availableGroups.includes(name)) {
+      availableGroups = [...availableGroups, name];
+    }
+  }
 
   $effect(() => {
     if (!hasCourseBook && bookFile) {
@@ -240,6 +277,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
   };
 
   onMount(async () => {
+    loadCourseGroups();
     try {
       const res = await apiFetch('/api/builder/prompt');
       if (res.ok) {
@@ -819,13 +857,14 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         throw new Error(text || 'Failed to ingest course archive.');
       }
 
-      if (courseTitle.trim()) {
+      if (courseTitle.trim() || selectedGroup) {
         await apiFetch(`/api/courses/${finalCourseId}/meta`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title: courseTitle.trim(),
-            description: description.trim()
+            title: courseTitle.trim() || finalCourseId.toUpperCase(),
+            description: description.trim(),
+            group: selectedGroup || undefined
           })
         }).catch(() => {});
       }
@@ -904,6 +943,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         grade,
         level,
         description: description.trim(),
+        group: selectedGroup || undefined,
         coursePDF: Boolean(hasCourseBook && bookFile),
         units: units.map((u) => ({
           number: u.number,
@@ -1188,6 +1228,19 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                 <option value="IB">International Baccalaureate (IB)</option>
                 <option value="General">General / Elective</option>
               </select>
+            </div>
+
+            <!-- Course Group -->
+            <div class="md:col-span-4 space-y-1.5">
+              <GroupSelector
+                id="course-group"
+                value={selectedGroup}
+                groups={availableGroups}
+                label="Course Group"
+                noneLabel="None (Ungrouped)"
+                onSelect={(g) => (selectedGroup = g)}
+                onCreateGroup={handleCreateGroup}
+              />
             </div>
 
             <!-- Description -->

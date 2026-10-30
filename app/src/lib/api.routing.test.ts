@@ -157,7 +157,30 @@ await mock.module('./storage/clientStore', () => ({
     storeCalls.push('deleteLockerDocLocally');
     return true;
   },
-  getCachedPdfAsset: async () => undefined
+  getCachedPdfAsset: async () => undefined,
+  getAllGroupsLocally: async () => [{ id: 'stem', name: 'STEM', type: 'course' }],
+  getGroupNamesLocally: async (type?: string) => ['STEM'],
+  saveGroupsLocally: async () => {},
+  getGroupsLocally: async (type?: string) => {
+    storeCalls.push('getGroupsLocally');
+    return [{ id: 'stem', name: 'STEM', type: type || 'course' }];
+  },
+  addGroupLocally: async (type: string, name: string) => {
+    storeCalls.push('addGroupLocally');
+    return { group: { id: name.toLowerCase(), name, type }, groups: [{ id: name.toLowerCase(), name, type }] };
+  },
+  renameGroupLocally: async (type: string, oldName: string, newName: string) => {
+    storeCalls.push('renameGroupLocally');
+    return { groups: [{ id: newName.toLowerCase(), name: newName, type }], updatedCount: 1 };
+  },
+  deleteGroupLocally: async (type: string, name: string, clearEntities?: boolean) => {
+    storeCalls.push('deleteGroupLocally');
+    return { groups: [], updatedCount: 1 };
+  },
+  reorderGroupsLocally: async (type: string, names: string[]) => {
+    storeCalls.push('reorderGroupsLocally');
+    return names;
+  }
 }));
 
 const { apiFetch, isTauriMobile } = await import('./api');
@@ -224,6 +247,55 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     const data: any = await res.json();
     expect(data.file.filename).toBe('pasted.jpg');
     expect(storeCalls).toContain('saveLockerDocLocally');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('creates course locally with group and updates local groups without network', async () => {
+    const res = await apiFetch('/api/courses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'bio12',
+        title: 'Biology 12',
+        group: 'Sciences',
+        units: [
+          {
+            number: 1,
+            title: 'Cellular Biology',
+            lessons: [{ id: '01.01', title: 'Intro', content: '# Intro to Cells' }]
+          }
+        ]
+      })
+    });
+    expect(res.status).toBe(201);
+    const data: any = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.course.group).toBe('Sciences');
+    expect(storeCalls).toContain('addGroupLocally');
+    expect(storeCalls).toContain('saveCourseManifestLocally');
+    expect(storeCalls).toContain('saveDocumentLocally');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('serves /api/settings/groups from local store', async () => {
+    const res = await apiFetch('/api/settings/groups?type=course');
+    expect(res.status).toBe(200);
+    const data: any = await res.json();
+    expect(data.names).toEqual(['STEM']);
+    expect(storeCalls).toContain('getGroupsLocally');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('adds group via /api/settings/groups offline', async () => {
+    const res = await apiFetch('/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'add', type: 'course', name: 'Humanities' })
+    });
+    expect(res.status).toBe(200);
+    const data: any = await res.json();
+    expect(data.success).toBe(true);
+    expect(storeCalls).toContain('addGroupLocally');
     expect(fetchCalls.length).toBe(0);
   });
 

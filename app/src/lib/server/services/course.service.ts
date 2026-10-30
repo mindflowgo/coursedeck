@@ -17,6 +17,7 @@ export interface CreateCourseInput {
   level?: string;
   description?: string;
   coursePDF?: boolean;
+  group?: string;
 }
 
 export interface DeleteCourseResult {
@@ -103,6 +104,9 @@ export class CourseService {
     };
     if (input.coursePDF) {
       manifest.coursePDF = true;
+    }
+    if (input.group && input.group.trim()) {
+      manifest.group = input.group.trim();
     }
 
     const metaPath = path.join(courseDir, 'meta.json');

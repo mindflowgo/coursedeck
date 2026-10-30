@@ -157,6 +157,9 @@ pub fn watch_window(app: &AppHandle, label: &str) {
             }
             tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
                 persist_window(&app_handle, &label);
+                if label == "main" {
+                    crate::terminate_backend(&app_handle);
+                }
             }
             _ => {}
         }

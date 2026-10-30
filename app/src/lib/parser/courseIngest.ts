@@ -42,6 +42,7 @@ export interface CourseManifest {
   archived?: boolean;
   path?: string;
   courseDocs?: CourseDocsFlags;
+  group?: string;
 }
 
 /** Course-level documents stored as `course.<type>.md` (or `logs.md`) in the course folder. */
