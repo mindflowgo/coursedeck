@@ -71,7 +71,7 @@ describe('Course Builder Endpoints', () => {
 
       // Check files on disk
       expect(fs.existsSync(testCourseDir)).toBe(true);
-      const meta = JSON.parse(fs.readFileSync(path.join(testCourseDir, 'meta.json'), 'utf8'));
+      const meta = JSON.parse(fs.readFileSync(path.join(testCourseDir, '.manifest.json'), 'utf8'));
       expect(meta.title).toBe('Introduction to Computer Science');
 
       // Check lesson content was written
@@ -120,13 +120,13 @@ describe('Course Builder Endpoints', () => {
       expect(data.course.units[0].lessons[0].pageRange).toBe('14-28');
       expect(data.course.units[0].lessons[0].readingDescription).toBe('Chapter 1: Foundations');
 
-      const meta = JSON.parse(fs.readFileSync(path.join(pdfTestDir, 'meta.json'), 'utf8'));
+      const meta = JSON.parse(fs.readFileSync(path.join(pdfTestDir, '.manifest.json'), 'utf8'));
       expect(meta.coursePDF).toBe(true);
       expect(meta.units[0].lessons[0].pageRange).toBe('14-28');
 
       // Test dynamically detecting coursePDF if locker_docs/course.pdf exists on disk
       delete meta.coursePDF;
-      fs.writeFileSync(path.join(pdfTestDir, 'meta.json'), JSON.stringify(meta), 'utf8');
+      fs.writeFileSync(path.join(pdfTestDir, '.manifest.json'), JSON.stringify(meta), 'utf8');
       expect(CourseService.getCourse(pdfTestCourseId)?.coursePDF).toBeFalsy();
 
       // Create locker_docs/course.pdf
@@ -142,7 +142,7 @@ describe('Course Builder Endpoints', () => {
 
     it('returns 409 Conflict if course already exists', async () => {
       fs.mkdirSync(testCourseDir, { recursive: true });
-      fs.writeFileSync(path.join(testCourseDir, 'meta.json'), '{}', 'utf8');
+      fs.writeFileSync(path.join(testCourseDir, '.manifest.json'), '{}', 'utf8');
 
       const req = new Request('http://127.0.0.1:3182/api/courses', {
         method: 'POST',

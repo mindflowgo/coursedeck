@@ -109,8 +109,8 @@ export class CourseService {
       manifest.group = input.group.trim();
     }
 
-    const metaPath = path.join(courseDir, 'meta.json');
-    atomicWriteFileSync(metaPath, JSON.stringify(manifest, null, 2) + '\n');
+    const manifestPath = path.join(courseDir, '.manifest.json');
+    atomicWriteFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
     return manifest;
   }
 
@@ -208,7 +208,7 @@ export class CourseService {
   ): { success: boolean; courseId: string; injectedCount: number; message: string } {
     const course = this.getCourse(courseId);
     const courseDir = safeJoin(getCoursesDir(), course.id);
-    const metaPath = path.join(courseDir, 'meta.json');
+    const manifestPath = path.join(courseDir, '.manifest.json');
 
     for (const item of lessons) {
       if (!item.id || !item.title) {
@@ -286,7 +286,7 @@ export class CourseService {
     }
 
     course.updatedAt = new Date().toISOString();
-    atomicWriteFileSync(metaPath, JSON.stringify(course, null, 2) + '\n');
+    atomicWriteFileSync(manifestPath, JSON.stringify(course, null, 2) + '\n');
 
     return {
       success: true,

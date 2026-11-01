@@ -1,5 +1,6 @@
 import type { Checkpoint } from '$lib/checkpoint';
 import * as store from './storage/clientStore';
+import { pdfGetInfo } from './pdfClient';
 import { invoke } from '@tauri-apps/api/core';
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http';
 
@@ -53,15 +54,35 @@ export async function smartFetch(url: string, init?: RequestInit): Promise<Respo
   return fetch(url, init);
 }
 
+let _cachedDesktopUrl = '';
+
+export function setCachedDesktopUrl(url: string): void {
+  const clean = (url || '').trim().replace(/\/+$/, '');
+  _cachedDesktopUrl = clean;
+  if (typeof localStorage !== 'undefined' && clean) {
+    try {
+      localStorage.setItem('desktop_url', clean);
+    } catch {}
+  }
+}
+
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') return '';
   // In desktop Tauri app (Mac/Windows/Linux), point to local Bun backend sidecar
   if (isTauriDesktop()) {
     return `http://127.0.0.1:${BACKEND_PORT}`;
   }
+  if (_cachedDesktopUrl) {
+    return _cachedDesktopUrl;
+  }
   // In iPad Tauri or mobile client, use saved desktop URL
-  const custom = localStorage.getItem('desktop_url');
-  if (custom) return custom.replace(/\/+$/, '');
+  try {
+    const custom = localStorage.getItem('desktop_url');
+    if (custom) {
+      _cachedDesktopUrl = custom.replace(/\/+$/, '');
+      return _cachedDesktopUrl;
+    }
+  } catch {}
 
   // In desktop browser dev (localhost:5173), Vite/SvelteKit handles /api itself
   if (window.location.port === '5173') return '';
@@ -73,7 +94,7 @@ export function getApiBaseUrl(): string {
  * Base URL for course asset references in rendered markdown.
  *
  * iPad app: assets are synced onto the device's own filesystem and served
- * through the `courseasset://` protocol registered in tauripad, so lesson
+ * through the `courseasset://` protocol registered in the iOS build, so lesson
  * images display offline. Everywhere else (desktop app, paired browser)
  * they come from the backend HTTP route.
  */
@@ -134,124 +155,71 @@ if (typeof window !== 'undefined') {
 /**
  * ── Endpoint routing model ────────────────────────────────────────────────────
  *
- * Everything is LOCAL-FIRST: course/lesson/tab reads and writes, checkpoints,
- * annotations, prompts, schedules, theme and cached assets are served from the
- * device's own store — NativeStore on Tauri, both desktop and iPad (the same
- * course files the backend reads from disk / the synced copy on the device),
- * and IndexedDB in browsers. The app keeps working with no connectivity at
- * all. Local writes made on a synced device are propagated back to the desktop
- * by the background push queue (see syncState.pushToDesktop).
+ * LOCAL-FIRST with server fall-through. Each app (desktop and iPad alike) is
+ * a file client: `offlineFetch` below answers every operation it can from the
+ * device's own files — NativeStore on Tauri (the same course/library files
+ * the desktop backend reads) and IndexedDB caches in browsers — so reading,
+ * writing, checkpoints, annotations, prompts, schedules and the library all
+ * work with no connectivity at all. Local writes made on a synced device are
+ * propagated back to the desktop by the background push queue (see
+ * syncState.pushToDesktop).
  *
- * ONLINE_ONLY is the short list of endpoints that cannot work without the
- * backend server or external services: AI/LLM generation and grading, course
- * creation & ingest, device pairing/sync, e-mail, backup and maintenance.
- * They always go through smartFetch and surface errors when the server is
- * unreachable.
- */
-const ONLINE_ONLY: Array<{ methods?: string[]; pattern: RegExp }> = [
-  // AI / LLM generation & grading (config reads stay local)
-  { methods: ['POST'], pattern: /^\/api\/llm$/ },
-  { pattern: /^\/api\/queue/ },
-  { pattern: /^\/api\/pop-quiz\// },
-  { pattern: /^\/api\/builder\// },
-  { pattern: /^\/api\/parse$/ },
-  { pattern: /^\/api\/courses\/[^/]+\/unit-test\// },
-  { pattern: /^\/api\/courses\/[^/]+\/prompt-context/ },
-  { methods: ['POST'], pattern: /^\/api\/courses\/[^/]+\/course-docs$/ },
-  // Course lifecycle (backend-managed ingest)
-  { pattern: /^\/api\/courses\/[^/]+\/open/ },
-  { pattern: /^\/api\/courses\/[^/]+\/schedule\/mark-lesson-done$/ },
-  // Server & external services
-  { pattern: /^\/api\/sync\// },
-  { pattern: /^\/api\/pairing\// },
-  { pattern: /^\/api\/backup\// },
-  { pattern: /^\/api\/maintenance\// },
-  { pattern: /^\/api\/settings\/(storage|open-folder|mcp|emailserver)/ },
-  { pattern: /^\/api\/network-ip$/ }
-];
-
-function isOnlineOnlyRoute(pathname: string, searchParams: URLSearchParams, method: string): boolean {
-  // Generation-status polling (?status=true) reads the server's live job
-  // registry, which only the backend knows about.
-  if (/^\/api\/courses\/[^/]+\/course-docs$/.test(pathname) && searchParams.has('status')) {
-    return true;
-  }
-  return ONLINE_ONLY.some(
-    (rule) => (!rule.methods || rule.methods.includes(method)) && rule.pattern.test(pathname)
-  );
-}
-
-/**
- * Typed fetch for the backend API.
- *
- * Local-first everywhere: only the ONLINE_ONLY endpoints above require the
- * server. Reading, writing, checkpoints, annotations, prompts and schedules
- * all keep working offline from the device's own store.
+ * Anything offlineFetch does NOT handle falls through to the server: LLM
+ * generation and grading, ingest & course-docs generation, pairing/sync,
+ * backup, maintenance — the external-facing surface. On the desktop that is
+ * the local Bun sidecar; on the iPad it is the paired desktop over the
+ * network, so those operations surface an error when it is unreachable.
  */
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const method = (init?.method || 'GET').toUpperCase();
-  const [pathname, search] = path.split('?');
-  const searchParams = new URLSearchParams(search || '');
-
-  // 1. Online-only endpoints always hit the backend server.
-  if (isOnlineOnlyRoute(pathname, searchParams, method)) {
-    return smartFetch(`${getApiBaseUrl()}${path}`, init);
-  }
-
-  // 2. Tauri apps — desktop AND iPad: every file-backed operation reads and
-  //    writes the device's own course files natively (NativeStore), with no
-  //    network round trip. The desktop app shares the very files its local
-  //    backend serves; the iPad keeps its synced copy current through bundle
-  //    sync, and local writes are pushed back to the desktop by the
-  //    background push queue.
-  if (isTauriEnvironment()) {
-    return offlineFetch(path, method, init);
-  }
-
-  // 3. Vite dev browser: the dev server IS the backend.
+  // Vite dev browser: the dev server IS the backend — skip the local layer.
   if (typeof window !== 'undefined' && window.location.port === '5173') {
     return smartFetch(path, init);
   }
 
-  // 4. Paired browser: the desktop is the sync master — try it first
-  //    (3.5s timeout, 15s reachability cache) and serve from the local synced
-  //    store when it cannot be reached. Offline devices skip straight to the
-  //    local store.
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    return offlineFetch(path, method, init);
-  }
-  const now = Date.now();
-  if (!(_serverReachable === false && now - _lastReachabilityCheck < 15_000)) {
-    const baseUrl = getApiBaseUrl();
-    try {
-      let res: Response;
-      if (init?.signal) {
-        res = await smartFetch(`${baseUrl}${path}`, init);
-      } else {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 3500);
-        try {
-          res = await smartFetch(`${baseUrl}${path}`, { ...init, signal: ctrl.signal });
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-      _serverReachable = true;
-      _lastReachabilityCheck = now;
-      return res;
-    } catch {
-      _serverReachable = false;
-      _lastReachabilityCheck = now;
-      console.warn(`[apiFetch] server unreachable — serving ${method} ${path} from local store`);
-      return offlineFetch(path, method, init);
-    }
-  }
-  return offlineFetch(path, method, init);
+  // 1. Local-first: serve every file-backed operation from the device's own
+  //    store. `null` means "not a local route".
+  const local = await offlineFetch(path, (init?.method || 'GET').toUpperCase(), init);
+  if (local) return local;
+
+  // 2. Fall through to the server (desktop sidecar / paired desktop).
+  return smartFetch(`${getApiBaseUrl()}${path}`, init);
 }
 
 // ── Offline Local Storage Interception ───────────────────────────────────────
 
-async function offlineFetch(path: string, method: string, init?: RequestInit): Promise<Response> {
+const LIBRARY_EXTENSIONS: Record<string, 'pdf' | 'epub' | 'mobi'> = {
+  '.pdf': 'pdf',
+  '.epub': 'epub',
+  '.mobi': 'mobi'
+};
+
+function detectLibraryFormat(filename: string): 'pdf' | 'epub' | 'mobi' | null {
+  const dot = filename.lastIndexOf('.');
+  if (dot === -1) return null;
+  return LIBRARY_EXTENSIONS[filename.slice(dot).toLowerCase()] ?? null;
+}
+
+/** Same title derivation the backend's LibraryService applies to unnamed files. */
+function libraryTitleFromFilename(filename: string): string {
+  const dot = filename.lastIndexOf('.');
+  const base = dot > 0 ? filename.slice(0, dot) : filename;
+  return base
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Same cap the backend enforces — reject before buffering the bytes locally. */
+const MAX_LIBRARY_UPLOAD_BYTES = 500 * 1024 * 1024;
+
+/**
+ * The device's own file-backed API surface. Returns a Response when this
+ * route is served locally, or null when it is not a local route — apiFetch
+ * then falls through to the server. A returned Response (including 4xx/5xx)
+ * is the local layer's authoritative answer.
+ */
+async function offlineFetch(path: string, method: string, init?: RequestInit): Promise<Response | null> {
   const [pathname, search] = path.split('?');
   const searchParams = new URLSearchParams(search || '');
 
@@ -323,6 +291,354 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   if (method === 'GET' && pathname === '/api/checkpoints') {
     const checkpoints = await store.listAllCheckpointsLocally();
     return jsonRes({ checkpoints });
+  }
+
+  // ── Offline /api/library Handlers ─────────────────────────────────────────
+
+  // GET /api/library or POST /api/library/refresh (reconciles the manifest with the /library directory on
+  // disk in Tauri, mirroring the backend's syncWithDisk auto-discovery)
+  if ((method === 'GET' && pathname === '/api/library') || (method === 'POST' && pathname === '/api/library/refresh')) {
+    const manifest = await store.getLibraryManifestLocally();
+    const diskEntries = await store.listLibraryDocsOnDisk();
+
+    if (diskEntries) {
+      const byFilename = new Map(manifest.documents.map((d) => [d.filename, d]));
+      const active = new Set<string>();
+      let changed = false;
+
+      for (const entry of diskEntries) {
+        const fmt = detectLibraryFormat(entry.filename);
+        if (!fmt) continue;
+        active.add(entry.filename);
+
+        const existing = byFilename.get(entry.filename);
+        if (!existing) {
+          let pages: number | undefined;
+          if (fmt === 'pdf') {
+            try {
+              const info = await pdfGetInfo(`/api/library/pdf/${encodeURIComponent(entry.filename)}`);
+              pages = info.page_count > 0 ? info.page_count : undefined;
+            } catch {}
+          }
+          byFilename.set(entry.filename, {
+            id: entry.filename,
+            filename: entry.filename,
+            format: fmt,
+            title: libraryTitleFromFilename(entry.filename),
+            description: '',
+            additionDate: new Date(entry.mtime_ms || Date.now()).toISOString(),
+            pages: pages || (fmt === 'pdf' ? 1 : undefined),
+            lastPage: 1,
+            fileSize: entry.size,
+            position: byFilename.size
+          });
+          changed = true;
+        } else if (existing.fileSize !== entry.size) {
+          existing.fileSize = entry.size;
+          changed = true;
+        }
+      }
+
+      for (const filename of Array.from(byFilename.keys())) {
+        if (!active.has(filename)) {
+          byFilename.delete(filename);
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        manifest.documents = Array.from(byFilename.values());
+        manifest.documents.sort((a, b) => {
+          if (a.position !== b.position) return a.position - b.position;
+          const dateA = new Date(a.additionDate).getTime();
+          const dateB = new Date(b.additionDate).getTime();
+          if (dateA !== dateB) return dateB - dateA;
+          return a.filename.localeCompare(b.filename);
+        });
+        manifest.documents.forEach((d, i) => (d.position = i));
+        await store.saveLibraryManifestLocally(manifest);
+      }
+    }
+
+    return jsonRes({ documents: manifest.documents });
+  }
+
+  // POST /api/library/upload (Tauri only: writes straight to the device's
+  // own /library directory via the native commands; browsers fall through
+  // to the server's multipart route)
+  if (method === 'POST' && pathname === '/api/library/upload') {
+    if (!isTauriEnvironment()) {
+      return null;
+    }
+    const formData = typeof FormData !== 'undefined' && init?.body instanceof FormData ? init.body : null;
+    const file = formData?.get('file');
+    if (!(file instanceof File)) {
+      return jsonRes({ message: 'No file provided' }, 400);
+    }
+    const fmt = detectLibraryFormat(file.name);
+    if (!fmt) {
+      return jsonRes(
+        { message: `Unsupported document format for "${file.name}". Allowed: .pdf, .epub, .mobi` },
+        400
+      );
+    }
+    if (file.size > MAX_LIBRARY_UPLOAD_BYTES) {
+      return jsonRes(
+        { message: `"${file.name}" exceeds the 500 MB library upload limit` },
+        413
+      );
+    }
+    const formString = (key: string): string => {
+      const v = formData?.get(key);
+      return typeof v === 'string' ? v.trim() : '';
+    };
+    const title = formString('title');
+    const description = formString('description');
+
+    const bytes = await file.arrayBuffer();
+    let saved: store.LibraryDocEntry;
+    try {
+      saved = await store.saveLibraryDocLocally(file.name, bytes);
+    } catch (err) {
+      console.error('[OfflineUpload] save_library_doc failed:', err);
+      return jsonRes(
+        { message: err instanceof Error ? err.message : 'Failed to save document to /library' },
+        500
+      );
+    }
+
+    let pages: number | undefined;
+    if (fmt === 'pdf') {
+      try {
+        const info = await pdfGetInfo(`/api/library/pdf/${encodeURIComponent(saved.filename)}`);
+        pages = info.page_count > 0 ? info.page_count : undefined;
+      } catch {}
+    }
+
+    const manifest = await store.getLibraryManifestLocally();
+    const existingIdx = manifest.documents.findIndex(
+      (d) => d.filename.toLowerCase() === saved.filename.toLowerCase()
+    );
+    const existing = existingIdx >= 0 ? manifest.documents[existingIdx] : undefined;
+
+    const doc: store.ClientLibraryDocument = {
+      id: saved.filename,
+      filename: saved.filename,
+      format: fmt,
+      title: title || libraryTitleFromFilename(saved.filename),
+      description,
+      additionDate: new Date().toISOString(),
+      pages: pages || (fmt === 'pdf' ? 1 : undefined),
+      lastPage: existing?.lastPage || 1,
+      fileSize: saved.size,
+      position: existing?.position ?? manifest.documents.length
+    };
+
+    if (existingIdx >= 0) {
+      manifest.documents[existingIdx] = doc;
+    } else {
+      manifest.documents.push(doc);
+    }
+    await store.saveLibraryManifestLocally(manifest);
+    return jsonRes({ success: true, document: doc }, 201);
+  }
+
+  // PUT /api/library/meta
+  if (method === 'PUT' && pathname === '/api/library/meta') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const manifest = await store.getLibraryManifestLocally();
+    const doc = manifest.documents.find((d) => d.id === body.id || d.filename === body.id);
+    if (!doc) return jsonRes({ message: 'Document not found' }, 404);
+    if (typeof body.title === 'string') doc.title = body.title.trim();
+    if (typeof body.description === 'string') doc.description = body.description.trim();
+    if (typeof body.lastPage === 'number') doc.lastPage = body.lastPage;
+    if (typeof body.position === 'number') doc.position = body.position;
+    if (typeof body.thumbnail === 'string') doc.thumbnail = body.thumbnail;
+    if (typeof body.group === 'string' || body.group === null) {
+      if (!body.group || !body.group.trim()) {
+        delete doc.group;
+      } else {
+        doc.group = body.group.trim();
+      }
+    }
+    await store.saveLibraryManifestLocally(manifest);
+    return jsonRes({ success: true, document: doc });
+  }
+
+  // PUT /api/library/reorder
+  if (method === 'PUT' && pathname === '/api/library/reorder') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const orderedIds = Array.isArray(body.orderedIds) ? (body.orderedIds as string[]) : [];
+    const manifest = await store.getLibraryManifestLocally();
+    const byId = new Map(manifest.documents.map((d) => [d.id.toLowerCase(), d]));
+    const reordered: typeof manifest.documents = [];
+    const used = new Set<string>();
+    orderedIds.forEach((rawId, index) => {
+      const id = rawId.toLowerCase();
+      const doc = byId.get(id);
+      if (doc) {
+        doc.position = index;
+        reordered.push(doc);
+        used.add(id);
+      }
+    });
+    let nextPos = reordered.length;
+    for (const doc of manifest.documents) {
+      if (!used.has(doc.id.toLowerCase())) {
+        doc.position = nextPos++;
+        reordered.push(doc);
+      }
+    }
+    manifest.documents = reordered;
+    await store.saveLibraryManifestLocally(manifest);
+    return jsonRes({ success: true, documents: reordered });
+  }
+
+  // DELETE /api/library/:id
+  const libDelMatch = pathname.match(/^\/api\/library\/([^/]+)$/);
+  if (method === 'DELETE' && libDelMatch) {
+    const id = decodeURIComponent(libDelMatch[1]);
+    if (id !== 'annotations' && id !== 'checkpoints' && id !== 'meta' && id !== 'reorder' && id !== 'upload') {
+      const manifest = await store.getLibraryManifestLocally();
+      const doc = manifest.documents.find((d) => d.id === id || d.filename === id);
+      if (doc) {
+        manifest.documents = manifest.documents.filter((d) => d.id !== doc.id && d.filename !== doc.filename);
+        manifest.documents.forEach((d, i) => (d.position = i));
+        await store.saveLibraryManifestLocally(manifest);
+        await store.deleteLibraryDocLocally(doc.filename);
+
+        // Purge the document's annotations and checkpoints, like the server's deleteDocument.
+        const annotations = await store.getLibraryAnnotationsLocally();
+        const keptStrokes = annotations.filter(
+          (s) => !s.file.startsWith(`${doc.filename}:`) && s.file !== doc.filename
+        );
+        if (keptStrokes.length !== annotations.length) {
+          await store.saveLibraryAnnotationsLocally(keptStrokes);
+        }
+        const checkpoints = await store.getLibraryCheckpointsLocally();
+        const keptCps = checkpoints.filter(
+          (c) => !c.file.startsWith(`${doc.filename}:`) && c.file !== doc.filename
+        );
+        if (keptCps.length !== checkpoints.length) {
+          await store.saveLibraryCheckpointsLocally(keptCps);
+        }
+      }
+      return jsonRes({ success: true });
+    }
+  }
+
+  // GET /api/library/annotations
+  if (method === 'GET' && pathname === '/api/library/annotations') {
+    const strokes = await store.getLibraryAnnotationsLocally();
+    return jsonRes({ strokes });
+  }
+
+  // PUT /api/library/annotations
+  if (method === 'PUT' && pathname === '/api/library/annotations') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const upserts = Array.isArray(body.upserts) ? body.upserts : [];
+    const existing = await store.getLibraryAnnotationsLocally();
+    const byId = new Map(existing.map((s) => [s.id, s]));
+    for (const up of upserts) {
+      if (!up || typeof up !== 'object') continue;
+      const cur = byId.get(up.id);
+      if (!cur || new Date(up.date).getTime() >= new Date(cur.date).getTime()) {
+        byId.set(up.id, up);
+      }
+    }
+    const merged = Array.from(byId.values());
+    await store.saveLibraryAnnotationsLocally(merged);
+    return jsonRes({ success: true, merged: upserts.length, strokes: merged });
+  }
+
+  // GET /api/library/checkpoints
+  if (method === 'GET' && pathname === '/api/library/checkpoints') {
+    const checkpoints = await store.getLibraryCheckpointsLocally();
+    return jsonRes({ checkpoints });
+  }
+
+  // POST /api/library/checkpoints
+  if (method === 'POST' && pathname === '/api/library/checkpoints') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const checkpoints = await store.getLibraryCheckpointsLocally();
+    const now = new Date().toISOString();
+    let cp: Checkpoint;
+    if (body.id) {
+      const idx = checkpoints.findIndex((c) => c.id === body.id);
+      if (idx !== -1) {
+        checkpoints[idx] = {
+          ...checkpoints[idx],
+          file: body.file,
+          verticalPosition: body.verticalPosition,
+          color: body.color || checkpoints[idx].color || 'yellow',
+          noteText: body.noteText ?? checkpoints[idx].noteText ?? '',
+          date: now
+        };
+        await store.saveLibraryCheckpointsLocally(checkpoints);
+        return jsonRes({ success: true, checkpoint: checkpoints[idx] });
+      }
+    }
+    cp = {
+      id: body.id || `library_note_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      courseId: 'library',
+      file: body.file,
+      verticalPosition: body.verticalPosition,
+      type: 'note',
+      color: body.color || 'yellow',
+      noteText: body.noteText || '',
+      date: now
+    };
+    checkpoints.push(cp);
+    await store.saveLibraryCheckpointsLocally(checkpoints);
+    return jsonRes({ success: true, checkpoint: cp });
+  }
+
+  // POST /api/library/checkpoints/position
+  if (method === 'POST' && pathname === '/api/library/checkpoints/position') {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const checkpoints = await store.getLibraryCheckpointsLocally();
+    const now = new Date().toISOString();
+    const cleanFile = (body.file || '').trim();
+    const page = typeof body.page === 'number' ? body.page : (typeof body.verticalPosition === 'number' ? body.verticalPosition : 1);
+    const fileKey = `${cleanFile}:p${page}`;
+    const idx = checkpoints.findIndex((c) => c.type === 'position' && (c.file.startsWith(`${cleanFile}:p`) || c.file === cleanFile));
+    let cp: Checkpoint;
+    if (idx !== -1) {
+      cp = {
+        ...checkpoints[idx],
+        file: fileKey,
+        verticalPosition: page,
+        date: now
+      };
+      checkpoints[idx] = cp;
+    } else {
+      cp = {
+        id: `pos_library_${cleanFile.replace(/[^a-z0-9_-]/gi, '_')}`,
+        courseId: 'library',
+        file: fileKey,
+        verticalPosition: page,
+        type: 'position',
+        date: now
+      };
+      checkpoints.push(cp);
+    }
+    await store.saveLibraryCheckpointsLocally(checkpoints);
+    const manifest = await store.getLibraryManifestLocally();
+    const doc = manifest.documents.find((d) => d.id === cleanFile || d.filename === cleanFile);
+    if (doc) {
+      doc.lastPage = page;
+      await store.saveLibraryManifestLocally(manifest);
+    }
+    return jsonRes({ success: true, checkpoint: cp });
+  }
+
+  // DELETE /api/library/checkpoints/:cpId
+  const libCpDelMatch = pathname.match(/^\/api\/library\/checkpoints\/([^/]+)$/);
+  if (method === 'DELETE' && libCpDelMatch) {
+    const checkpoints = await store.getLibraryCheckpointsLocally();
+    const filtered = checkpoints.filter((c) => c.id !== libCpDelMatch[1]);
+    await store.saveLibraryCheckpointsLocally(filtered);
+    return jsonRes({ success: true });
   }
 
   // GET /api/schedules
@@ -430,8 +746,9 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   }
 
   // GET /api/courses/:id/course-docs?type=xxx
+  // (?status=true polls the server's live generation job — not a local route)
   const courseDocMatch = pathname.match(/^\/api\/courses\/([^/]+)\/course-docs$/);
-  if (method === 'GET' && courseDocMatch) {
+  if (method === 'GET' && courseDocMatch && !searchParams.has('status')) {
     const courseId = decodeURIComponent(courseDocMatch[1]);
     const type = searchParams.get('type') || 'summary';
     const filename = type === 'logs' ? 'logs.md' : `course.${type}.md`;
@@ -627,17 +944,17 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   }
 
   // GET /api/settings/groups
-  if (method === 'GET' && (pathname === '/api/settings/groups' || pathname === '/api/settings/course-groups')) {
-    const type = searchParams.get('type') || (pathname.includes('course-groups') ? 'course' : undefined);
+  if (method === 'GET' && pathname === '/api/settings/groups') {
+    const type = searchParams.get('type') || undefined;
     const groups = await store.getGroupsLocally(type);
     const names = groups.map((g) => g.name);
     return jsonRes({ success: true, names, groups });
   }
 
   // POST /api/settings/groups
-  if (method === 'POST' && (pathname === '/api/settings/groups' || pathname === '/api/settings/course-groups')) {
+  if (method === 'POST' && pathname === '/api/settings/groups') {
     const body = JSON.parse((init?.body as string) || '{}');
-    const type = body.type || (pathname.includes('course-groups') ? 'course' : 'course');
+    const type = body.type || 'course';
     const action = body.action || (body.name ? 'add' : 'groups');
 
     if (action === 'add') {
@@ -693,28 +1010,125 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     });
   }
 
-  // GET /api/courses/:id/assets/** (offline: serve cached binary assets, e.g. course.pdf)
-  const assetGetMatch = pathname.match(/^\/api\/courses\/([^/]+)\/assets\/(.+)$/);
-  if (method === 'GET' && assetGetMatch) {
-    const buffer = await store.getCachedPdfAsset(pathname);
-    if (buffer) {
-      console.log(`[OfflineFetch] GET asset ${pathname} from pdf cache (${Math.round(buffer.byteLength / 1024)} KB)`);
-      return new Response(buffer, {
-        status: 200,
-        headers: {
-          'Content-Type': pathname.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream',
-          'Cache-Control': 'public, max-age=86400'
-        }
+  // POST /api/llm (iPad or offline local LLM operations)
+  if (method === 'POST' && pathname === '/api/llm') {
+    if (!isTauriMobile()) return null;
+
+    const body = JSON.parse((init?.body as string) || '{}');
+    const action = body.action;
+
+    if (action === 'save_store') {
+      const cards = Array.isArray(body.cards) ? body.cards : [];
+      const activeId = body.activeId || (cards[0]?.id ?? null);
+      const newStore = { version: 2, activeId, cards };
+      await store.saveLlmConfigLocally(newStore);
+      const active = cards.find((c: any) => c.id === activeId) ?? null;
+      return jsonRes({
+        success: true,
+        hasConfig: Boolean(active?.baseUrl),
+        activeId,
+        cards: cards.map(({ apiKey: _k, ...rest }: any) => ({ ...rest, hasApiKey: Boolean(_k) })),
+        config: active ? { ...active, hasApiKey: Boolean(active.apiKey) } : null
       });
     }
-    return jsonRes({ message: 'Offline: document not cached on this device yet.' }, 503);
+
+    if (action === 'set_active') {
+      const id = typeof body.id === 'string' ? body.id : '';
+      const llmStore = await store.getLlmStore();
+      if (!llmStore || !llmStore.cards.some((c) => c.id === id)) {
+        return jsonRes({ message: 'Model card not found' }, 404);
+      }
+      llmStore.activeId = id;
+      await store.saveLlmConfigLocally(llmStore);
+      const active = llmStore.cards.find((c) => c.id === id) ?? null;
+      return jsonRes({
+        success: true,
+        hasConfig: Boolean(active?.baseUrl),
+        activeId: id,
+        cards: llmStore.cards.map(({ apiKey: _k, ...rest }) => ({ ...rest, hasApiKey: Boolean(_k) })),
+        config: active ? { ...active, hasApiKey: Boolean(active.apiKey) } : null
+      });
+    }
+
+    if (action === 'save_config') {
+      const cfg = body.config;
+      if (!cfg || !cfg.baseUrl || !cfg.baseUrl.trim()) {
+        return jsonRes({ message: 'A Base URL is required to save an AI model' }, 400);
+      }
+      let llmStore = await store.getLlmStore();
+      if (!llmStore) {
+        llmStore = { version: 2, activeId: null, cards: [] };
+      }
+      const existingIdx = cfg.cardId
+        ? llmStore.cards.findIndex((c) => c.id === cfg.cardId)
+        : llmStore.cards.findIndex((c) => c.id === llmStore?.activeId);
+      const cardId = (existingIdx >= 0 ? llmStore.cards[existingIdx].id : null) || cfg.cardId || `card_${Date.now().toString(36)}`;
+      const card: store.ClientLlmModelCard = {
+        id: cardId,
+        label: cfg.label || cfg.provider || 'AI Model',
+        provider: cfg.provider || 'openai_compatible',
+        baseUrl: cfg.baseUrl.trim(),
+        apiKey: typeof cfg.apiKey === 'string' ? cfg.apiKey.trim() : (existingIdx >= 0 ? llmStore.cards[existingIdx].apiKey : ''),
+        authHeaderType: cfg.authHeaderType || 'bearer',
+        model: typeof cfg.model === 'string' ? cfg.model.trim() : '',
+        temperature: typeof cfg.temperature === 'number' ? cfg.temperature : 0.3,
+        timeoutSeconds: typeof cfg.timeoutSeconds === 'number' ? cfg.timeoutSeconds : 150,
+        sendSessionId: Boolean(cfg.sendSessionId)
+      };
+      if (existingIdx >= 0) {
+        llmStore.cards[existingIdx] = card;
+      } else {
+        llmStore.cards.push(card);
+      }
+      if (!llmStore.activeId || existingIdx >= 0) {
+        llmStore.activeId = cardId;
+      }
+      await store.saveLlmConfigLocally(llmStore);
+      return jsonRes({ success: true, message: 'LLM configuration saved', activeId: llmStore.activeId });
+    }
+
+    if (action === 'test' || action === 'generate') {
+      let card: store.ClientLlmModelCard | null = null;
+      if (body.config?.baseUrl) {
+        card = body.config as store.ClientLlmModelCard;
+      } else {
+        const stored = await store.getLlmStore();
+        if (!stored) {
+          return jsonRes({ message: 'No AI model configured on this device. Add a model in Settings or sync from desktop.' }, 400);
+        }
+        card = stored.cards.find((c) => c.id === stored.activeId) ?? stored.cards[0] ?? null;
+      }
+
+      if (!card?.baseUrl) {
+        return jsonRes({ message: 'No AI model configured on this device.' }, 400);
+      }
+
+      if (action === 'test') {
+        try {
+          const { generateDirect } = await import('$lib/llmClient');
+          await generateDirect(card, 'You are a connectivity test.', 'Reply with the single word: OK');
+          return jsonRes({ success: true, message: 'Connected!' });
+        } catch (err: any) {
+          return jsonRes({ success: false, message: err?.message || 'Connection failed' });
+        }
+      }
+
+      const { systemPrompt, userPrompt } = body;
+      if (!systemPrompt || !userPrompt) {
+        return jsonRes({ message: 'systemPrompt and userPrompt are required for generation' }, 400);
+      }
+      try {
+        const { generateDirect } = await import('$lib/llmClient');
+        const result = await generateDirect(card, systemPrompt, userPrompt);
+        return jsonRes({ success: true, completion: result.completion, usage: result.usage });
+      } catch (err: any) {
+        return jsonRes({ message: err?.message || 'LLM generation failed' }, 500);
+      }
+    }
+
+    return null;
   }
 
-  // Fallback for unhandled offline actions
-  return new Response(
-    JSON.stringify({
-      message: 'Offline: this action requires an active connection to your desktop.'
-    }),
-    { status: 503, headers: { 'Content-Type': 'application/json' } }
-  );
+  // Not a local route — apiFetch falls through to the server.
+  return null;
 }

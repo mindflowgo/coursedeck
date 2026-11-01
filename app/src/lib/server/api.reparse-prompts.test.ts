@@ -38,7 +38,7 @@ describe('Reparse with Updated Prompts API', () => {
         }
       ]
     };
-    fs.writeFileSync(path.join(courseDir, 'meta.json'), JSON.stringify(manifest), 'utf8');
+    fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify(manifest), 'utf8');
 
     // Create a dummy lesson file for 01.01
     fs.writeFileSync(

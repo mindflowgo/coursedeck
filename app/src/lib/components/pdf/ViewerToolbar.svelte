@@ -62,6 +62,7 @@
     initialPage?: number | null;
     sideBarThumbnails?: boolean;
     sideBarSearch?: boolean;
+    onPageChange?: (page: number) => void;
   }
 
   let {
@@ -74,7 +75,8 @@
     readingDescription = '',
     initialPage = null,
     sideBarThumbnails = $bindable(false),
-    sideBarSearch = $bindable(false)
+    sideBarSearch = $bindable(false),
+    onPageChange
   }: Props = $props();
 
   let currentPage = $state(1);
@@ -710,6 +712,7 @@
             pdfPage: p
           });
         }
+        onPageChange?.(p);
       }, 200);
     }
   });

@@ -8,7 +8,7 @@ import { parseFrontmatter } from '/Users/fil/Code/app-study-tool/app/src/lib/par
 import { repairMarkdownTables } from '/Users/fil/Code/app-study-tool/app/src/lib/markdown/tableRepair.ts';
 
 const courseDir = process.argv[2] || '/Users/fil/Documents/Evan_Education/ilc/courses/baf3m';
-const meta = JSON.parse(fs.readFileSync(path.join(courseDir, 'meta.json'), 'utf8'));
+const meta = JSON.parse(fs.readFileSync(path.join(courseDir, '.manifest.json'), 'utf8'));
 
 const lines: string[] = [];
 const chunks: Array<{ id: string; text: string }> = [];

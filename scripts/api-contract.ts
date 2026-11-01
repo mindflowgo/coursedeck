@@ -47,7 +47,7 @@ await (async () => {
   );
   // Minimal manifest so course-doc endpoints recognise the fixture course.
   fs.writeFileSync(
-    path.join(courseDir, 'meta.json'),
+    path.join(courseDir, '.manifest.json'),
     JSON.stringify({
       id: 'tst01',
       title: 'Contract Fixture Course',
@@ -624,10 +624,10 @@ try {
       arch.status === 200 && arch.body.success === true && arch.body.course?.archived === true
     );
 
-    const metaPath = path.join(SCRATCH, 'courses', 'tst01', 'meta.json');
+    const metaPath = path.join(SCRATCH, 'courses', 'tst01', '.manifest.json');
     const metaOnDisk = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
     check(
-      'archive persisted in meta.json, rename + units intact',
+      'archive persisted in .manifest.json, rename + units intact',
       metaOnDisk.archived === true && metaOnDisk.title === 'Renamed Fixture' && Array.isArray(metaOnDisk.units)
     );
 
@@ -654,7 +654,7 @@ try {
     const metaAfter = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
     const schedAfter = await req('/api/schedules');
     check(
-      'unarchived course back in /api/schedules, flag removed from meta.json',
+      'unarchived course back in /api/schedules, flag removed from .manifest.json',
       metaAfter.archived === undefined && schedAfter.body.schedules?.some((s: any) => s.courseId === 'tst01')
     );
 

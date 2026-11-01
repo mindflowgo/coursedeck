@@ -42,6 +42,7 @@
   import RenameCourseModal from '$lib/components/RenameCourseModal.svelte';
   import GroupSection from '$lib/components/groups/GroupSection.svelte';
   import { createGroupCollapseStore } from '$lib/components/groups/groupState.svelte';
+  import { groupItemsByGroups } from '$lib/components/groups/groupUtils';
   import { apiFetch, isTauriDesktop, isTauriEnvironment } from '$lib/api';
   import { openScanDesktopModal } from '$lib/modalState.svelte';
   import { stripCourseCodePrefix } from '$lib/courses';
@@ -456,78 +457,14 @@
     return [...active, ...archived];
   });
 
-  interface CourseGroupBucket {
-    id: string;
-    name: string;
-    courses: CourseManifest[];
-    isUngrouped?: boolean;
-  }
-
-  let groupedCourses = $derived.by<CourseGroupBucket[]>(() => {
-    const list = filteredCourses;
-    if (list.length === 0) return [];
-
-    const hasAnyGrouped = list.some((c) => Boolean(c.group && c.group.trim()));
-    if (courseGroups.length === 0 && !hasAnyGrouped) {
-      return [
-        {
-          id: '__all__',
-          name: '',
-          courses: list,
-          isUngrouped: true
-        }
-      ];
-    }
-
-    const buckets: CourseGroupBucket[] = [];
-    const seenCourseIds = new Set<string>();
-
-    // 1. Configured course groups in defined order
-    for (const groupName of courseGroups) {
-      const matching = list.filter(
-        (c) => c.group && c.group.trim().toLowerCase() === groupName.toLowerCase()
-      );
-      if (matching.length > 0) {
-        buckets.push({
-          id: groupName,
-          name: groupName,
-          courses: matching
-        });
-        matching.forEach((c) => seenCourseIds.add(c.id));
-      }
-    }
-
-    // 2. Extra groups present on courses
-    for (const c of list) {
-      if (c.group && c.group.trim() && !seenCourseIds.has(c.id)) {
-        const gName = c.group.trim();
-        const existing = buckets.find((b) => b.name.toLowerCase() === gName.toLowerCase());
-        if (existing) {
-          existing.courses.push(c);
-        } else {
-          buckets.push({
-            id: gName,
-            name: gName,
-            courses: [c]
-          });
-        }
-        seenCourseIds.add(c.id);
-      }
-    }
-
-    // 3. Ungrouped courses
-    const ungrouped = list.filter((c) => !seenCourseIds.has(c.id));
-    if (ungrouped.length > 0) {
-      buckets.push({
-        id: '__ungrouped__',
-        name: buckets.length > 0 ? 'Ungrouped' : '',
-        courses: ungrouped,
-        isUngrouped: true
-      });
-    }
-
-    return buckets;
-  });
+  let groupedCourses = $derived(
+    groupItemsByGroups(
+      filteredCourses,
+      (c) => c.group,
+      (c) => c.id,
+      courseGroups
+    )
+  );
 </script>
 
 <svelte:window
@@ -546,14 +483,16 @@
 <main class="flex-1 overflow-y-auto px-0 py-3 space-y-4 sm:px-4 sm:py-6 sm:space-y-8 max-w-6xl mx-auto w-full">
   <!-- Page Hero & Search -->
   <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-1.5 sm:px-0">
-    <div>
-      <h1 class="text-xl sm:text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Active Courses</h1>
-      <p class="text-xs text-stone-500 dark:text-stone-400 mt-0.5">
-        Click on a course to dive in. 
-      </p>
+    <div class="flex items-center space-x-2.5">
+      <div class="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+        <BookOpen class="w-6 h-6" />
+      </div>
+      <div>
+        <h1 class="text-2xl font-bold tracking-tight text-stone-900 dark:text-stone-100">Courses</h1>
+      </div>
     </div>
 
-    <div class="flex items-center space-x-2">
+    <div class="flex -mt-2 items-center space-x-2">
       <div class="relative w-full sm:w-64">
         <Search class="absolute left-3 top-2.5 w-3.5 h-3.5 text-stone-400 dark:text-stone-500" />
         <input
@@ -569,7 +508,7 @@
         class="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-lg bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-medium hover:bg-stone-800 dark:hover:bg-white transition shadow-2xs shrink-0 cursor-pointer"
       >
         <Plus class="w-3.5 h-3.5" />
-        <span>Add Course</span>
+        <span>New</span>
       </button>
     </div>
   </div>
@@ -1227,15 +1166,15 @@
         {#if bucket.name}
           <GroupSection
             title={bucket.name}
-            count={bucket.courses.length}
+            count={bucket.items.length}
             groupId={bucket.id}
             isOpen={!groupState.isCollapsed(bucket.id) || Boolean(searchQuery.trim())}
             onToggle={() => groupState.toggle(bucket.id)}
           >
-            {@render courseGrid(bucket.courses)}
+            {@render courseGrid(bucket.items)}
           </GroupSection>
         {:else}
-          {@render courseGrid(bucket.courses)}
+          {@render courseGrid(bucket.items)}
         {/if}
       {/each}
     </div>

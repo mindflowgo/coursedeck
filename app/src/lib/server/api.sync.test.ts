@@ -18,7 +18,7 @@ function setupTestCourse(): void {
     level: 'Academic',
     units: []
   };
-  fs.writeFileSync(path.join(testCourseDir, 'manifest.json'), JSON.stringify(manifest), 'utf8');
+  fs.writeFileSync(path.join(testCourseDir, '.manifest.json'), JSON.stringify(manifest), 'utf8');
   fs.writeFileSync(path.join(testCourseDir, '01.01.lesson.md'), '# Lesson 1 content', 'utf8');
 
   const lockerDir = path.join(testCourseDir, 'assets', 'locker_docs');
@@ -78,7 +78,7 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
 
     const lesson = Buffer.from(archive[`courses/${testCourseId}/01.01.lesson.md`]).toString('utf8');
     expect(lesson).toBe('# Lesson 1 content');
-    expect(archive[`courses/${testCourseId}/manifest.json`]).toBeDefined();
+    expect(archive[`courses/${testCourseId}/.manifest.json`]).toBeDefined();
     expect(archive[`courses/${testCourseId}/assets/locker_docs/course.pdf`]).toBeDefined();
     expect(archive[`courses/${testCourseId}/assets/img/diagram.png`]).toBeDefined();
   });
@@ -98,7 +98,7 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
     // Markdown + manifest + assets are all present with course content
     const lesson = Buffer.from(archive[`courses/${testCourseId}/01.01.lesson.md`]).toString('utf8');
     expect(lesson).toBe('# Lesson 1 content');
-    expect(archive[`courses/${testCourseId}/manifest.json`]).toBeDefined();
+    expect(archive[`courses/${testCourseId}/.manifest.json`]).toBeDefined();
     expect(
       archive[`courses/${testCourseId}/assets/locker_docs/course.pdf`]
     ).toBeDefined();
@@ -119,7 +119,7 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
   it('incremental zip bundles only files modified since the given timestamp', async () => {
     // Age everything except diagram.png by a day
     const dayAgo = new Date(Date.now() - 86_400_000);
-    for (const rel of ['manifest.json', '01.01.lesson.md', 'assets/locker_docs/course.pdf']) {
+    for (const rel of ['.manifest.json', '01.01.lesson.md', 'assets/locker_docs/course.pdf']) {
       fs.utimesSync(path.join(testCourseDir, rel), dayAgo, dayAgo);
     }
 
@@ -138,7 +138,7 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
     expect(archive[`courses/${testCourseId}/assets/locker_docs/course.pdf`]).toBeUndefined();
     expect(archive[`courses/${testCourseId}/01.01.lesson.md`]).toBeUndefined();
     // The manifest rides along whenever the course has any change
-    expect(archive[`courses/${testCourseId}/manifest.json`]).toBeDefined();
+    expect(archive[`courses/${testCourseId}/.manifest.json`]).toBeDefined();
     expect(archive['_sync/meta.json']).toBeDefined();
   });
 
@@ -187,6 +187,11 @@ describe('Sync Push API (/api/sync/push)', () => {
   beforeEach(() => {
     fs.rmSync(pushCourseDir, { recursive: true, force: true });
     fs.mkdirSync(pushCourseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pushCourseDir, '.manifest.json'),
+      JSON.stringify({ id: pushCourseId, title: 'Push Test', units: [] }),
+      'utf8'
+    );
   });
 
   afterEach(() => {
@@ -306,45 +311,73 @@ describe('Sync Push API (/api/sync/push)', () => {
     expect(fs.existsSync(testPromptPath())).toBe(false);
   });
 
-  it('applies pushed locker-doc assets (base64) and delete tombstones', async () => {
+  it('ignores assets in the push payload — binaries move through the multipart locker-doc routes', async () => {
     const lockerDir = path.join(pushCourseDir, 'assets', 'locker_docs');
     const assetPath = path.join(lockerDir, 'pasted.jpg');
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d]);
 
+    // Legacy field shape (with base64) must be ignored, never written.
     await push({
       assets: {
         [pushCourseId]: [{ filename: 'pasted.jpg', base64: bytes.toString('base64'), date: new Date().toISOString() }]
       }
     });
-    expect(fs.existsSync(assetPath)).toBe(true);
-    expect(fs.readFileSync(assetPath).equals(bytes)).toBe(true);
-
-    // Tombstone older than the file: file is kept.
-    await push({
-      assets: {
-        [pushCourseId]: [{ filename: 'pasted.jpg', base64: null, date: new Date(Date.now() - 120_000).toISOString() }]
-      }
-    });
-    expect(fs.existsSync(assetPath)).toBe(true);
-
-    // Tombstone newer than the file: file is removed.
-    await push({
-      assets: {
-        [pushCourseId]: [{ filename: 'pasted.jpg', base64: null, date: new Date(Date.now() + 120_000).toISOString() }]
-      }
-    });
     expect(fs.existsSync(assetPath)).toBe(false);
   });
 
-  it('rejects path-traversal asset filenames', async () => {
-    const data = await push({
-      assets: {
-        [pushCourseId]: [
-          { filename: '../../evil.bin', base64: Buffer.from('x').toString('base64'), date: new Date().toISOString() }
-        ]
-      }
-    });
-    expect(data.results[pushCourseId].errors.length).toBeGreaterThan(0);
+  it('applies pushed locker-doc binaries via the multipart route with last-writer-wins', async () => {
+    const lockerDir = path.join(pushCourseDir, 'assets', 'locker_docs');
+    const assetPath = path.join(lockerDir, 'pasted.jpg');
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d]);
+    fs.mkdirSync(lockerDir, { recursive: true });
+
+    async function uploadLockerDoc(file: File, date?: string): Promise<any> {
+      const formData = new FormData();
+      formData.append('file', file);
+      if (date) formData.append('date', date);
+      const req = new Request(
+        `http://127.0.0.1:3182/api/courses/${pushCourseId}/locker-docs`,
+        { method: 'POST', body: formData }
+      );
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      return res.json();
+    }
+
+    // Fresh upload with the writing device's timestamp lands on disk.
+    const writeDate = new Date().toISOString();
+    await uploadLockerDoc(new File([new Uint8Array(bytes)], 'pasted.jpg'), writeDate);
+    expect(fs.existsSync(assetPath)).toBe(true);
+    expect(fs.readFileSync(assetPath).equals(bytes)).toBe(true);
+
+    // A stale push (older than the desktop's copy) is skipped, not clobbering.
+    const newerDesktopWrite = new Date(Date.now() + 60_000);
+    fs.utimesSync(assetPath, newerDesktopWrite, newerDesktopWrite);
+    await uploadLockerDoc(new File([new Uint8Array([0x00])], 'pasted.jpg'), writeDate);
+    expect(fs.readFileSync(assetPath).equals(bytes)).toBe(true);
+
+    // Tombstones go through the same route's DELETE.
+    const del = new Request(
+      `http://127.0.0.1:3182/api/courses/${pushCourseId}/locker-docs?file=${encodeURIComponent('pasted.jpg')}`,
+      { method: 'DELETE' }
+    );
+    const delRes = await handleApiRequest(del, new URL(del.url));
+    expect(delRes.status).toBe(200);
+    expect(fs.existsSync(assetPath)).toBe(false);
+  });
+
+  it('contains traversal filenames in the locker-doc multipart route', async () => {
+    const formData = new FormData();
+    formData.append('file', new File([new Uint8Array([1])], '../../evil.bin'));
+    const req = new Request(
+      `http://127.0.0.1:3182/api/courses/${pushCourseId}/locker-docs`,
+      { method: 'POST', body: formData }
+    );
+    const res = await handleApiRequest(req, new URL(req.url));
+    expect(res.status).toBe(200);
+
+    // Basename'd into the locker dir — nothing may escape the course folder.
     expect(fs.existsSync(path.join(CourseService.getCoursesDir(), 'evil.bin'))).toBe(false);
+    expect(fs.existsSync(path.join(pushCourseDir, 'assets', 'locker_docs', 'evil.bin'))).toBe(true);
   });
 });

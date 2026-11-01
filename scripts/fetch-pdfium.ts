@@ -16,7 +16,7 @@ import { execSync } from 'node:child_process';
 const ROOT_DIR = path.resolve(__dirname, '..');
 const TAURI_BIN_DIR = path.join(ROOT_DIR, 'tauri', 'bin');
 const TAURI_DIR = path.join(ROOT_DIR, 'tauri');
-const TAURIPAD_FRAMEWORKS_DIR = path.join(ROOT_DIR, 'tauripad', 'gen', 'apple', 'Frameworks');
+const IOS_FRAMEWORKS_DIR = path.join(ROOT_DIR, 'tauri', 'gen', 'apple', 'Frameworks');
 
 const CHROMIUM_VERSION = '8125';
 const BASE_URL = `https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/${CHROMIUM_VERSION}`;
@@ -97,17 +97,17 @@ async function fetchDesktopTarget(targetKey: string, force = false) {
 }
 
 async function fetchIosFrameworks(force = false) {
-  const xcframeworkPath = path.join(TAURIPAD_FRAMEWORKS_DIR, 'pdfium.xcframework');
+  const xcframeworkPath = path.join(IOS_FRAMEWORKS_DIR, 'pdfium.xcframework');
   if (!force && fs.existsSync(xcframeworkPath)) {
     console.log(`[fetch-pdfium] iOS framework already present at ${path.relative(ROOT_DIR, xcframeworkPath)} (skipping download)`);
     return;
   }
 
   console.log('[fetch-pdfium] Preparing iOS PDFium frameworks...');
-  fs.mkdirSync(TAURIPAD_FRAMEWORKS_DIR, { recursive: true });
+  fs.mkdirSync(IOS_FRAMEWORKS_DIR, { recursive: true });
 
-  const deviceDir = path.join(TAURIPAD_FRAMEWORKS_DIR, 'device');
-  const simDir = path.join(TAURIPAD_FRAMEWORKS_DIR, 'sim');
+  const deviceDir = path.join(IOS_FRAMEWORKS_DIR, 'device');
+  const simDir = path.join(IOS_FRAMEWORKS_DIR, 'sim');
   fs.mkdirSync(deviceDir, { recursive: true });
   fs.mkdirSync(simDir, { recursive: true });
 

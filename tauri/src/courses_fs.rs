@@ -1,7 +1,14 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
+#[cfg(not(target_os = "ios"))]
 use tauri::Manager;
+
+use crate::course_files;
+use crate::fs_util;
+
+pub use course_files::{LessonBundleResponse, PromptItem};
+pub use fs_util::FileEntry as LockerFileEntry;
+pub use fs_util::FileEntry as LibraryFileEntry;
 
 static COURSES_ROOT_CACHE: RwLock<Option<PathBuf>> = RwLock::new(None);
 
@@ -9,14 +16,6 @@ pub fn clear_courses_root_cache() {
     if let Ok(mut lock) = COURSES_ROOT_CACHE.write() {
         *lock = None;
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct LessonBundleResponse {
-    pub course_id: String,
-    pub lesson_id: String,
-    pub lesson: String,
-    pub tabs: HashMap<String, String>,
 }
 
 pub fn get_courses_root_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -32,6 +31,14 @@ pub fn get_courses_root_dir(app: &tauri::AppHandle) -> PathBuf {
     resolved
 }
 
+#[cfg(target_os = "ios")]
+fn resolve_courses_root_dir(app: &tauri::AppHandle) -> PathBuf {
+    // Everything lives under Documents (user-visible via the Files app);
+    // the desktop resolver chain does not apply.
+    crate::mobile::courses_root(app)
+}
+
+#[cfg(not(target_os = "ios"))]
 fn resolve_courses_root_dir(app: &tauri::AppHandle) -> PathBuf {
     // 0. Custom data_dir from settings.json
     if let Some(val) = crate::settings::get_setting_value(app, "data_dir") {
@@ -140,30 +147,12 @@ pub fn find_course_dir(app: &tauri::AppHandle, course_id: &str) -> Option<PathBu
     Some(target)
 }
 
-fn normalize_lesson_id(s: &str) -> String {
-    let s = s.trim().to_lowercase();
-    if let Some(pos) = s.find('.') {
-        let (first, rest) = s.split_at(pos);
-        let rest = &rest[1..];
-        if let Ok(u) = first.parse::<u32>() {
-            let mut digits_end = 0;
-            for (idx, ch) in rest.char_indices() {
-                if ch.is_ascii_digit() {
-                    digits_end = idx + 1;
-                } else {
-                    break;
-                }
-            }
-            if digits_end > 0 {
-                if let Ok(l) = rest[..digits_end].parse::<u32>() {
-                    let suffix = &rest[digits_end..];
-                    return format!("{:02}.{:02}{}", u, l, suffix);
-                }
-            }
-        }
-    }
-    s
+fn data_dir(app: &tauri::AppHandle) -> PathBuf {
+    let root = get_courses_root_dir(app);
+    root.parent().unwrap_or(&root).to_path_buf()
 }
+
+// ── Courses & lessons ─────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_lesson_bundle(
@@ -171,85 +160,7 @@ pub fn get_lesson_bundle(
     course_id: String,
     lesson_id: String,
 ) -> Result<LessonBundleResponse, String> {
-    let course_dir = match find_course_dir(&app, &course_id) {
-        Some(d) => d,
-        None => {
-            return Ok(LessonBundleResponse {
-                course_id,
-                lesson_id,
-                lesson: String::new(),
-                tabs: HashMap::new(),
-            });
-        }
-    };
-
-    if !course_dir.exists() {
-        return Ok(LessonBundleResponse {
-            course_id,
-            lesson_id,
-            lesson: String::new(),
-            tabs: HashMap::new(),
-        });
-    }
-
-    let target_norm = normalize_lesson_id(&lesson_id);
-    let target_raw = lesson_id.trim().to_lowercase();
-
-    let mut lesson_content = String::new();
-    let mut tabs = HashMap::new();
-    let mut matched_files = Vec::new();
-
-    let entries = std::fs::read_dir(&course_dir)
-        .map_err(|e| format!("Failed to read course dir {:?}: {e}", course_dir))?;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        if !file_name.ends_with(".md") {
-            continue;
-        }
-
-        let without_ext = &file_name[..file_name.len() - 3];
-        if let Some(last_dot) = without_ext.rfind('.') {
-            let file_lesson = &without_ext[..last_dot];
-            let file_tab = &without_ext[last_dot + 1..];
-
-            let file_norm = normalize_lesson_id(file_lesson);
-            let file_raw = file_lesson.trim().to_lowercase();
-
-            if file_norm == target_norm || file_raw == target_raw {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    matched_files.push(file_name.clone());
-                    if file_tab == "lesson" {
-                        lesson_content = content;
-                    } else {
-                        tabs.insert(file_tab.to_string(), content);
-                    }
-                }
-            }
-        }
-    }
-
-    eprintln!(
-        "[Desktop-Native] get_lesson_bundle: course={} lesson_id={} (norm={}) matched {} files: {:?}, has_lesson={}, tabs={:?}",
-        course_id,
-        lesson_id,
-        target_norm,
-        matched_files.len(),
-        matched_files,
-        !lesson_content.is_empty(),
-        tabs.keys().collect::<Vec<_>>()
-    );
-
-    Ok(LessonBundleResponse {
-        course_id,
-        lesson_id,
-        lesson: lesson_content,
-        tabs,
-    })
+    course_files::lesson_bundle(&get_courses_root_dir(&app), &course_id, &lesson_id)
 }
 
 #[tauri::command]
@@ -258,131 +169,7 @@ pub fn read_course_doc(
     course_id: String,
     filename: String,
 ) -> Result<Option<String>, String> {
-    if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        let file_path = course_dir.join(&filename);
-        if file_path.exists() {
-            let content = std::fs::read_to_string(&file_path)
-                .map_err(|e| format!("Failed to read {:?}: {e}", file_path))?;
-            eprintln!(
-                "[Desktop-Native] read_course_doc: read {} chars from {:?}",
-                content.len(),
-                file_path
-            );
-            return Ok(Some(content));
-        }
-    }
-    Ok(None)
-}
-
-// ── Locker docs (course assets/locker_docs, always local) ─────────────────────
-
-#[derive(serde::Serialize)]
-pub struct LockerFileEntry {
-    pub filename: String,
-    pub size: u64,
-    pub mtime_ms: u64,
-}
-
-fn locker_docs_dir(app: &tauri::AppHandle, course_id: &str) -> Result<PathBuf, String> {
-    let course_dir = find_course_dir(app, course_id)
-        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
-    Ok(course_dir.join("assets").join("locker_docs"))
-}
-
-fn sanitize_asset_filename(filename: &str) -> Result<String, String> {
-    let name = std::path::Path::new(filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    if name.is_empty() || name.starts_with('.') || name.contains('/') || name.contains('\\') {
-        return Err(format!("Invalid locker doc filename: {filename:?}"));
-    }
-    Ok(name)
-}
-
-fn file_mtime_ms(meta: &std::fs::Metadata) -> u64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-#[tauri::command]
-pub fn list_locker_docs(
-    app: tauri::AppHandle,
-    course_id: String,
-) -> Result<Vec<LockerFileEntry>, String> {
-    let dir = locker_docs_dir(&app, &course_id)?;
-    let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            if !entry.path().is_file() {
-                continue;
-            }
-            let filename = entry.file_name().to_string_lossy().to_string();
-            if filename.starts_with('.') {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata() {
-                files.push(LockerFileEntry {
-                    filename,
-                    size: meta.len(),
-                    mtime_ms: file_mtime_ms(&meta),
-                });
-            }
-        }
-    }
-    files.sort_by(|a, b| a.filename.cmp(&b.filename));
-    Ok(files)
-}
-
-#[tauri::command]
-pub fn save_locker_doc(
-    app: tauri::AppHandle,
-    course_id: String,
-    filename: String,
-    base64_data: String,
-) -> Result<LockerFileEntry, String> {
-    use base64::Engine;
-    let name = sanitize_asset_filename(&filename)?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64_data.as_bytes())
-        .map_err(|e| format!("invalid base64 payload: {e}"))?;
-
-    let dir = locker_docs_dir(&app, &course_id)?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {:?}: {e}", dir))?;
-    let path = dir.join(&name);
-    std::fs::write(&path, &bytes).map_err(|e| format!("Failed to write {:?}: {e}", path))?;
-    eprintln!(
-        "[Desktop-Native] save_locker_doc: saved {:?} ({} bytes)",
-        path,
-        bytes.len()
-    );
-    Ok(LockerFileEntry {
-        filename: name,
-        size: bytes.len() as u64,
-        mtime_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
-    })
-}
-
-#[tauri::command]
-pub fn delete_locker_doc(
-    app: tauri::AppHandle,
-    course_id: String,
-    filename: String,
-) -> Result<bool, String> {
-    let name = sanitize_asset_filename(&filename)?;
-    let path = locker_docs_dir(&app, &course_id)?.join(&name);
-    if !path.exists() {
-        return Ok(false);
-    }
-    std::fs::remove_file(&path).map_err(|e| format!("Failed to delete {:?}: {e}", path))?;
-    eprintln!("[Desktop-Native] delete_locker_doc: deleted {:?}", path);
-    Ok(true)
+    course_files::read_course_doc(&get_courses_root_dir(&app), &course_id, &filename)
 }
 
 #[tauri::command]
@@ -392,15 +179,7 @@ pub fn save_course_doc(
     filename: String,
     content: String,
 ) -> Result<(), String> {
-    let course_dir = find_course_dir(&app, &course_id)
-        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
-    std::fs::create_dir_all(&course_dir)
-        .map_err(|e| format!("Failed to create course dir {:?}: {e}", course_dir))?;
-    let file_path = course_dir.join(&filename);
-    std::fs::write(&file_path, content)
-        .map_err(|e| format!("Failed to write {:?}: {e}", file_path))?;
-    eprintln!("[Desktop-Native] save_course_doc: saved {:?}", file_path);
-    Ok(())
+    course_files::save_course_doc(&get_courses_root_dir(&app), &course_id, &filename, &content)
 }
 
 #[tauri::command]
@@ -409,70 +188,14 @@ pub fn delete_course_doc(
     course_id: String,
     filename: String,
 ) -> Result<bool, String> {
-    if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        if !course_dir.exists() {
-            return Ok(false);
-        }
-
-        // 1. Direct path check
-        let direct_path = course_dir.join(&filename);
-        if direct_path.exists() {
-            std::fs::remove_file(&direct_path)
-                .map_err(|e| format!("Failed to delete {:?}: {e}", direct_path))?;
-            eprintln!("[Desktop-Native] delete_course_doc: deleted {:?}", direct_path);
-            return Ok(true);
-        }
-
-        // 2. If filename has lesson prefix like 1.1.tab.md, check normalized candidate
-        if let Some(last_dot) = filename[..filename.len().saturating_sub(3)].rfind('.') {
-            let file_lesson = &filename[..last_dot];
-            let file_tab = &filename[last_dot + 1..filename.len().saturating_sub(3)];
-            let norm_lesson = normalize_lesson_id(file_lesson);
-            let norm_filename = format!("{norm_lesson}.{file_tab}.md");
-            let norm_path = course_dir.join(&norm_filename);
-            if norm_path.exists() {
-                std::fs::remove_file(&norm_path)
-                    .map_err(|e| format!("Failed to delete {:?}: {e}", norm_path))?;
-                eprintln!("[Desktop-Native] delete_course_doc: deleted {:?}", norm_path);
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+    course_files::delete_course_doc(&get_courses_root_dir(&app), &course_id, &filename)
 }
 
 #[tauri::command]
 pub fn list_cached_courses(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
-    let courses_dir = get_courses_root_dir(&app);
-    let mut courses = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&courses_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let meta_path = path.join("meta.json");
-                let manifest_path = path.join("manifest.json");
-                let target = if meta_path.exists() {
-                    Some(meta_path)
-                } else if manifest_path.exists() {
-                    Some(manifest_path)
-                } else {
-                    None
-                };
-                if let Some(target_file) = target {
-                    if let Ok(raw) = std::fs::read_to_string(&target_file) {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
-                            courses.push(val);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    eprintln!(
-        "[Desktop-Native] list_cached_courses: found {} courses in {:?}",
-        courses.len(),
-        courses_dir
-    );
+    let root = get_courses_root_dir(&app);
+    let courses = course_files::list_cached_courses(&root);
+    eprintln!("[Desktop-Native] list_cached_courses: found {} courses in {root:?}", courses.len());
     Ok(courses)
 }
 
@@ -481,75 +204,33 @@ pub fn get_cached_course(
     app: tauri::AppHandle,
     course_id: String,
 ) -> Result<Option<serde_json::Value>, String> {
-    if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        let meta_path = course_dir.join("meta.json");
-        let manifest_path = course_dir.join("manifest.json");
-        let target = if meta_path.exists() {
-            Some(meta_path)
-        } else if manifest_path.exists() {
-            Some(manifest_path)
-        } else {
-            None
-        };
-        if let Some(target_file) = target {
-            let raw = std::fs::read_to_string(&target_file)
-                .map_err(|e| format!("Failed to read manifest {:?}: {e}", target_file))?;
-            let val = serde_json::from_str(&raw)
-                .map_err(|e| format!("Failed to parse manifest: {e}"))?;
-            return Ok(Some(val));
-        }
-    }
-    Ok(None)
+    course_files::get_cached_course(&get_courses_root_dir(&app), &course_id)
 }
 
 #[tauri::command]
-pub fn delete_course(
-    app: tauri::AppHandle,
-    course_id: String,
-) -> Result<bool, String> {
-    let lower_id = course_id.to_lowercase();
-    let mut deleted = false;
-
-    if let Some(course_dir) = find_course_dir(&app, &lower_id) {
-        if course_dir.exists() {
-            std::fs::remove_dir_all(&course_dir)
-                .map_err(|e| format!("Failed to delete course directory {:?}: {e}", course_dir))?;
+pub fn delete_course(app: tauri::AppHandle, course_id: String) -> Result<bool, String> {
+    let root = get_courses_root_dir(&app);
+    // Belt and braces: the primary target plus any cwd-resolved duplicate.
+    let mut deleted = course_files::delete_course(&root, &course_id)?;
+    if let Some(dir) = find_course_dir(&app, &course_id) {
+        if dir.exists() && dir != course_files::course_dir(&root, &course_id) {
+            std::fs::remove_dir_all(&dir)
+                .map_err(|e| format!("Failed to delete course directory {dir:?}: {e}"))?;
             deleted = true;
         }
     }
-
-    let root = get_courses_root_dir(&app);
-    let target = root.join(&lower_id);
-    if target.exists() {
-        std::fs::remove_dir_all(&target)
-            .map_err(|e| format!("Failed to delete course directory {:?}: {e}", target))?;
-        deleted = true;
-    }
-
-    eprintln!("[Desktop-Native] delete_course: deleted course '{}' (found={deleted})", lower_id);
+    eprintln!("[Desktop-Native] delete_course: deleted course '{}' (found={deleted})", course_id.to_lowercase());
     Ok(deleted)
 }
+
+// ── Checkpoints & annotations ─────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_cached_checkpoints(
     app: tauri::AppHandle,
     course_id: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        let cp_path = if course_dir.join("checkpoints.json").exists() {
-            course_dir.join("checkpoints.json")
-        } else {
-            course_dir.join("checkpoint.json")
-        };
-        if cp_path.exists() {
-            let raw = std::fs::read_to_string(&cp_path).unwrap_or_default();
-            let val = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
-            if let serde_json::Value::Array(arr) = val {
-                return Ok(arr);
-            }
-        }
-    }
-    Ok(Vec::new())
+    Ok(course_files::get_cached_checkpoints(&get_courses_root_dir(&app), &course_id))
 }
 
 #[tauri::command]
@@ -558,40 +239,7 @@ pub fn save_checkpoint(
     course_id: String,
     checkpoint: serde_json::Value,
 ) -> Result<(), String> {
-    let course_dir = find_course_dir(&app, &course_id)
-        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
-    std::fs::create_dir_all(&course_dir)
-        .map_err(|e| format!("Failed to create dir {:?}: {e}", course_dir))?;
-    let cp_path = course_dir.join("checkpoints.json");
-    let legacy_path = course_dir.join("checkpoint.json");
-    let mut list = if cp_path.exists() {
-        let raw = std::fs::read_to_string(&cp_path).unwrap_or_default();
-        serde_json::from_str::<Vec<serde_json::Value>>(&raw).unwrap_or_default()
-    } else if legacy_path.exists() {
-        let raw = std::fs::read_to_string(&legacy_path).unwrap_or_default();
-        serde_json::from_str::<Vec<serde_json::Value>>(&raw).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-
-    let target_id = checkpoint.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    if let Some(pos) = list
-        .iter()
-        .position(|c| c.get("id").and_then(|v| v.as_str()) == Some(target_id))
-    {
-        list[pos] = checkpoint;
-    } else {
-        list.push(checkpoint);
-    }
-
-    let json = serde_json::to_string_pretty(&list)
-        .map_err(|e| format!("Serialization error: {e}"))?;
-    std::fs::write(&cp_path, &json)
-        .map_err(|e| format!("Failed to write checkpoints: {e}"))?;
-    if legacy_path.exists() {
-        let _ = std::fs::remove_file(&legacy_path);
-    }
-    Ok(())
+    course_files::save_checkpoint(&get_courses_root_dir(&app), &course_id, checkpoint)
 }
 
 #[tauri::command]
@@ -600,51 +248,12 @@ pub fn delete_checkpoint(
     course_id: String,
     checkpoint_id: String,
 ) -> Result<(), String> {
-    if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        let cp_path = course_dir.join("checkpoints.json");
-        let legacy_path = course_dir.join("checkpoint.json");
-        let list_opt = if cp_path.exists() {
-            let raw = std::fs::read_to_string(&cp_path).unwrap_or_default();
-            serde_json::from_str::<Vec<serde_json::Value>>(&raw).ok()
-        } else if legacy_path.exists() {
-            let raw = std::fs::read_to_string(&legacy_path).unwrap_or_default();
-            serde_json::from_str::<Vec<serde_json::Value>>(&raw).ok()
-        } else {
-            None
-        };
-        if let Some(list) = list_opt {
-            let filtered: Vec<_> = list
-                .into_iter()
-                .filter(|c| c.get("id").and_then(|v| v.as_str()) != Some(&checkpoint_id))
-                .collect();
-            let json = serde_json::to_string_pretty(&filtered)
-                .map_err(|e| format!("Serialization error: {e}"))?;
-            std::fs::write(&cp_path, &json)
-                .map_err(|e| format!("Failed to write checkpoints: {e}"))?;
-            if legacy_path.exists() {
-                let _ = std::fs::remove_file(&legacy_path);
-            }
-        }
-    }
-    Ok(())
+    course_files::delete_checkpoint(&get_courses_root_dir(&app), &course_id, &checkpoint_id)
 }
-
-// ── Markup annotations (annotations.json per course) ──────────────────────────
-// The webview sends the already-merged full stroke array (LWW applied in JS),
-// so these commands are a plain read/write of the JSON file.
 
 #[tauri::command]
 pub fn get_annotations(app: tauri::AppHandle, course_id: String) -> Result<Option<String>, String> {
-    if let Some(course_dir) = find_course_dir(&app, &course_id) {
-        let path = course_dir.join("annotations.json");
-        if path.exists() {
-            match std::fs::read_to_string(&path) {
-                Ok(raw) => return Ok(Some(raw)),
-                Err(e) => return Err(format!("Failed to read annotations: {e}")),
-            }
-        }
-    }
-    Ok(None)
+    course_files::get_annotations(&get_courses_root_dir(&app), &course_id)
 }
 
 #[tauri::command]
@@ -653,27 +262,10 @@ pub fn save_annotations(
     course_id: String,
     strokes_json: String,
 ) -> Result<(), String> {
-    let course_dir = find_course_dir(&app, &course_id)
-        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
-    std::fs::create_dir_all(&course_dir)
-        .map_err(|e| format!("Failed to create dir {:?}: {e}", course_dir))?;
-    // Validate it is a JSON array before writing
-    let parsed: Vec<serde_json::Value> = serde_json::from_str(&strokes_json)
-        .map_err(|e| format!("Invalid annotations JSON: {e}"))?;
-    let json = serde_json::to_string_pretty(&parsed)
-        .map_err(|e| format!("Serialization error: {e}"))?;
-    std::fs::write(course_dir.join("annotations.json"), &json)
-        .map_err(|e| format!("Failed to write annotations: {e}"))?;
-    Ok(())
+    course_files::save_annotations(&get_courses_root_dir(&app), &course_id, &strokes_json)
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct PromptItem {
-    pub id: String,
-    pub title: String,
-    pub filename: String,
-    pub content: String,
-}
+// ── Prompts ───────────────────────────────────────────────────────────────────
 
 pub fn get_prompts_dir(app: &tauri::AppHandle) -> PathBuf {
     let root = get_courses_root_dir(app);
@@ -700,101 +292,169 @@ pub fn get_prompts_dir(app: &tauri::AppHandle) -> PathBuf {
 
 #[tauri::command]
 pub fn list_prompts(app: tauri::AppHandle) -> Result<Vec<PromptItem>, String> {
-    let prompts_dir = get_prompts_dir(&app);
-    let mut list = Vec::new();
-    let mut seen_ids = std::collections::HashSet::new();
-    if let Ok(entries) = std::fs::read_dir(&prompts_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
-                let filename = entry.file_name().to_string_lossy().to_string();
-                let id = filename.trim_end_matches(".md").to_string();
-                if seen_ids.contains(&id) {
-                    continue;
-                }
-                seen_ids.insert(id.clone());
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    let title = content
-                        .lines()
-                        .find(|l| l.starts_with("# "))
-                        .map(|l| l[2..].trim().to_string())
-                        .unwrap_or_else(|| id.clone());
-                    list.push(PromptItem {
-                        id,
-                        title,
-                        filename,
-                        content,
-                    });
-                }
-            }
-        }
-    }
-    eprintln!("[Desktop-Native] list_prompts: found {} prompts in {:?}", list.len(), prompts_dir);
-    Ok(list)
+    Ok(course_files::list_prompts(&get_prompts_dir(&app)))
 }
 
 #[tauri::command]
 pub fn save_prompt(app: tauri::AppHandle, id: String, content: String) -> Result<(), String> {
-    let clean_id = id.trim().trim_end_matches(".md");
-    if clean_id.is_empty() || clean_id.contains('/') || clean_id.contains('\\') || clean_id.contains("..") {
-        return Err(format!("Invalid prompt ID: {}", clean_id));
-    }
-    let prompts_dir = get_prompts_dir(&app);
-    std::fs::create_dir_all(&prompts_dir).map_err(|e| e.to_string())?;
-    let path = prompts_dir.join(format!("{}.md", clean_id));
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
-    eprintln!("[Desktop-Native] save_prompt: saved {:?}", path);
-    Ok(())
+    course_files::save_prompt(&get_prompts_dir(&app), &id, &content).map(|_| ())
 }
 
 #[tauri::command]
 pub fn delete_prompt(app: tauri::AppHandle, id: String) -> Result<(), String> {
-    let clean_id = id.trim().trim_end_matches(".md");
-    if clean_id.is_empty() || clean_id.contains('/') || clean_id.contains('\\') || clean_id.contains("..") {
-        return Err(format!("Invalid prompt ID: {}", clean_id));
-    }
-    let prompts_dir = get_prompts_dir(&app);
-    let path = prompts_dir.join(format!("{}.md", clean_id));
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-    }
-    eprintln!("[Desktop-Native] delete_prompt: deleted {:?}", path);
-    Ok(())
+    course_files::delete_prompt(&get_prompts_dir(&app), &id)
 }
+
+// ── Groups ────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn get_groups_json(app: tauri::AppHandle) -> Result<String, String> {
-    let courses_dir = get_courses_root_dir(&app);
-    let data_dir = courses_dir.parent().unwrap_or(&courses_dir);
-    let path = data_dir.join("groups.json");
-    if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| e.to_string())
-    } else {
-        Ok("[]".to_string())
-    }
+    course_files::read_groups_json(&data_dir(&app))
 }
 
 #[tauri::command]
 pub fn save_groups_json(app: tauri::AppHandle, content: String) -> Result<(), String> {
-    let courses_dir = get_courses_root_dir(&app);
-    let data_dir = courses_dir.parent().unwrap_or(&courses_dir);
-    std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-    let path = data_dir.join("groups.json");
-    std::fs::write(&path, content).map_err(|e| e.to_string())?;
-    eprintln!("[Desktop-Native] save_groups_json: saved {:?}", path);
+    course_files::write_groups_json(&data_dir(&app), &content)
+}
+
+// ── Locker docs (course assets/locker_docs, always local) ─────────────────────
+
+fn locker_docs_dir(app: &tauri::AppHandle, course_id: &str) -> Result<PathBuf, String> {
+    let course_dir = find_course_dir(app, course_id)
+        .ok_or_else(|| format!("Could not resolve course dir for '{course_id}'"))?;
+    Ok(course_dir.join("assets").join("locker_docs"))
+}
+
+#[tauri::command]
+pub fn list_locker_docs(
+    app: tauri::AppHandle,
+    course_id: String,
+) -> Result<Vec<LockerFileEntry>, String> {
+    Ok(fs_util::list_files(&locker_docs_dir(&app, &course_id)?, |_| true))
+}
+
+/// Bytes are the raw IPC body; `course-id` and percent-encoded `filename`
+/// travel as headers (see fs_util::save_doc_raw).
+#[tauri::command]
+pub fn save_locker_doc(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<LockerFileEntry, String> {
+    let course_id = fs_util::request_header(&request, "course-id");
+    let dir = locker_docs_dir(&app, &course_id)?;
+    let entry = fs_util::save_doc_raw(&request, &dir)?;
+    eprintln!(
+        "[Desktop-Native] save_locker_doc: saved {}/{} ({} bytes)",
+        dir.display(),
+        entry.filename,
+        entry.size
+    );
+    Ok(entry)
+}
+
+#[tauri::command]
+pub fn delete_locker_doc(
+    app: tauri::AppHandle,
+    course_id: String,
+    filename: String,
+) -> Result<bool, String> {
+    fs_util::delete_file_in(&locker_docs_dir(&app, &course_id)?, &filename)
+}
+
+/// Raw bytes of a locker doc — used by the sync push to upload files that
+/// live on this device's disk.
+#[tauri::command]
+pub fn read_locker_doc(
+    app: tauri::AppHandle,
+    course_id: String,
+    filename: String,
+) -> Result<tauri::ipc::Response, String> {
+    let dir = locker_docs_dir(&app, &course_id)?;
+    let bytes = fs_util::read_doc_bytes(&dir, &filename)?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+// ── Library (data_dir/library) ────────────────────────────────────────────────
+
+pub fn get_library_dir(app: &tauri::AppHandle) -> PathBuf {
+    let lib = data_dir(app).join("library");
+    if !lib.exists() {
+        let _ = std::fs::create_dir_all(&lib);
+    }
+    lib
+}
+
+#[tauri::command]
+pub fn get_library_manifest(app: tauri::AppHandle) -> Result<String, String> {
+    fs_util::read_json_file(&get_library_dir(&app), ".manifest.json", "{\"version\":1,\"documents\":[]}")
+}
+
+#[tauri::command]
+pub fn save_library_manifest(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    fs_util::write_json_atomic(&get_library_dir(&app), ".manifest.json", &content)?;
+    eprintln!("[Desktop-Native] save_library_manifest: saved");
     Ok(())
+}
+
+#[tauri::command]
+pub fn get_library_annotations(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    fs_util::read_json_file(&get_library_dir(&app), ".annotations.json", "")
+        .map(|s| if s.is_empty() { None } else { Some(s) })
+}
+
+#[tauri::command]
+pub fn save_library_annotations(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    fs_util::write_json_atomic(&get_library_dir(&app), ".annotations.json", &content)?;
+    eprintln!("[Desktop-Native] save_library_annotations: saved");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_library_checkpoints(app: tauri::AppHandle) -> Result<String, String> {
+    fs_util::read_json_file(&get_library_dir(&app), ".checkpoints.json", "[]")
+}
+
+#[tauri::command]
+pub fn save_library_checkpoints(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    fs_util::write_json_atomic(&get_library_dir(&app), ".checkpoints.json", &content)?;
+    eprintln!("[Desktop-Native] save_library_checkpoints: saved");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_library_doc(app: tauri::AppHandle, filename: String) -> Result<bool, String> {
+    fs_util::delete_file_in(&get_library_dir(&app), &filename)
+}
+
+/// Bytes are the raw IPC body; the percent-encoded filename travels in a
+/// header (see fs_util::save_doc_raw).
+#[tauri::command]
+pub fn save_library_doc(
+    app: tauri::AppHandle,
+    request: tauri::ipc::Request<'_>,
+) -> Result<LibraryFileEntry, String> {
+    let entry = fs_util::save_doc_raw(&request, &get_library_dir(&app))?;
+    eprintln!(
+        "[Desktop-Native] save_library_doc: saved {} ({} bytes)",
+        entry.filename,
+        entry.size
+    );
+    Ok(entry)
+}
+
+#[tauri::command]
+pub fn list_library_docs(app: tauri::AppHandle) -> Result<Vec<LibraryFileEntry>, String> {
+    Ok(fs_util::list_files(&get_library_dir(&app), fs_util::is_library_document))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_normalize_lesson_id() {
-        assert_eq!(normalize_lesson_id("1.2"), "01.02");
-        assert_eq!(normalize_lesson_id("01.02"), "01.02");
-        assert_eq!(normalize_lesson_id("1.10"), "01.10");
-        assert_eq!(normalize_lesson_id("01.06_assign1"), "01.06_assign1");
-        assert_eq!(normalize_lesson_id("course.schedule"), "course.schedule");
+        assert_eq!(crate::course_files::normalize_lesson_id("1.2"), "01.02");
+        assert_eq!(crate::course_files::normalize_lesson_id("01.02"), "01.02");
+        assert_eq!(crate::course_files::normalize_lesson_id("1.10"), "01.10");
+        assert_eq!(crate::course_files::normalize_lesson_id("01.06_assign1"), "01.06_assign1");
+        assert_eq!(crate::course_files::normalize_lesson_id("course.schedule"), "course.schedule");
     }
 }

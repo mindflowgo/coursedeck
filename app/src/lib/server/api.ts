@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
+import { LibraryService } from './library';
 import type { MarkupStroke } from '../markup/types';
 import { PromptService } from './prompts';
 import { LLMService, type LLMConfig, type LlmModelCard } from './llm';
@@ -55,6 +56,10 @@ import { extractTextFromPdf } from './pdfText';
  * CORS is applied by the sidecar wrapper, not here.
  */
 
+/** Library uploads are fully buffered (and PDF-parsed) — cap them to keep memory bounded. */
+const MAX_LIBRARY_UPLOAD_MB = 500;
+const MAX_LIBRARY_UPLOAD_BYTES = MAX_LIBRARY_UPLOAD_MB * 1024 * 1024;
+
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -67,6 +72,8 @@ const MIME_TYPES: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
   '.pdf': 'application/pdf',
+  '.epub': 'application/epub+zip',
+  '.mobi': 'application/x-mobipocket-ebook',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
@@ -663,12 +670,22 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     // ---- /api/sync/push (iPad -> Desktop sync) ----
     if (pathname === '/api/sync/push' && method === 'POST') {
-      const body = (await req.json().catch(() => ({}))) as {
+      let reqJson: any = {};
+      try {
+        if (req.headers.get('content-encoding') === 'gzip' && req.body) {
+          const stream = req.body.pipeThrough(new DecompressionStream('gzip'));
+          reqJson = JSON.parse(await new Response(stream).text());
+        } else {
+          reqJson = await req.json();
+        }
+      } catch {
+        reqJson = {};
+      }
+      const body = reqJson as {
         checkpoints?: Record<string, any[]>;
         annotations?: Record<string, any[]>;
         documents?: Record<string, Array<{ filename: string; content: string | null; date: string }>>;
         prompts?: Array<{ id: string; content: string | null; date: string }>;
-        assets?: Record<string, Array<{ filename: string; base64: string | null; date: string }>>;
       };
 
       if (!body || typeof body !== 'object') {
@@ -752,8 +769,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           typeof filename === 'string' &&
           !filename.includes('/') &&
           !filename.includes('\\') &&
-          !filename.startsWith('.') &&
-          (filename === 'meta.json' || filename === 'manifest.json' || filename.endsWith('.md'));
+          (filename === '.manifest.json' || (!filename.startsWith('.') && filename.endsWith('.md')));
 
         for (const [rawCourseId, docs] of Object.entries(body.documents)) {
           let courseId: string;
@@ -837,68 +853,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         }
       }
 
-      // Locally-uploaded locker docs / pasted images (base64 binaries), same
-      // mtime-guarded last-writer-wins as markdown documents.
-      if (body.assets && typeof body.assets === 'object') {
-        for (const [rawCourseId, assets] of Object.entries(body.assets)) {
-          let courseId: string;
-          try {
-            courseId = assertCourseId(rawCourseId).toLowerCase();
-          } catch {
-            continue;
-          }
-          if (!Array.isArray(assets)) continue;
-
-          const entry = results[courseId] ?? { merged: 0, errors: [] };
-          for (const asset of assets) {
-            const filename = typeof asset?.filename === 'string' ? asset.filename : '';
-            if (
-              !filename ||
-              filename.startsWith('.') ||
-              filename.includes('/') ||
-              filename.includes('\\') ||
-              filename === 'manifest.json' ||
-              typeof asset?.date !== 'string'
-            ) {
-              entry.errors.push(`invalid asset entry: ${JSON.stringify(asset?.filename)}`);
-              continue;
-            }
-            try {
-              const lockerDir = safeJoin(getCoursesDir(), courseId, 'assets', 'locker_docs');
-              const filePath = safeJoin(lockerDir, filename);
-              const incomingDate = new Date(asset.date);
-              if (Number.isNaN(incomingDate.getTime())) {
-                entry.errors.push(`invalid date for ${filename}`);
-                continue;
-              }
-              const fileTime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : null;
-
-              if (asset.base64 === null) {
-                if (fileTime && fileTime <= incomingDate) {
-                  fs.rmSync(filePath, { force: true });
-                  entry.merged++;
-                }
-              } else if (typeof asset.base64 === 'string') {
-                const buffer = Buffer.from(asset.base64, 'base64');
-                if (buffer.length === 0) {
-                  entry.errors.push(`empty payload for ${filename}`);
-                  continue;
-                }
-                if (!fileTime || fileTime <= incomingDate) {
-                  fs.mkdirSync(lockerDir, { recursive: true });
-                  fs.writeFileSync(filePath, buffer);
-                  entry.merged++;
-                }
-              } else {
-                entry.errors.push(`invalid payload for ${filename}`);
-              }
-            } catch (e) {
-              entry.errors.push(e instanceof Error ? e.message : String(e));
-            }
-          }
-          results[courseId] = entry;
-        }
-      }
+      // Locker-doc binaries no longer ride in this JSON payload: the client
+      // pushes them as raw multipart uploads through
+      // POST/DELETE /api/courses/:id/locker-docs (see syncState.pushToDesktop).
 
       return json({ success: true, results, pushedAt: new Date().toISOString() });
     }
@@ -1645,8 +1602,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       return json({ success: true, message: `Opened ${dataDir}`, path: dataDir });
     }
 
-    // ---- /api/settings/groups (or legacy /api/settings/course-groups) ----
-    if (pathname === '/api/settings/groups' || pathname === '/api/settings/course-groups') {
+    // ---- /api/settings/groups ----
+    if (pathname === '/api/settings/groups') {
       const type = (url.searchParams.get('type') || '').toLowerCase().trim();
       if (method === 'GET') {
         const groups = type ? GroupService.getGroups(type) : GroupService.getAllGroups();
@@ -2372,6 +2329,151 @@ Grade/Level: ${grade || 'High School'}`;
       return json({ checkpoints });
     }
 
+    // ---- /api/library/** ----
+    if (pathname === '/api/library' && method === 'GET') {
+      const documents = await LibraryService.listDocuments();
+      return json({ documents });
+    }
+
+    if (pathname === '/api/library/refresh' && method === 'POST') {
+      const documents = await LibraryService.syncWithDisk();
+      return json({ success: true, documents });
+    }
+
+    if (pathname === '/api/library/open' && method === 'POST') {
+      const libDir = LibraryService.getDir();
+      if (!fs.existsSync(libDir)) {
+        fs.mkdirSync(libDir, { recursive: true });
+      }
+      return openWithFileManager(libDir);
+    }
+
+    if (pathname === '/api/library/upload' && method === 'POST') {
+      const contentType = req.headers.get('content-type') || '';
+      if (!contentType.includes('multipart/form-data')) {
+        return error(400, 'multipart/form-data required');
+      }
+      // Reject oversized uploads before buffering the multipart body.
+      const declaredLength = Number(req.headers.get('content-length') || '0');
+      if (declaredLength > MAX_LIBRARY_UPLOAD_BYTES) {
+        return error(413, `Document exceeds the ${MAX_LIBRARY_UPLOAD_MB} MB library upload limit`);
+      }
+      try {
+        const formData = await req.formData();
+        const file = formData.get('file') as File | null;
+        if (!file) return error(400, 'No file provided');
+        if (file.size > MAX_LIBRARY_UPLOAD_BYTES) {
+          return error(413, `"${file.name}" exceeds the ${MAX_LIBRARY_UPLOAD_MB} MB library upload limit`);
+        }
+        const title = (formData.get('title') as string) || '';
+        const description = (formData.get('description') as string) || '';
+        const group = (formData.get('group') as string) || '';
+        const buffer = Buffer.from(await file.arrayBuffer());
+        const saved = await LibraryService.saveDocument(file.name, buffer, { title, description, group });
+        return json({ success: true, document: saved });
+      } catch (err) {
+        console.error('[Library Upload Error]', err);
+        return error(500, err instanceof Error ? err.message : 'Failed to save document');
+      }
+    }
+
+    if (pathname === '/api/library/meta' && method === 'PUT') {
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const id = String(body.id || '').trim();
+      if (!id) return error(400, 'id is required');
+      const patch: { title?: string; description?: string; lastPage?: number; position?: number; thumbnail?: string; group?: string | null } = {};
+      if (typeof body.title === 'string') patch.title = body.title;
+      if (typeof body.description === 'string') patch.description = body.description;
+      if (typeof body.lastPage === 'number') patch.lastPage = body.lastPage;
+      if (typeof body.position === 'number') patch.position = body.position;
+      if (typeof body.thumbnail === 'string') patch.thumbnail = body.thumbnail;
+      if (typeof body.group === 'string' || body.group === null) patch.group = body.group as string | null;
+      const updated = LibraryService.updateDocumentMeta(id, patch);
+      if (!updated) return error(404, `Document ${id} not found`);
+      return json({ success: true, document: updated });
+    }
+
+    if (pathname === '/api/library/reorder' && method === 'PUT') {
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const orderedIds = Array.isArray(body.orderedIds) ? (body.orderedIds as string[]) : [];
+      const documents = LibraryService.reorderDocuments(orderedIds);
+      return json({ success: true, documents });
+    }
+
+    // GET /api/library/pdf/:filename or /api/library/file/:filename or /api/library/files/:filename
+    const libFileMatch = pathname.match(/^\/api\/library\/(?:pdf|file|files)\/(.+)$/);
+    if (libFileMatch && method === 'GET') {
+      const filename = path.basename(decodeURIComponent(libFileMatch[1]));
+      const fullPath = safeJoin(LibraryService.getDir(), filename);
+      if (!fs.existsSync(fullPath)) {
+        return error(404, `Library file not found: ${filename}`);
+      }
+      return fileResponse(fullPath, { 'Cache-Control': 'public, max-age=86400' });
+    }
+
+    // Annotations for library
+    if (pathname === '/api/library/annotations' && method === 'GET') {
+      const strokes = LibraryService.getAnnotations();
+      return json({ strokes });
+    }
+
+    if (pathname === '/api/library/annotations' && method === 'PUT') {
+      const body = (await req.json().catch(() => ({}))) as { upserts?: unknown[] };
+      if (!Array.isArray(body.upserts)) {
+        return error(400, 'upserts array is required');
+      }
+      const { strokes, merged } = LibraryService.mergeAnnotations(body.upserts as MarkupStroke[]);
+      return json({ success: true, merged, strokes });
+    }
+
+    // Checkpoints for library
+    if (pathname === '/api/library/checkpoints' && method === 'GET') {
+      const checkpoints = LibraryService.getCheckpoints();
+      return json({ checkpoints });
+    }
+
+    if (pathname === '/api/library/checkpoints' && method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const file = typeof body.file === 'string' ? body.file.trim() : '';
+      const verticalPosition = typeof body.verticalPosition === 'number' ? body.verticalPosition : 0;
+      if (!file) return error(400, 'file is required');
+      const note = LibraryService.addOrUpdateNoteCheckpoint({
+        id: typeof body.id === 'string' ? body.id : undefined,
+        file,
+        verticalPosition,
+        color: typeof body.color === 'string' ? body.color : undefined,
+        noteText: typeof body.noteText === 'string' ? body.noteText : undefined
+      });
+      return json({ success: true, checkpoint: note });
+    }
+
+    if (pathname === '/api/library/checkpoints/position' && method === 'POST') {
+      const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+      const file = typeof body.file === 'string' ? body.file.trim() : '';
+      const page = typeof body.page === 'number' ? body.page : (typeof body.verticalPosition === 'number' ? body.verticalPosition : 1);
+      if (!file) return error(400, 'file is required');
+      const posCheckpoint = LibraryService.recordPositionCheckpoint(file, page);
+      return json({ success: true, checkpoint: posCheckpoint });
+    }
+
+    const libDeleteCpMatch = pathname.match(/^\/api\/library\/checkpoints\/([^/]+)$/);
+    if (libDeleteCpMatch && method === 'DELETE') {
+      const cpId = libDeleteCpMatch[1];
+      const deleted = LibraryService.deleteCheckpoint(cpId);
+      return json({ success: deleted });
+    }
+
+    // DELETE /api/library/:id
+    const libDeleteMatch = pathname.match(/^\/api\/library\/([^/]+)$/);
+    if (libDeleteMatch && method === 'DELETE') {
+      const id = decodeURIComponent(libDeleteMatch[1]);
+      if (id !== 'annotations' && id !== 'checkpoints' && id !== 'meta' && id !== 'reorder' && id !== 'upload') {
+        const deleted = LibraryService.deleteDocument(id);
+        if (!deleted) return error(404, `Document ${id} not found`);
+        return json({ success: true });
+      }
+    }
+
     // ---- /api/courses/:course_id/** ----
     const courseMatch = pathname.match(/^\/api\/courses\/([^/]+)(?:\/(.*))?$/);
     if (courseMatch) {
@@ -2915,6 +3017,20 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
             const formData = await req.formData();
             const file = formData.get('file') as File | null;
             if (!file) return error(400, 'A file is required');
+
+            // Sync pushes send the writing device's timestamp: when the
+            // desktop's copy is newer, its edit wins (last-writer-wins).
+            const rawDate = formData.get('date');
+            if (typeof rawDate === 'string') {
+              const incoming = new Date(rawDate);
+              if (!Number.isNaN(incoming.getTime())) {
+                const existing = safeJoin(getCoursesDir(), courseId, 'assets', 'locker_docs', file.name);
+                if (fs.existsSync(existing) && fs.statSync(existing).mtime > incoming) {
+                  return json({ success: true, courseId, skipped: 'stale', file: { filename: file.name } });
+                }
+              }
+            }
+
             const arrayBuffer = await file.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);
             const saved = CourseService.saveLockerDoc(courseId, file.name, buffer);

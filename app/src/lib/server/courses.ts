@@ -134,12 +134,10 @@ export class CourseService {
 
     for (const dirName of dirs) {
       const courseFolder = path.join(coursesDir, dirName);
-      const metaPath = fs.existsSync(path.join(courseFolder, 'meta.json'))
-        ? path.join(courseFolder, 'meta.json')
-        : path.join(courseFolder, 'manifest.json');
-      if (fs.existsSync(metaPath)) {
+      const manifestPath = path.join(courseFolder, '.manifest.json');
+      if (fs.existsSync(manifestPath)) {
         try {
-          const content = fs.readFileSync(metaPath, 'utf8');
+          const content = fs.readFileSync(manifestPath, 'utf8');
           const manifest: CourseManifest = JSON.parse(content);
           manifest.path = courseFolder;
           manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
@@ -158,13 +156,11 @@ export class CourseService {
 
   static getCourse(courseId: string): CourseManifest | null {
     const courseFolder = this.courseDir(courseId);
-    const metaPath = fs.existsSync(safeJoin(courseFolder, 'meta.json'))
-      ? safeJoin(courseFolder, 'meta.json')
-      : safeJoin(courseFolder, 'manifest.json');
-    if (!fs.existsSync(metaPath)) return null;
+    const manifestPath = safeJoin(courseFolder, '.manifest.json');
+    if (!fs.existsSync(manifestPath)) return null;
 
     try {
-      const content = fs.readFileSync(metaPath, 'utf8');
+      const content = fs.readFileSync(manifestPath, 'utf8');
       const manifest: CourseManifest = JSON.parse(content);
       manifest.path = courseFolder;
       manifest.courseDocs = this.discoverCourseDocs(courseFolder) as any;
@@ -182,22 +178,22 @@ export class CourseService {
   }
 
   /**
-   * Patch editable meta.json fields (title, description, archived). Only the
+   * Patch editable .manifest.json fields (title, description, archived). Only the
    * provided fields are touched; the rest of the manifest is preserved
    * verbatim. Unarchiving deletes the flag entirely so active manifests stay
    * clean. Returns the updated manifest, or null when the course or its
-   * meta.json cannot be read.
+   * .manifest.json cannot be read.
    */
   static updateCourseMeta(
     courseId: string,
     patch: Partial<Pick<CourseManifest, 'title' | 'description' | 'archived' | 'coursePDF' | 'group'>>
   ): CourseManifest | null {
     const courseFolder = this.courseDir(courseId);
-    const metaPath = safeJoin(courseFolder, 'meta.json');
-    if (!fs.existsSync(metaPath)) return null;
+    const manifestPath = safeJoin(courseFolder, '.manifest.json');
+    if (!fs.existsSync(manifestPath)) return null;
 
     try {
-      const manifest: CourseManifest = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      const manifest: CourseManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
       if (patch.title !== undefined) manifest.title = patch.title;
       if (patch.description !== undefined) manifest.description = patch.description;
       if (patch.archived !== undefined) {
@@ -221,10 +217,10 @@ export class CourseService {
           delete manifest.group;
         }
       }
-      fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
       return manifest;
     } catch (e) {
-      console.error(`Failed to update meta.json for ${courseId}:`, e);
+      console.error(`Failed to update .manifest.json for ${courseId}:`, e);
       return null;
     }
   }
@@ -377,7 +373,7 @@ export class CourseService {
       try {
         this.updateCourseMeta(courseId, { coursePDF: true });
       } catch (err) {
-        console.warn(`Failed to update coursePDF in meta.json for ${courseId}:`, err);
+        console.warn(`Failed to update coursePDF in .manifest.json for ${courseId}:`, err);
       }
     }
     const ext = path.extname(safeName).replace(/^\./, '').toLowerCase();
@@ -402,7 +398,7 @@ export class CourseService {
           try {
             this.updateCourseMeta(courseId, { coursePDF: false });
           } catch (err) {
-            console.warn(`Failed to clear coursePDF in meta.json for ${courseId}:`, err);
+            console.warn(`Failed to clear coursePDF in .manifest.json for ${courseId}:`, err);
           }
         }
         return true;
@@ -534,12 +530,7 @@ export class CourseService {
   }
 
   static getCheckpointsPath(courseId: string): string {
-    const courseDir = this.courseDir(courseId);
-    const plural = safeJoin(courseDir, 'checkpoints.json');
-    if (fs.existsSync(plural)) return plural;
-    const legacy = safeJoin(courseDir, 'checkpoint.json');
-    if (fs.existsSync(legacy)) return legacy;
-    return plural;
+    return safeJoin(this.courseDir(courseId), '.checkpoints.json');
   }
 
   static getCheckpoints(courseId: string): Checkpoint[] {
@@ -564,17 +555,10 @@ export class CourseService {
     if (!fs.existsSync(courseDir)) {
       fs.mkdirSync(courseDir, { recursive: true });
     }
-    const filePath = safeJoin(courseDir, 'checkpoints.json');
+    const filePath = safeJoin(courseDir, '.checkpoints.json');
     try {
       const content = JSON.stringify(checkpoints, null, 2);
       fs.writeFileSync(filePath, content, 'utf8');
-      // If legacy singular checkpoint.json exists, clean it up so files aren't doubled
-      const legacyPath = safeJoin(courseDir, 'checkpoint.json');
-      if (fs.existsSync(legacyPath)) {
-        try {
-          fs.unlinkSync(legacyPath);
-        } catch {}
-      }
       return true;
     } catch (e) {
       console.error(`Failed to save checkpoints to ${filePath}:`, e);
@@ -582,10 +566,10 @@ export class CourseService {
     }
   }
 
-  // ── Free-hand markup annotations (annotations.json per course) ────────────
+  // ── Free-hand markup annotations (.annotations.json per course) ───────────
 
   static getAnnotationsPath(courseId: string): string {
-    return safeJoin(this.courseDir(courseId), 'annotations.json');
+    return safeJoin(this.courseDir(courseId), '.annotations.json');
   }
 
   static getAnnotations(courseId: string): MarkupStroke[] {

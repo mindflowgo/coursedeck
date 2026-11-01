@@ -15,16 +15,16 @@ describe('CourseService checkpoint persistence', () => {
   beforeAll(() => {
     fs.mkdirSync(courseDir, { recursive: true });
     fs.writeFileSync(
-      path.join(courseDir, 'meta.json'),
+      path.join(courseDir, '.manifest.json'),
       JSON.stringify({ id: courseId, title: 'Test Course Checkpoints', archived: false })
     );
   });
 
-  it('returns empty array when checkpoints.json does not exist', () => {
+  it('returns empty array when .checkpoints.json does not exist', () => {
     expect(CourseService.getCheckpoints(courseId)).toEqual([]);
   });
 
-  it('records and updates position checkpoints into checkpoints.json only', () => {
+  it('records and updates position checkpoints into .checkpoints.json only', () => {
     const pos1 = CourseService.recordPositionCheckpoint(courseId, '01.01.lesson.md', 250);
     expect(pos1.type).toBe('position');
     expect(pos1.file).toBe('01.01.lesson.md');
@@ -37,8 +37,7 @@ describe('CourseService checkpoint persistence', () => {
     const all = CourseService.getCheckpoints(courseId);
     expect(all.length).toBe(1);
     expect(all[0].verticalPosition).toBe(780);
-    expect(fs.existsSync(path.join(courseDir, 'checkpoints.json'))).toBe(true);
-    expect(fs.existsSync(path.join(courseDir, 'checkpoint.json'))).toBe(false);
+    expect(fs.existsSync(path.join(courseDir, '.checkpoints.json'))).toBe(true);
   });
 
   it('creates, updates, and deletes note checkpoints', () => {
@@ -95,40 +94,40 @@ describe('CourseService checkpoint persistence', () => {
     expect(notes[0].courseTitle).toBe('Test Course Checkpoints');
   });
 
-  it('reads legacy checkpoint.json (singular) if present, and migrates to checkpoints.json on save', () => {
-    const legacyCourseId = 'legacycp';
-    const legacyDir = path.join(scratch, 'courses', legacyCourseId);
-    fs.mkdirSync(legacyDir, { recursive: true });
+  it('reads and writes .checkpoints.json', () => {
+    const cpCourseId = 'dotcp';
+    const cpDir = path.join(scratch, 'courses', cpCourseId);
+    fs.mkdirSync(cpDir, { recursive: true });
     fs.writeFileSync(
-      path.join(legacyDir, 'meta.json'),
-      JSON.stringify({ id: legacyCourseId, title: 'Legacy Checkpoints Course', archived: false })
+      path.join(cpDir, '.manifest.json'),
+      JSON.stringify({ id: cpCourseId, title: 'Dot Checkpoints Course', archived: false })
     );
     fs.writeFileSync(
-      path.join(legacyDir, 'checkpoint.json'),
+      path.join(cpDir, '.checkpoints.json'),
       JSON.stringify([
         {
-          id: 'cp_legacy_1',
+          id: 'cp_dot_1',
           file: '01.01.lesson.md',
           verticalPosition: 300,
           type: 'note',
           color: 'green',
-          noteText: 'From legacy file',
+          noteText: 'From dot file',
           date: '2026-10-25T12:00:00Z'
         }
       ])
     );
 
-    const cps = CourseService.getCheckpoints(legacyCourseId);
+    const cps = CourseService.getCheckpoints(cpCourseId);
     expect(cps.length).toBe(1);
-    expect(cps[0].noteText).toBe('From legacy file');
+    expect(cps[0].noteText).toBe('From dot file');
 
-    // Saving updates checkpoints.json and removes legacy checkpoint.json
-    CourseService.addOrUpdateNoteCheckpoint(legacyCourseId, {
+    CourseService.addOrUpdateNoteCheckpoint(cpCourseId, {
       file: '01.02.lesson.md',
       verticalPosition: 50,
       noteText: 'New note'
     });
-    expect(fs.existsSync(path.join(legacyDir, 'checkpoints.json'))).toBe(true);
-    expect(fs.existsSync(path.join(legacyDir, 'checkpoint.json'))).toBe(false);
+    expect(fs.existsSync(path.join(cpDir, '.checkpoints.json'))).toBe(true);
+    const updated = CourseService.getCheckpoints(cpCourseId);
+    expect(updated.length).toBe(2);
   });
 });

@@ -12,6 +12,7 @@
     pageRange?: string;
     readingDescription?: string;
     initialPage?: number | null;
+    onPageChange?: (page: number) => void;
   }
 
   let {
@@ -22,7 +23,8 @@
     lessonTitle = '',
     pageRange = '',
     readingDescription = '',
-    initialPage = null
+    initialPage = null,
+    onPageChange
   }: Props = $props();
 
   // Static environment fact — evaluating it once avoids the state/onMount
@@ -107,6 +109,7 @@
     {pageRange}
     {readingDescription}
     {initialPage}
+    {onPageChange}
   />
 {:else}
   <div class="h-full w-full flex items-center justify-center text-stone-400 text-xs">

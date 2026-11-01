@@ -100,7 +100,7 @@ export class CourseIngest {
     const courseId = path.basename(courseDir).toLowerCase();
     const backupDir = path.join(courseDir, '_backup');
     const assetsDir = path.join(courseDir, 'assets');
-    const metaPath = path.join(courseDir, 'meta.json');
+    const manifestPath = path.join(courseDir, '.manifest.json');
 
     fs.mkdirSync(assetsDir, { recursive: true });
     fs.mkdirSync(backupDir, { recursive: true });
@@ -122,11 +122,11 @@ export class CourseIngest {
 
     // Load existing manifest if present to preserve custom course titles & descriptions
     let existingManifest: Partial<CourseManifest> | null = null;
-    if (fs.existsSync(metaPath)) {
+    if (fs.existsSync(manifestPath)) {
       try {
-        existingManifest = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        existingManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
       } catch (e) {
-        console.warn('Could not parse existing meta.json:', e);
+        console.warn('Could not parse existing .manifest.json:', e);
       }
     }
 
@@ -334,7 +334,7 @@ export class CourseIngest {
       archived: existingManifest?.archived
     };
 
-    fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
 
     if (newLessonsAdded.length > 0) {
       console.log(`✨ Added ${newLessonsAdded.length} new lesson(s) to [${courseId}]:`, newLessonsAdded);

@@ -530,16 +530,8 @@
             return;
           }
 
-          const buffer = await blob.arrayBuffer();
-          const bytes = new Uint8Array(buffer);
-          let binary = '';
-          const chunk = 0x8000;
-          for (let i = 0; i < bytes.length; i += chunk) {
-            binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-          }
-          const dataB64 = btoa(binary);
-
-          await invoke('save_pdf_file', { path: savePath, dataB64 });
+          const bytes = await blob.arrayBuffer();
+          await invoke('save_pdf_file', bytes, { headers: { path: encodeURIComponent(savePath) } });
           backupMessage = {
             type: 'success',
             text: `Backup successfully saved to ${savePath} (${totalMb} MB)`
@@ -851,7 +843,7 @@
       </div>
     {/if}
 
-    <!-- Course Groups Row -->
+    <!-- Groups Row -->
     <CourseGroupsSettings />
 
     <!-- Return to Most Recent Position in Course Row -->
@@ -931,7 +923,7 @@
       <div class="flex flex-wrap items-center justify-between gap-1.5">
         <div class="flex items-center space-x-2">
           <HardDrive class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
-          <span class="font-medium text-stone-900 dark:text-stone-100">Course Data Directory</span>
+          <span class="font-medium text-stone-900 dark:text-stone-100">Data Directory</span>
           {#if storageInfo}
             <span class="text-[11px] text-stone-400 dark:text-stone-500">
               ({storageInfo.courseCount} {storageInfo.courseCount === 1 ? 'course' : 'courses'} &bull; {storageInfo.totalSizeFormatted})

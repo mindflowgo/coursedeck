@@ -57,7 +57,7 @@ describe('Pop Quiz Accountability & Schedule Mark-Done API', () => {
         }
       ]
     };
-    fs.writeFileSync(path.join(courseDir, 'meta.json'), JSON.stringify(manifest, null, 2));
+    fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify(manifest, null, 2));
 
     // Setup initial schedule markdown with undone checkboxes
     const initialSchedule = `# Test Course Schedule\n\n### 2026-10-20 · Tue\n- [ ] **Study** 01.01 — Introduction to the first lesson (60m)\n- [ ] **Study** 01.02 — Introduction to the second lesson (60m)\n`;

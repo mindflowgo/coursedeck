@@ -1,27 +1,41 @@
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use tauri_plugin_deep_link::DeepLinkExt;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 use std::process::Command;
 use tauri::Manager;
 
-mod settings;
-mod window_state;
 mod courses_fs;
 pub mod pdf;
+mod fs_util;
+mod course_files;
+#[cfg(target_os = "ios")]
+mod mobile;
+mod settings;
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+mod window_state;
 #[cfg(target_os = "windows")]
 mod windows_process;
 
-/// Writes a base64-encoded file (e.g. an exported PDF) to a user-chosen path
-/// coming from the save dialog. Runs with extension and destination validation.
+/// Writes an exported file (e.g. an exported PDF) to a user-chosen path from
+/// the save dialog. The bytes are the raw IPC body; the percent-encoded target
+/// path travels in a header. Runs with extension and destination validation.
 #[tauri::command]
-fn save_pdf_file(path: String, data_b64: String) -> Result<(), String> {
-    let p = Path::new(&path);
-    let ext = p
+fn save_pdf_file(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let path = fs_util::request_header(&request, "path");
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    let ext = Path::new(&path)
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let ext: String = {
+        let dot = path.rfind('.').map(|i| &path[i + 1..]).unwrap_or("");
+        dot.to_lowercase()
+    };
     if ext != "pdf" && ext != "md" && ext != "png" && ext != "zip" {
         return Err("Only .pdf, .md, .png, and .zip file exports are permitted".into());
     }
@@ -34,26 +48,13 @@ fn save_pdf_file(path: String, data_b64: String) -> Result<(), String> {
         || STARTS_WITH_PATTERNS.iter().any(|p| path_str.starts_with(p))
     {
         return Err("Saving to restricted system directories is not allowed".into());
-    }    
-    // if path_str.contains("/.ssh")
-    //     || path_str.contains("/.aws")
-    //     || path_str.contains("/.bash")
-    //     || path_str.contains("/.zsh")
-    //     || path_str.starts_with("/etc")
-    //     || path_str.starts_with("/system")
-    //     || path_str.starts_with("/usr")
-    //     || path_str.starts_with("/bin")
-    //     || path_str.starts_with("/sbin")
-    // {
-    //     return Err("Saving to restricted system directories is not allowed".into());
-    // }
+    }
 
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data_b64.as_bytes())
-        .map_err(|e| format!("invalid base64 payload: {e}"))?;
+    let bytes = fs_util::request_body_bytes(&request)?;
     std::fs::write(&path, bytes).map_err(|e| format!("failed to write '{path}': {e}"))
 }
+
+// ── Desktop: sidecar backend + shell integration ─────────────────────────────
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn open_directory(path: &Path) -> Result<(), String> {
@@ -82,11 +83,7 @@ fn open_directory(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn open_directory(_path: &Path) -> Result<(), String> {
-    Err("Opening directories is not supported on this platform".to_string())
-}
-
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn find_course_dir(app: &tauri::AppHandle, course_id: &str) -> Option<PathBuf> {
     let lower_id = course_id.to_lowercase();
 
@@ -189,6 +186,7 @@ fn find_course_dir(app: &tauri::AppHandle, course_id: &str) -> Option<PathBuf> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 #[tauri::command]
 fn open_course_folder(app: tauri::AppHandle, course_id: String, path: Option<String>) -> Result<(), String> {
     if course_id.is_empty()
@@ -221,14 +219,126 @@ fn open_course_folder(app: tauri::AppHandle, course_id: String, path: Option<Str
     open_directory(&dir_to_open)
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn find_library_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    // 0. Custom data_dir from settings.json
+    if let Some(val) = settings::get_setting_value(app, "data_dir") {
+        if let Some(str_path) = val.as_str() {
+            let p = PathBuf::from(str_path).join("library");
+            return Some(p);
+        }
+    }
+
+    // 1. Env variable DATA_DIR
+    if let Ok(data_env) = std::env::var("DATA_DIR") {
+        let p = PathBuf::from(data_env).join("library");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 2. Relative to current working dir
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidates = [
+            cwd.join("data").join("library"),
+            cwd.join("..").join("data").join("library"),
+            cwd.join("library"),
+        ];
+        for c in candidates {
+            if c.exists() {
+                return Some(c);
+            }
+        }
+    }
+
+    // 2b. Portable layout: data/library beside the executable
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let candidate = exe_dir.join("data").join("library");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 3. App data directory
+    if let Ok(app_data) = app.path().app_data_dir() {
+        let candidates = [
+            app_data.join("data").join("library"),
+            app_data.join("library"),
+        ];
+        for c in candidates {
+            if c.exists() {
+                return Some(c);
+            }
+        }
+    }
+
+    // 3b. macOS and Windows direct Application Support / AppData paths
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(&home).join("Library/Application Support/com.rezox.coursedeck/data/library");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let win_appdata = std::env::var("APPDATA")
+        .or_else(|_| std::env::var("USERPROFILE").map(|h| format!("{h}\\AppData\\Roaming")));
+    if let Ok(appdata_str) = win_appdata {
+        let p = PathBuf::from(appdata_str).join("com.rezox.coursedeck").join("data").join("library");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+
+    // 4. Resource directory
+    if let Ok(res) = app.path().resource_dir() {
+        let candidates = [
+            res.join("data").join("library"),
+            res.join("library"),
+        ];
+        for c in candidates {
+            if c.exists() {
+                return Some(c);
+            }
+        }
+    }
+
+    // Fallback candidate in cwd
+    if let Ok(cwd) = std::env::current_dir() {
+        let candidate_parent = cwd.join("..").join("data").join("library");
+        if candidate_parent.exists() {
+            return Some(candidate_parent);
+        }
+        Some(cwd.join("data").join("library"))
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+#[tauri::command]
+fn open_library_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let target_dir = find_library_dir(&app)
+        .ok_or_else(|| "Library folder could not be located.".to_string())?;
+
+    if !target_dir.exists() {
+        let _ = std::fs::create_dir_all(&target_dir);
+    }
+
+    open_directory(&target_dir)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 struct BackendProcess {
     child: std::sync::Mutex<Option<std::process::Child>>,
     #[cfg(target_os = "windows")]
     _job: std::sync::Mutex<Option<windows_process::JobObjectHandle>>,
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 const BACKEND_PORT: u16 = 3182;
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn get_default_data_dir(app: &tauri::App) -> PathBuf {
     if let Ok(cwd) = std::env::current_dir() {
         if cwd.join("data").exists() {
@@ -255,6 +365,7 @@ fn get_default_data_dir(app: &tauri::App) -> PathBuf {
 
 /// All sidecar stdout/stderr lands in `<data_dir>/backend.log` so packaged
 /// builds leave a diagnosable trail instead of dropping output on the floor.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn backend_log_file(data_dir: &Path) -> Option<std::fs::File> {
     let _ = std::fs::create_dir_all(data_dir);
     std::fs::OpenOptions::new()
@@ -264,6 +375,7 @@ fn backend_log_file(data_dir: &Path) -> Option<std::fs::File> {
         .ok()
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn log_backend_line(data_dir: &Path, message: &str) {
     use std::io::Write;
     if let Some(mut file) = backend_log_file(data_dir) {
@@ -272,6 +384,7 @@ fn log_backend_line(data_dir: &Path, message: &str) {
 }
 
 /// RFC-3339-ish local timestamp without pulling in a chrono dependency.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn chrono_like_timestamp() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -282,6 +395,7 @@ fn chrono_like_timestamp() -> String {
 
 /// Candidate filenames for the compiled Bun sidecar, per platform.
 /// `bun build --compile` emits `server` on unix and `server.exe` on Windows.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn backend_binary_names() -> Vec<&'static str> {
     if cfg!(target_os = "windows") {
         vec![
@@ -299,7 +413,36 @@ fn backend_binary_names() -> Vec<&'static str> {
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn kill_stale_backend_listener(port: u16) {
+    if let Ok(output) = Command::new("lsof")
+        .args(["-ti", &format!(":{port}")])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                eprintln!("[Tauri] Terminating stale process {pid} on port {port} before backend start");
+                let _ = Command::new("kill").args(["-9", &pid.to_string()]).output();
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn kill_stale_backend_listener(port: u16) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let _ = Command::new("cmd")
+        .args(["/C", &format!("for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :{port}') do taskkill /F /PID %a")])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn start_backend_process(app: &tauri::App) -> Option<std::process::Child> {
+    kill_stale_backend_listener(BACKEND_PORT);
+
     let data_dir = if let Some(val) = settings::get_setting_value(app.handle(), "data_dir") {
         if let Some(s) = val.as_str() {
             PathBuf::from(s)
@@ -518,6 +661,7 @@ fn start_backend_process(app: &tauri::App) -> Option<std::process::Child> {
 /// Blocks until the sidecar accepts TCP connections on the loopback port, or
 /// the timeout elapses. Keeps the (initially hidden) window from appearing
 /// before the API is actually reachable.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn wait_for_backend(timeout: std::time::Duration) -> bool {
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], BACKEND_PORT));
     let deadline = std::time::Instant::now() + timeout;
@@ -538,6 +682,7 @@ fn wait_for_backend(timeout: std::time::Duration) -> bool {
 /// mutex, ensuring the termination logic runs at most once regardless
 /// of which lifecycle hook (WindowEvent::Destroyed, RunEvent::ExitRequested,
 /// RunEvent::Exit) triggers it first.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn terminate_backend(app_handle: &tauri::AppHandle) {
     if let Some(proc) = app_handle.try_state::<BackendProcess>() {
         let child_opt = if let Ok(mut lock) = proc.child.lock() {
@@ -571,43 +716,74 @@ pub fn terminate_backend(app_handle: &tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_http::init());
+
+    // Desktop: shell integration + sidecar lifecycle helpers.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_http::init())
-        .invoke_handler(tauri::generate_handler![
-            settings::get_setting,
-            settings::set_setting,
-            save_pdf_file,
-            open_course_folder,
-            courses_fs::get_lesson_bundle,
-            courses_fs::read_course_doc,
-            courses_fs::save_course_doc,
-            courses_fs::delete_course_doc,
-            courses_fs::list_locker_docs,
-            courses_fs::save_locker_doc,
-            courses_fs::delete_locker_doc,
-            courses_fs::list_cached_courses,
-            courses_fs::get_cached_course,
-            courses_fs::delete_course,
-            courses_fs::get_cached_checkpoints,
-            courses_fs::save_checkpoint,
-            courses_fs::delete_checkpoint,
-            courses_fs::get_annotations,
-            courses_fs::save_annotations,
-            courses_fs::list_prompts,
-            courses_fs::save_prompt,
-            courses_fs::delete_prompt,
-            courses_fs::get_groups_json,
-            courses_fs::save_groups_json,
-            pdf::pdf_get_info,
-            pdf::pdf_render_page,
-            pdf::pdf_render_thumbnail,
-            pdf::pdf_get_page_text,
-            pdf::pdf_search,
-            pdf::pdf_close_document,
-        ]);
+        .plugin(tauri_plugin_window_state::Builder::default().build());
+
+    // iOS: PencilKit, barcode scanner and the courseasset:// file protocol.
+    #[cfg(target_os = "ios")]
+    let builder = builder
+        .plugin(tauri_plugin_barcode_scanner::init())
+        .plugin(tauri_plugin_pencilkit::init())
+        .register_uri_scheme_protocol("courseasset", |ctx, request| {
+            mobile::serve_course_asset(&ctx.app_handle(), &request.uri().to_string())
+        });
+
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        save_pdf_file,
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        open_course_folder,
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        open_library_folder,
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        settings::get_setting,
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+        settings::set_setting,
+        courses_fs::get_lesson_bundle,
+        courses_fs::read_course_doc,
+        courses_fs::save_course_doc,
+        courses_fs::delete_course_doc,
+        courses_fs::list_locker_docs,
+        courses_fs::save_locker_doc,
+        courses_fs::delete_locker_doc,
+        courses_fs::read_locker_doc,
+        courses_fs::list_cached_courses,
+        courses_fs::get_cached_course,
+        courses_fs::delete_course,
+        courses_fs::get_cached_checkpoints,
+        courses_fs::save_checkpoint,
+        courses_fs::delete_checkpoint,
+        courses_fs::get_annotations,
+        courses_fs::save_annotations,
+        courses_fs::list_prompts,
+        courses_fs::save_prompt,
+        courses_fs::delete_prompt,
+        courses_fs::get_groups_json,
+        courses_fs::save_groups_json,
+        courses_fs::get_library_manifest,
+        courses_fs::save_library_manifest,
+        courses_fs::get_library_annotations,
+        courses_fs::save_library_annotations,
+        courses_fs::get_library_checkpoints,
+        courses_fs::save_library_checkpoints,
+        courses_fs::delete_library_doc,
+        courses_fs::save_library_doc,
+        courses_fs::list_library_docs,
+        #[cfg(target_os = "ios")]
+        mobile::sync_fetch_bundle_zip,
+        pdf::pdf_get_info,
+        pdf::pdf_render_page,
+        pdf::pdf_render_thumbnail,
+        pdf::pdf_get_page_text,
+        pdf::pdf_search,
+        pdf::pdf_close_document,
+    ]);
 
     builder
         .setup(|app| {
@@ -615,21 +791,21 @@ pub fn run() {
             let pdf_state = pdf::PdfEngineState(pdf::PdfEngine::new().map(std::sync::Arc::new));
             app.manage(pdf_state);
 
-            // Start local backend server for packaged app
-            let child = start_backend_process(app);
-            let backend_spawned = child.is_some();
-
-            #[cfg(target_os = "windows")]
-            let job = child.as_ref().and_then(windows_process::assign_to_job_object);
-
-            app.manage(BackendProcess {
-                child: std::sync::Mutex::new(child),
-                #[cfg(target_os = "windows")]
-                _job: std::sync::Mutex::new(job),
-            });
-
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
             {
+                // Start local backend server for packaged app
+                let child = start_backend_process(app);
+                let backend_spawned = child.is_some();
+
+                #[cfg(target_os = "windows")]
+                let job = child.as_ref().and_then(windows_process::assign_to_job_object);
+
+                app.manage(BackendProcess {
+                    child: std::sync::Mutex::new(child),
+                    #[cfg(target_os = "windows")]
+                    _job: std::sync::Mutex::new(job),
+                });
+
                 let _ = app.deep_link().register_all();
 
                 // Custom window state restore — held back until the backend
@@ -657,9 +833,10 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
-                terminate_backend(app_handle);
+        .run(|_app_handle, _event| {
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = _event {
+                terminate_backend(_app_handle);
             }
         });
 }

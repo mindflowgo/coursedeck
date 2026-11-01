@@ -74,7 +74,7 @@ const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'ilc-active-e2e-'));
 const courseDir = path.join(SCRATCH, 'courses', 'zztest');
 fs.mkdirSync(courseDir, { recursive: true });
 fs.writeFileSync(
-  path.join(courseDir, 'meta.json'),
+  path.join(courseDir, '.manifest.json'),
   JSON.stringify({
     id: 'zztest',
     title: 'Routing Fixture',

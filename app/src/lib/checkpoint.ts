@@ -222,9 +222,15 @@ export function resolveRouteFromFile(file: string): { isCourseScope: boolean; is
  * Builds the URL to jump to a checkpoint on a course page.
  */
 export function getCheckpointHref(courseId: string, checkpoint: Checkpoint): string {
+  const cId = (courseId || checkpoint.courseId || '').trim().toLowerCase();
   const pdfKey = parsePdfPageFileKey(checkpoint.file);
+  if (cId === 'library') {
+    if (pdfKey) {
+      return `/library?doc=${encodeURIComponent(pdfKey.baseDoc)}&page=${pdfKey.pageNumber}`;
+    }
+    return `/library?doc=${encodeURIComponent(checkpoint.file)}`;
+  }
   if (pdfKey) {
-    const cId = (courseId || checkpoint.courseId || '').trim().toLowerCase();
     return `/courses/${cId}/course/book?page=${pdfKey.pageNumber}`;
   }
   const parsed = parseDocFileName(checkpoint.file);

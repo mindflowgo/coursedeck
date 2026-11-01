@@ -17,7 +17,7 @@ process.env.ILC_SETTINGS_PATH = settingsPath;
 const testCourseDir = path.join(coursesDir, 'tst01');
 fs.mkdirSync(testCourseDir, { recursive: true });
 fs.writeFileSync(
-  path.join(testCourseDir, 'meta.json'),
+  path.join(testCourseDir, '.manifest.json'),
   JSON.stringify(
     {
       id: 'tst01',
@@ -480,8 +480,8 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     expect(fs.existsSync(path.join(testCourseDir, '01.02.summary.md'))).toBe(true);
     expect(fs.existsSync(path.join(testCourseDir, '01.02.cheatsheet.md'))).toBe(true);
 
-    // Verify meta.json updated
-    const meta = JSON.parse(fs.readFileSync(path.join(testCourseDir, 'meta.json'), 'utf8'));
+    // Verify .manifest.json updated
+    const meta = JSON.parse(fs.readFileSync(path.join(testCourseDir, '.manifest.json'), 'utf8'));
     const lesson = meta.units[0].lessons.find((l: any) => l.id === '01.02');
     expect(lesson).toBeDefined();
     expect(lesson.title).toBe('Lesson 2 Practice');

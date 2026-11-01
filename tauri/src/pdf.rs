@@ -535,9 +535,58 @@ fn find_course_dir_any(app: &tauri::AppHandle, course_id: &str) -> Option<PathBu
     None
 }
 
+fn find_library_dir_any(app: &tauri::AppHandle) -> Option<PathBuf> {
+    if let Ok(app_data) = app.path().app_data_dir() {
+        if let Ok(settings) = std::fs::read_to_string(app_data.join("settings.json")) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&settings) {
+                if let Some(dir) = value.get("data_dir").and_then(|d| d.as_str()) {
+                    let candidate = PathBuf::from(dir).join("library");
+                    if candidate.exists() {
+                        return Some(candidate);
+                    }
+                }
+            }
+        }
+        let candidate = app_data.join("library");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    if cfg!(target_os = "ios") {
+        if let Ok(documents) = app.path().document_dir() {
+            let candidate = documents.join("library");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    if let Ok(data_env) = std::env::var("DATA_DIR") {
+        let candidate = PathBuf::from(data_env).join("library");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        for base in &[
+            cwd.join("data").join("library"),
+            cwd.join("..").join("data").join("library"),
+            cwd.join("library"),
+        ] {
+            if base.exists() {
+                return Some(base.clone());
+            }
+        }
+    }
+
+    None
+}
+
 /// Parses `courseasset://localhost/{course_id}/assets/{rel}` into its parts,
 /// percent-decoding the path and rejecting traversal (`..`) or non-asset
-/// targets. Shared by the tauripad webview protocol handler and PDF path
+/// targets. Shared by the iOS webview protocol handler and PDF path
 /// resolution here.
 pub fn parse_course_asset_uri(uri: &str) -> Option<(String, String)> {
     use percent_encoding::percent_decode_str;
@@ -571,13 +620,45 @@ pub fn resolve_pdf_path(app: &tauri::AppHandle, path_or_url: &str) -> PathBuf {
     let clean = path_or_url.trim();
     eprintln!("[PDF-Resolve] Resolving path: '{}'", clean);
 
-    // courseasset://localhost/{course_id}/assets/{rel} — the tauripad webview
+    // courseasset://localhost/{course_id}/assets/{rel} — the iOS webview
     // protocol scheme; resolve it to disk so pdfium can open synced PDFs.
     if let Some((course_id, rel)) = parse_course_asset_uri(clean) {
         if let Some(course_dir) = find_course_dir_any(app, &course_id) {
             let path = course_dir.join(&rel);
             eprintln!("[PDF-Resolve] courseasset candidate: {:?} (exists: {})", path, path.exists());
             return path;
+        }
+    }
+
+    // Check if it's a Library PDF URL: /api/library/pdf/{filename} or /api/library/files/{filename}
+    if let Some(lib_sub) = clean
+        .strip_prefix("/api/library/pdf/")
+        .or_else(|| clean.strip_prefix("api/library/pdf/"))
+        .or_else(|| clean.strip_prefix("/api/library/files/"))
+        .or_else(|| clean.strip_prefix("api/library/files/"))
+        .or_else(|| clean.strip_prefix("/api/library/file/"))
+        .or_else(|| clean.strip_prefix("api/library/file/"))
+    {
+        let raw_filename = lib_sub.split('?').next().unwrap_or(lib_sub);
+        let filename = percent_encoding::percent_decode_str(raw_filename)
+            .decode_utf8_lossy()
+            .to_string();
+        if let Some(lib_dir) = find_library_dir_any(app) {
+            let direct_path = lib_dir.join(&filename);
+            eprintln!(
+                "[PDF-Resolve] Library candidate: {:?} (exists: {})",
+                direct_path,
+                direct_path.exists()
+            );
+            if direct_path.exists() {
+                return direct_path;
+            }
+        }
+        if let Ok(app_data) = app.path().app_data_dir() {
+            let direct_path = app_data.join("library").join(&filename);
+            if direct_path.exists() {
+                return direct_path;
+            }
         }
     }
 

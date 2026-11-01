@@ -1,4 +1,4 @@
-import { apiFetch } from '$lib/api';
+import { apiFetch, smartFetch } from '$lib/api';
 import {
   LLM_PROVIDER_PRESETS,
   isResponsesProtocolModel,
@@ -164,7 +164,7 @@ export async function generateDirect(
   const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
 
   try {
-    let res = await fetch(url, {
+    let res = await smartFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -176,7 +176,7 @@ export async function generateDirect(
       const errText = await errClone.text().catch(() => '');
       if (isTemperatureUnsupportedError(errText)) {
         delete payload.temperature;
-        res = await fetch(url, {
+        res = await smartFetch(url, {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),

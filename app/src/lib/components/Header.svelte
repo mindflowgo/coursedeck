@@ -10,6 +10,7 @@
     ChevronRight,
     CalendarDays,
     FlagTriangleRight,
+    LibraryBig,
     Tablet
   } from 'lucide-svelte';
   import AIQueuePopover from './AIQueuePopover.svelte';
@@ -25,6 +26,7 @@
     lessonId?: string;
     lessonCode?: string;
     lessonTitle?: string;
+    libraryDocTitle?: string;
     onLessonUpdated?: (lessonId: string, tab: string) => void;
   }
 
@@ -35,6 +37,7 @@
     lessonId = '',
     lessonCode = '',
     lessonTitle = '',
+    libraryDocTitle = '',
     onLessonUpdated
   }: Props = $props();
 
@@ -105,6 +108,24 @@
           </span>
         {/if}
       </div>
+    {:else if activePath.startsWith('/library') && libraryDocTitle}
+      <div class="hidden sm:flex items-center space-x-1.5 text-xs text-stone-400 dark:text-stone-500 overflow-hidden whitespace-nowrap min-w-0">
+        <ChevronRight class="w-3.5 h-3.5 shrink-0" />
+        <button
+          type="button"
+          onclick={() => goto('/library')}
+          class="hover:text-stone-900 dark:hover:text-stone-100 transition font-medium text-stone-600 dark:text-stone-400 cursor-pointer truncate"
+        >
+          Library
+        </button>
+        <ChevronRight class="w-3.5 h-3.5 shrink-0" />
+        <span
+          class="text-stone-800 dark:text-stone-200 font-medium truncate max-w-[200px] md:max-w-md"
+          title={libraryDocTitle}
+        >
+          {libraryDocTitle}
+        </span>
+      </div>
     {/if}
   </div>
 
@@ -141,6 +162,17 @@
     >
       <CalendarDays class="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" />
       <span class="hidden sm:inline">Schedules</span>
+    </button>
+
+    <button
+      type="button"
+      onclick={() => goto('/library')}
+      aria-label="Library"
+      title="Library"
+      class="w-10 h-10 sm:w-auto sm:px-3 sm:py-1.5 rounded-lg flex items-center justify-center sm:space-x-1.5 text-xs font-medium transition cursor-pointer shrink-0 {activePath.startsWith('/library') ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100 font-semibold' : 'text-stone-600 dark:text-stone-400 hover:bg-stone-50 dark:hover:bg-stone-800/60 hover:text-stone-900 dark:hover:text-stone-100'}"
+    >
+      <LibraryBig class="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" />
+      <span class="hidden sm:inline">Library</span>
     </button>
 
     <AIQueuePopover {courseId} {onLessonUpdated} />

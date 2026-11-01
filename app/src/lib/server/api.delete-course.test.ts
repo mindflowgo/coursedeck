@@ -18,7 +18,7 @@ describe('DELETE /api/courses/:course_id endpoint', () => {
       updatedAt: new Date().toISOString(),
       units: []
     };
-    fs.writeFileSync(path.join(courseDir, 'meta.json'), JSON.stringify(manifest), 'utf8');
+    fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify(manifest), 'utf8');
     fs.writeFileSync(path.join(courseDir, '01.01.lesson.md'), '# Lesson Content', 'utf8');
   });
 
@@ -62,9 +62,9 @@ describe('DELETE /api/courses/:course_id endpoint', () => {
     expect(body.action).toBe('archived');
     expect(body.permanent).toBe(false);
 
-    // Directory should still exist, but marked archived in meta.json
+    // Directory should still exist, but marked archived in .manifest.json
     expect(fs.existsSync(courseDir)).toBe(true);
-    const meta = JSON.parse(fs.readFileSync(path.join(courseDir, 'meta.json'), 'utf8'));
+    const meta = JSON.parse(fs.readFileSync(path.join(courseDir, '.manifest.json'), 'utf8'));
     expect(meta.archived).toBe(true);
 
     // Clean up

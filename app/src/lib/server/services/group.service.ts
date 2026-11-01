@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CourseManifest } from '../../parser/courseIngest';
 import { CourseService } from '../courses';
+import { LibraryService } from '../library';
 import { getGroupsPath, loadAppSettings } from '../paths';
 
 export interface GroupItem {
@@ -89,6 +90,22 @@ export class GroupService {
       }
     }
 
+    // Always discover any groups stored in library manifest on disk
+    try {
+      const libManifest = LibraryService.loadManifest();
+      for (const d of libManifest.documents) {
+        if (d.group && d.group.trim()) {
+          const name = d.group.trim();
+          if (!items.some((it) => it.type === 'library' && it.name.toLowerCase() === name.toLowerCase())) {
+            items.push({ id: slugify(name), name, type: 'library' });
+            hasNewDiscovered = true;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to discover groups from library manifest:', e);
+    }
+
     if (!fs.existsSync(groupsPath) || hasNewDiscovered) {
       this.writeGroupsFile(items);
     }
@@ -167,6 +184,8 @@ export class GroupService {
     let updatedCount = 0;
     if (cleanType === 'course') {
       updatedCount = this.renameCourseGroupOnDisk(trimmedOld, trimmedNew);
+    } else if (cleanType === 'library') {
+      updatedCount = this.renameLibraryGroupOnDisk(trimmedOld, trimmedNew);
     }
     return { groups: all, updatedCount };
   }
@@ -187,8 +206,12 @@ export class GroupService {
     this.writeGroupsFile(all);
 
     let updatedCount = 0;
-    if (clearEntities && cleanType === 'course') {
-      updatedCount = this.deleteCourseGroupOnDisk(trimmed);
+    if (clearEntities) {
+      if (cleanType === 'course') {
+        updatedCount = this.deleteCourseGroupOnDisk(trimmed);
+      } else if (cleanType === 'library') {
+        updatedCount = this.deleteLibraryGroupOnDisk(trimmed);
+      }
     }
     return { groups: all, updatedCount };
   }
@@ -230,15 +253,13 @@ export class GroupService {
 
     for (const dir of dirs) {
       const courseFolder = path.join(coursesDir, dir);
-      const metaPath = fs.existsSync(path.join(courseFolder, 'meta.json'))
-        ? path.join(courseFolder, 'meta.json')
-        : path.join(courseFolder, 'manifest.json');
-      if (fs.existsSync(metaPath)) {
+      const manifestPath = path.join(courseFolder, '.manifest.json');
+      if (fs.existsSync(manifestPath)) {
         try {
-          const manifest: CourseManifest = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          const manifest: CourseManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
           if (manifest.group && manifest.group.trim() === oldName) {
             manifest.group = newName;
-            fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
             updatedCount++;
           }
         } catch (e) {
@@ -261,15 +282,13 @@ export class GroupService {
 
     for (const dir of dirs) {
       const courseFolder = path.join(coursesDir, dir);
-      const metaPath = fs.existsSync(path.join(courseFolder, 'meta.json'))
-        ? path.join(courseFolder, 'meta.json')
-        : path.join(courseFolder, 'manifest.json');
-      if (fs.existsSync(metaPath)) {
+      const manifestPath = path.join(courseFolder, '.manifest.json');
+      if (fs.existsSync(manifestPath)) {
         try {
-          const manifest: CourseManifest = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          const manifest: CourseManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
           if (manifest.group && manifest.group.trim() === groupName) {
             delete manifest.group;
-            fs.writeFileSync(metaPath, JSON.stringify(manifest, null, 2), 'utf8');
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
             updatedCount++;
           }
         } catch (e) {
@@ -278,5 +297,45 @@ export class GroupService {
       }
     }
     return updatedCount;
+  }
+
+  private static renameLibraryGroupOnDisk(oldName: string, newName: string): number {
+    try {
+      const manifest = LibraryService.loadManifest();
+      let updatedCount = 0;
+      for (const doc of manifest.documents) {
+        if (doc.group && doc.group.trim().toLowerCase() === oldName.toLowerCase()) {
+          doc.group = newName;
+          updatedCount++;
+        }
+      }
+      if (updatedCount > 0) {
+        LibraryService.saveManifest(manifest);
+      }
+      return updatedCount;
+    } catch (e) {
+      console.error('Failed to rename library group on disk:', e);
+      return 0;
+    }
+  }
+
+  private static deleteLibraryGroupOnDisk(groupName: string): number {
+    try {
+      const manifest = LibraryService.loadManifest();
+      let updatedCount = 0;
+      for (const doc of manifest.documents) {
+        if (doc.group && doc.group.trim().toLowerCase() === groupName.toLowerCase()) {
+          delete doc.group;
+          updatedCount++;
+        }
+      }
+      if (updatedCount > 0) {
+        LibraryService.saveManifest(manifest);
+      }
+      return updatedCount;
+    } catch (e) {
+      console.error('Failed to delete library group on disk:', e);
+      return 0;
+    }
   }
 }

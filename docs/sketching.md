@@ -118,7 +118,7 @@ preset table (hex / width / opacity / blend) lives in `render.ts`.
 
 ## Persistence Pipeline (mirrors checkpoints)
 
-Storage: `data/courses/<course_id>/annotations.json` — one flat stroke array
+Storage: `data/courses/<course_id>/.annotations.json` — one flat stroke array
 per course, filtered by `file` client-side. Tombstoned strokes are **kept
 forever**: they are what makes erase/undo/clear survive sync merges.
 
@@ -135,7 +135,7 @@ also flush on `beforeunload` / tab-hidden.
 | Offline client | `api.ts` `offlineFetch` handles GET/PUT (`/api/courses/:id/annotations` is a direct-file route; `annotations` is in `reservedSubpaths`) |
 | Client store | `clientStore.ts`: `getAnnotationsLocally` / `saveAnnotationsLocally` (merge in JS, write-through to both stores) |
 | IndexedDB | `coursedeck_v1` v2 adds `annotations` and `pending_push_annotations` stores; bundle import merges (never clobbers unpushed local strokes) |
-| Rust (iPad) | `get_annotations` / `save_annotations` commands in `tauripad/src/lib.rs` |
+| Rust (iPad) | `get_annotations` / `save_annotations` commands in `tauri/src/mobile.rs` |
 | Rust (desktop) | same commands in `tauri/src/courses_fs.rs` |
 
 Push queue integration is automatic: `syncState.svelte.ts` counts and pushes
@@ -204,7 +204,7 @@ documents).
   generation (marker/highlighter/dot), eraser hit-testing (incl. width
   tolerance), and LWW merge (tombstones, stale-upsert rejection, invalid
   payloads).
-- Browser E2E verified on a real lesson: draw → server `annotations.json`
+- Browser E2E verified on a real lesson: draw → server `.annotations.json`
   write → reload persistence → undo → redo → erase → hide/show.
 
 ## Future / Out of Scope

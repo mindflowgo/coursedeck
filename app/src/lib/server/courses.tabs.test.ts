@@ -24,7 +24,7 @@ describe('CourseService tab file helpers', () => {
       fs.writeFileSync(path.join(courseDir, '01.01.summary.md'), '# Summary');
       fs.writeFileSync(path.join(courseDir, '01.01.assignment.md'), '# Assignment');
       fs.writeFileSync(path.join(courseDir, '01.02.summary.md'), '# Other lesson summary');
-      fs.writeFileSync(path.join(courseDir, 'meta.json'), '{}');
+      fs.writeFileSync(path.join(courseDir, '.manifest.json'), '{}');
       const bundle = CourseService.getLessonContent(courseId, '01.01');
       expect(bundle?.lesson).toBe('# Lesson body');
       expect(bundle?.tabs['summary']).toBe('# Summary');
@@ -112,7 +112,7 @@ describe('CourseService tab file helpers', () => {
     beforeAll(() => {
       fs.mkdirSync(schedDir, { recursive: true });
       fs.writeFileSync(
-        path.join(schedDir, 'meta.json'),
+        path.join(schedDir, '.manifest.json'),
         JSON.stringify({
           id: schedCourse,
           title: 'Schedule Fixture Course',
@@ -217,7 +217,7 @@ describe('CourseService tab file helpers', () => {
     beforeAll(() => {
       fs.mkdirSync(pcDir, { recursive: true });
       fs.writeFileSync(
-        path.join(pcDir, 'meta.json'),
+        path.join(pcDir, '.manifest.json'),
         JSON.stringify({
           id: pcCourse,
           title: 'Prompt Context Test Course',

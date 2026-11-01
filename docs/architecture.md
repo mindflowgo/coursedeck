@@ -15,14 +15,14 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
    - **Study Tabs**:
      - **Full Lesson**: The parsed lesson content rendered with clean typography, GFM callout boxes (`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`), expandable suggested answers, and diagrams.
      - **Summary**: High-yield AI summary synthesizing core principles, legal definitions, and Ontario expectations.
-     - **Cheatsheet**: Quick-reference table of key terms, etc.
+     - **Notes**: Synthesized study notes, quick-reference definitions, and key concept breakdowns.
      - **Practice Test**: Interactive quiz runner for Ontario KICA-aligned questions (Knowledge & Understanding, Thinking & Investigation, Communication, Application) with instant scoring, feedback, and rationale reveals.
    - **Inline CodeMirror Editor**: Toggle between rich reading view and live Markdown editing with instant auto-save to disk.
    - **Incremental Chapter Additions**: An `[+] Add Chapters` button in the workspace subheader allows uploading new lesson `.zip` archives directly to the active course. Existing customized notes and edits are strictly preserved while new chapters are parsed and indexed.
 3. **Settings (`/settings`) & Prompts Engine**:
    - **Tabs**: Features a top-level tab bar with `[Settings]` (appearance, zoom, course storage, backup, supervisor check-in, maintenance), `[LLM]` (AI models configuration & providers), `[Prompts]` (prompt template management), and `[Integrations]` (Google Calendar integration, OAuth configuration, and MCP server tokens).
    - **AI Models (`/settings?tab=llm`)**: A list of model-provider cards (ZCode / Z.ai GLM, OpenCode, LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible) with `[+] Add Model`, per-card test/edit/remove, and an **Active Model** dropdown. See §16.
-   - **Prompts Management (`/settings?tab=prompts`)**: Template editor for course-wide and lesson prompts (summaries, cheatsheets, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
+   - **Prompts Management (`/settings?tab=prompts`)**: Template editor for course-wide and lesson prompts (summaries, notes, KICA tests, custom tabs) with dynamic placeholders (`{{lesson_title}}`, `{{content}}`, `{{unit}}`).
    - **Maintenance & Ingestion**: Manual re-index and image compression triggers.
 4. **Study Schedules & Calendar Sync (`/schedules`)**:
    - Adaptive study schedule planning with custom study days, pacing targets, off-days, and exam deadlines.
@@ -41,53 +41,108 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
 - **Data Persistence**: Flat filesystem in `/data` (Single Source of Truth, no database required)
 - **Model Context Protocol (MCP)**: Native Streamable HTTP (`/mcp` on loopback `3182`) & Stdio (`--mcp-stdio`) integration via **`mcp-lite`**. See [`docs/mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/mcp.md) for full protocol specs and client configs.
 
-### 2.1 Programming Style: No Compat Shims, No Migration
+### 2.1 Programming Style: Zero Fallback & Migration Clutter
 
-The codebase deliberately carries **no compatibility layers and no migration code**:
+The codebase deliberately carries **zero compatibility layers, zero fallback chains, and no migration code**:
 
-- **No compat shims**: no alternate formats, legacy branches, or "browser mode" fallbacks alongside the primary path. One clean, optimized implementation per feature, targeting the Desktop Tauri app and the Mobile Tauri app exclusively. When a mechanism is replaced (e.g., the base64-JSON sync bundle), the old path is deleted, not kept behind a flag.
-- **No migration**: when a storage location or on-disk format changes (e.g., iPad courses moving to `Documents/courses`), stale data is not converted or relocated — users re-sync / regenerate. Legacy fallbacks for old filenames or paths are removed rather than accumulated.
+- **No Fallback Chains**: Handlers expect canonical, standardized files directly. Never introduce multi-tier fallbacks like `if (.manifest.json) ... else if (manifest.json) ... else if (meta.json) ...`.
+  - Course metadata is strictly `.manifest.json` (never `manifest.json` or `meta.json`).
+  - Course checkpoints are strictly `.checkpoints.json` (never `checkpoint.json` or `checkpoints.json`).
+  - Course annotations are strictly `.annotations.json` (never `annotations.json`).
+  - Library metadata is strictly `.manifest.json`.
+  - Library checkpoints and annotations are strictly `.checkpoints.json` and `.annotations.json`.
+- **No Migration Code**: When on-disk formats or storage structures change, stale data is not converted on-the-fly or migrated through permanent scaffolding. Scripts or ad-hoc migration helpers must not linger in the production tree; outdated environments simply re-sync or regenerate from the primary desktop source.
+- **No Compat Shims**: No dual endpoints, legacy branches, or "browser mode" fallbacks alongside the primary path. When a feature or protocol is updated (e.g., streaming zip bundles replacing base64-JSON bundles), the obsolete path is completely deleted, never preserved behind a flag.
+- **Stale Process Hygiene**: The desktop launcher (`tauri/src/lib.rs`) automatically clears orphaned listeners on the backend port (3182) before starting the sidecar, ensuring stale server instances never linger to serve obsolete code.
 
-Every rejected alternative that would require one of these (dual endpoints, format sniffing, data movers) is treated as a design smell: prefer changing the format once, cleanly, at the source. See §20.5 for how this applies to the sync architecture.
+Every rejected alternative that requires dual endpoints, format sniffing, or lingering migration scripts is treated as a design smell: prefer changing the format once, cleanly, at the source.
 
 ```
 ilc-study-tool/
-├── architecture.md             # Consolidated system architecture specification
 ├── package.json                # Root Bun package script coordinator
-├── data/
+├── data/                       # Active data root (configurable via settings.json)
 │   ├── courses/
-│   │   └── <course_id>/        # e.g., cou2m
-│   │       ├── _backup/        # Original course HTML/ZIP archives
-│   │       ├── meta.json       # Course metadata & units/lessons index
-│   │       ├── assets/         # Extracted diagrams, images, and locker documents
-│   │       │   ├── img/
-│   │       │   ├── icons/
-│   │       │   └── locker_docs/
-│   │       ├── 01.02.lesson.md # Full lesson markdown
+│   │   └── <course_id>/        # e.g., baf3m
+│   │       ├── .manifest.json  # Canonical course metadata, units, and lessons index
+│   │       ├── .checkpoints.json # Persistent sticky notes and reading position markers
+│   │       ├── .annotations.json # Freehand pencil / highlighter markup strokes
+│   │       ├── course.logs.md  # Token usage and prompt generation logs
+│   │       ├── 01.02.lesson.md # Full lesson markdown content
 │   │       ├── 01.02.summary.md# High-yield study summary
-│   │       ├── 01.02.cheatsheet.md # Quick reference cheatsheet
+│   │       ├── 01.02.notes.md  # Synthesized study notes
 │   │       ├── 01.02.test.md   # Interactive KICA practice quiz
-│   │       └── ...
-│   └── prompts/
-│       ├── summary.md          # Default prompt for lesson summarization
-│       ├── cheatsheet.md       # Default prompt for cheatsheets
-│       └── test_kica.md        # Default prompt for KICA question generation
-├── app/                        # SvelteKit 5 + Tailwind App
+│   │       ├── assets/         # Extracted images and locker documents (textbook PDF)
+│   │       │   ├── img/
+│   │       │   └── locker_docs/
+│   │       └── _backup/        # Original course HTML/ZIP archives
+│   ├── library/                # Digital library document store
+│   │   ├── .manifest.json      # Library documents catalog
+│   │   ├── .checkpoints.json   # Reading positions and document sticky notes
+│   │   ├── .annotations.json   # PDF/ePub markup strokes
+│   │   └── <filename>.pdf      # PDF, EPUB, or MOBI books
+│   ├── prompts/                # Editable Markdown prompt templates
+│   ├── groups.json             # Course and library categorization groups
+│   ├── llm_config.json         # Configured AI model cards & active model state
+│   ├── .jobs.json              # Persistent asynchronous AI job journal
+│   ├── .google_credentials.json # Consolidated Google OAuth credentials and tokens
+│   ├── .arc_credentials.json   # ARC external calendar integration tokens
+│   └── .cleanup_queue.json     # Scheduled calendar cleanup queue
+├── app/                        # SvelteKit 5 + Tailwind Frontend
 │   ├── package.json            # Managed by Bun
 │   ├── svelte.config.js        # SvelteKit 5 configuration
 │   ├── vite.config.ts          # Vite configuration
 │   ├── tailwind.config.ts      # Tailwind CSS configuration
 │   └── src/
 │       ├── lib/
-│       │   ├── components/     # Svelte 5 components (Header, MarkdownViewer, CodeMirrorEditor, QuizRunner, UploadModal)
-│       │   ├── parser/         # Extraction engine (Cheerio + Turndown + Asset pipeline + Incremental ingester)
-│       │   └── server/         # File access repository and LLM service
-│       └── routes/             # SvelteKit routes (+layout, /, /courses/[id], /schedules, /settings, /api)
-└── tauri/                      # Tauri v2 Desktop App
-    ├── Cargo.toml              # Tauri v2 dependency declarations
-    ├── tauri.conf.json         # Tauri v2 window & build configuration
-    ├── capabilities/           # Security & permission capabilities
-    └── src/                    # Rust entrypoint
+│       │   ├── api.ts          # Local-first routing (offlineFetch) with server fall-through
+│       │   ├── tabs.ts         # Canonical tab definitions, filenames, and URL helpers
+│       │   ├── checkpoint.ts   # Checkpoint models, sticky notes, and color palette
+│       │   ├── syncState.svelte.ts # Reactive desktop/mobile sync store & auto-push
+│       │   ├── storage/
+│       │   │   └── clientStore.ts # Native Tauri invoke store with IndexedDB fallback
+│       │   ├── components/     # UI components (Header, MarkdownViewer, CodeMirrorEditor, QuizRunner)
+│       │   ├── editor/         # CodeMirror 6 Live Preview extensions (WYSIWYG widgets)
+│       │   ├── markup/         # Perfect-freehand SVG annotations & PencilKit bridge
+│       │   ├── parser/         # HTML/D2L ingestion, Cheerio cleaning, Turndown converter
+│       │   ├── pdf/            # Client-side pdfmake compilation & PDF export
+│       │   └── server/         # Backend services and API controllers (Bun sidecar)
+│       │       ├── api.ts      # handleApiRequest() — master dispatcher for /api/*
+│       │       ├── backup.ts   # Zip backup exporter and iPad streaming bundle generator
+│       │       ├── courses.ts  # CourseService: filesystem reader/writer for courses
+│       │       ├── library.ts  # LibraryService: digital library file & metadata manager
+│       │       ├── llm.ts      # Unified multi-card LLM provider client
+│       │       ├── paths.ts    # Filesystem paths, data directory resolver, path validation
+│       │       ├── prompts.ts  # PromptService for template storage in data/prompts/
+│       │       ├── queue.ts    # Background AI generation queue worker
+│       │       └── services/   # Headless domain services (course, group, job, schedule, search)
+│       └── routes/             # SvelteKit pages
+│           ├── +layout.svelte  # App frame, gestures, zoom, and pairing modals
+│           ├── +page.svelte    # Courses dashboard, groups, and library overview
+│           ├── courses/[id]/   # Course workspace (lesson, summary, notes, test, textbook)
+│           ├── library/        # Digital library reader for PDF, EPUB, MOBI
+│           ├── builder/        # Course Builder workbench
+│           ├── checkpoints/    # Global Checkpoints hub
+│           ├── schedules/      # Study schedule planner & Google/ARC calendar sync
+│           ├── prompts/        # Prompt templates editor
+│           ├── settings/       # Settings (General, LLM cards, Prompts, Integrations)
+│           └── api/[...path]/  # Proxy adapter delegating to server api.ts
+├── server/                     # Standalone Bun HTTP Sidecar
+│   ├── index.ts                # HTTP server (port 3182, /api/*, /health, /mcp, static PWA)
+│   └── mcp/                    # Model Context Protocol (mcp-lite) server & stdio runner
+├── tauri/                      # Unified Tauri v2 App (Desktop macOS/Win/Linux & Mobile iOS)
+│   ├── capabilities/           # Security capabilities (default.json, ios.json)
+│   ├── tauri.conf.json         # Desktop and mobile bundle configuration
+│   └── src/
+│       ├── lib.rs              # App entrypoint, sidecar lifecycle, listener cleanup, invoke setup
+│       ├── course_files.rs     # Canonical course file IO (.manifest.json, .checkpoints.json, .annotations.json)
+│       ├── courses_fs.rs       # Tauri command handlers for course files
+│       ├── mobile.rs           # iOS commands (zip streaming bundle extract, courseasset:// protocol)
+│       ├── pdf.rs              # PDFium C++ native engine wrapper & page renderer
+│       ├── settings.rs         # Native settings.json storage
+│       ├── fs_util.rs          # Atomic file writing & directory listing utilities
+│       └── window_state.rs     # Desktop window position persistence
+└── coursedeck-core/            # Shared native Rust libraries (e.g. PDFium integration)
+```
 ### 2.2 Key Directories & Codebase Map (Quick Reference)
 
 To accelerate code navigation and prevent exhaustive searches across the codebase:
@@ -102,7 +157,6 @@ app/src/
 │   ├── llmProviders.ts         # Shared provider presets/protocols (LM Studio, llama.cpp, Ollama, Gemini, OpenAI-compatible)
 │   ├── llmClient.ts            # Typed /api/llm client: model cards, active model, per-card connection test
 │   ├── queueStatus.svelte.ts   # Reactive global queue poll store & task listeners
-│   ├── scrollMemory.ts         # Legacy per-tab scroll offsets in localStorage (superceded by Checkpoint position tracking)
 │   ├── theme.svelte.ts         # Light / Dark / System theme manager
 │   ├── components/             # Reusable UI components
 │   │   ├── Header.svelte           # Top application navigation bar (Courses, Checkpoints, Settings, Prompts)
@@ -165,7 +219,7 @@ tauri/
 
 ## 3. Data Model & File Schemas
 
-### 3.1 Course Manifest (`meta.json`)
+### 3.1 Course Manifest (`.manifest.json`)
 ```json
 {
   "id": "cou2m",
@@ -253,7 +307,7 @@ course: COU2M.01.02
 ```
 
 ### 3.4 Study Material YAML Frontmatter & Tab Schema
-All generated study materials (`.summary.md`, `.cheatsheet.md`, `.test.md`, and custom tabs like `.assignment.md`) store their AI prompt instructions and metadata in standard YAML frontmatter (`--- ... ---`). Each lesson+tab has exactly **one** file — there is no versioning:
+All generated study materials (`.summary.md`, `.notes.md`, `.test.md`, and custom tabs like `.assignment.md`) store their AI prompt instructions and metadata in standard YAML frontmatter (`--- ... ---`). Each lesson+tab has exactly **one** file — there is no versioning:
 
 ```markdown
 ---
@@ -279,12 +333,12 @@ updatedAt: '2026-10-14'
   - Course-level custom tabs (`course.<slug>.md`) are dynamically discovered by `CourseService.discoverCourseDocs()` and surfaced in the course mode tab bar alongside built-ins.
 - Regeneration always overwrites the single file; the per-version pills and overwrite-vs-new-version choice were removed with versioning itself.
 
-### 3.5 Reader Tab Scroll Memory (`tab_scroll:*`)
-The course workspace scrolls inside a nested container, so the browser does not restore offsets between tabs. `src/lib/scrollMemory.ts` keeps them in `localStorage` instead — key `tab_scroll:<courseId>:<lessonId|course>:<tab>`, all lowercased (~40 bytes each):
-- **A first visit to a tab/page opens at the top; later visits return to the remembered offset** — via tab click, lesson switch, course ↔ lesson scope toggle, browser Back, or reload alike.
-- Offsets are written ~200 ms after scrolling pauses (flushed on `pagehide` and component teardown); offsets under 8 px are deleted rather than stored, so "at the top" and "never visited" behave identically.
+### 3.5 Persistent Reading Position & Viewport Restoration (`.checkpoints.json`)
+The course workspace reading container restores reading scroll offsets via persistent, filesystem-backed Checkpoints (`type: 'position'`) stored in `.checkpoints.json`:
+- **Single Source of Truth**: Completely replaces fragile browser `localStorage` (`tab_scroll:*`), persisting directly to disk and syncing seamlessly across devices (Desktop and iPad).
+- **In-Lesson Position Restoration**: Debounced position updates record the exact vertical reading coordinate in each file. Switching tabs, switching lessons, or reloading restores the user's exact offset without layout drift or viewport jumping.
+- **Course-Level Resume**: When a course is opened from the dashboard or header, the user preference **"Return to most recent position in course"** (configurable in Settings) deep-links directly into the last-studied lesson, tab, and scroll offset.
 - A floating **scroll-to-top** button (fixed bottom-right, shown once scrolled past ~400 px) smooth-scrolls the workspace back to the top.
-- **Pruning:** archiving a course (`PUT /api/courses/:id/meta { archived: true }`) forgets all of that course's keys, and every courses-list load sweeps keys whose course no longer exists on disk. Offsets never reach the server, so pruning applies to the browser that performs the action.
 
 ---
 
@@ -309,7 +363,7 @@ The Bun extraction pipeline (`src/lib/parser/`):
    - Preserves tables, callouts, lists, and KaTeX mathematical notation.
    - YAML frontmatter is written with the **`Bun.YAML`** runtime builtin (parse + stringify; note: `stringify` emits flow style with no trailing newline, so serializers append `\n` before the closing `---`).
 5. **Study Suite Synthesizer**:
-   - Generates initial high-yield `summary.md`, `cheatsheet.md`, and `test.md` aligned with the Ontario curriculum expectations.
+   - Generates initial high-yield `summary.md`, `notes.md`, and `test.md` aligned with the Ontario curriculum expectations.
 6. **Image Optimizer** (`src/lib/parser/imageOptimizer.ts`, runs at the end of every ingest):
    - Any raster image wider than **512px** is resized (aspect preserved) and re-encoded as **JPEG q82** via the **`Bun.Image`** runtime builtin — no native npm dependency, so it works inside the compiled sidecar binary.
    - Markdown references are rewritten to the new `.jpg` filenames, Pandoc `{width=…}` attributes are normalized to pipe syntax, and any image that would display wider than 50% of the reading column gets an explicit `|50%` spec.
@@ -323,9 +377,9 @@ When new course chapters or lessons are added:
 1. **Targeted Ingestion**:
    - New `.zip` archives are saved to `data/courses/<course_id>/_backup/`.
    - The ingester checks each lesson file: if `${lessonId}.lesson.md` already exists, it is **preserved** to prevent overwriting student notes, user edits, or custom summaries.
-   - Only newly added lesson archives are extracted, parsed into markdown, and populated with initial study summaries, cheatsheets, and tests.
+   - Only newly added lesson archives are extracted, parsed into markdown, and populated with initial study summaries, notes, and tests.
 2. **Manifest Synchronization**:
-   - Existing metadata (custom titles, descriptions, unit names) in `meta.json` is preserved.
+   - Existing metadata (custom titles, descriptions, unit names) in `.manifest.json` is preserved.
    - New lessons are categorized into their corresponding units (or new units are created dynamically).
    - The frontend dropdown updates immediately to show the newly available chapters.
 
@@ -389,7 +443,7 @@ Data-directory resolution order (Rust, `get_default_data_dir` / `find_course_dir
 
 ## 8. In-Place Text Selection & AI Post-It Note Annotations
 
-Students reading any course material (Full Lesson, Summary, Cheatsheet) can highlight or select text to ask contextual AI questions and attach persistent notes directly to the Markdown document.
+Students reading any course material (Full Lesson, Summary, Notes) can highlight or select text to ask contextual AI questions and attach persistent notes directly to the Markdown document.
 
 ### 8.1 Workflow & Interaction Model
 1. **Highlight & Floating Trigger**:
@@ -524,38 +578,38 @@ Adapted from the architecture in `nuza`, the CodeMirror editor (`app/src/lib/edi
 
 ## 13. Course-Wide Synthesis & Document Architecture
 
-In addition to lesson-by-lesson study materials, the platform provides complete course-wide synthesis documents (`course.summary.md`, `course.cheatsheet.md`, `course.test.md`) accessible via the **Complete Course** scope in the workspace header.
+In addition to lesson-by-lesson study materials, the platform provides complete course-wide synthesis documents (`course.summary.md`, `course.notes.md`, `course.test.md`) accessible via the **Complete Course** scope in the workspace header.
 
 ### 13.1 Filesystem Layout & Storage Model
 Course-wide documents are stored at the root of the course directory:
 - `data/courses/<course_id>/course.summary.md`: Comprehensive cross-unit executive summary and curriculum synthesis.
-- `data/courses/<course_id>/course.cheatsheet.md`: Unified master quick-reference table of core terminology, legal principles, and formulas.
+- `data/courses/<course_id>/course.notes.md`: Unified master quick-reference table of core terminology, legal principles, and formulas.
 - `data/courses/<course_id>/course.test.md`: Full course practice exam spanning all units, aligned with Ontario KICA curriculum categories.
 
-Unlike lesson-level study materials which support multi-version branching (`.summary-2.md`, etc.), course-level documents are maintained as single consolidated artifacts (`versions.length === 0`). Re-generating a course-level document directly updates the master artifact without prompting for version branching.
+Both lesson-level and course-level study materials are maintained as single consolidated artifacts. Re-generating any document directly overwrites the master artifact without version branching.
 
 ### 13.2 Curated Aggregation Engine (`CourseService.buildAggregatedPayload`)
 Generating high-yield course-wide materials requires synthesizing insights across all units without overloading the LLM's context window with repetitive lesson text or navigational boilerplate.
 
 1. **Curated-Only Sourcing Principle**:
    - The aggregation engine **strictly excludes uncurated raw course materials (`.lesson.md`)**.
-   - Synthesis is constructed exclusively from student-curated and refined study materials (`.summary`, `.cheatsheet`, and `.test.md`).
+   - Synthesis is constructed exclusively from student-curated and refined study materials (`.summary`, `.notes`, and `.test.md`).
 2. **Selective Type Priority**:
    - **For Course Practice Tests (`type === 'test'`)**:
-     - Gathers the latest `.summary.md` (or highest version `.summary-N.md`) for each lesson.
-     - Falls back to `.cheatsheet.md` if no summary is available.
+     - Gathers the `.summary.md` for each lesson.
+     - Falls back to `.notes.md` if no summary is available.
      - Scans existing lesson practice tests (`.test.md`) and extracts question prompts and covered quiz topics into an `#### Existing Lesson Quiz Coverage` section. This provides the LLM with direct visibility into already-tested competencies to ensure comprehensive cross-unit coverage without duplicating lesson-level questions.
    - **For Course Summaries (`type === 'summary'`)**:
-     - Collects the latest lesson summaries, falling back to cheatsheets.
-   - **For Course Cheatsheets (`type === 'cheatsheet'`)**:
-     - Collects the latest lesson cheatsheets, falling back to summaries.
+     - Collects the latest lesson summaries, falling back to notes.
+   - **For Course Notes (`type === 'notes'`)**:
+     - Collects the latest lesson notes, falling back to summaries.
 3. **Context Window & Character Budgeting**:
    - YAML frontmatter is stripped via `parseFrontmatter` so only clean Markdown content enters the prompt payload.
    - Per-lesson character limits are enforced (`budgetLessonContent`):
      - **Test synthesis**: 2,200 characters per lesson.
      - **Summary synthesis**: 3,000 characters per lesson.
-     - **Cheatsheet synthesis**: 2,500 characters per lesson.
-   - If no curated study materials exist across any lesson in the course, the engine returns an empty payload, prompting a descriptive error instructing the student to generate or curate lesson summaries first.
+     - **Notes synthesis**: 2,500 characters per lesson.
+   - If no curated study materials exist across any lesson in the course, the engine returns an empty payload, prompting a descriptive error instructing the student to generate or curate lesson summaries or notes first.
 
 ### 13.3 YAML Frontmatter Prompt Provenance & Single Source of Truth
 Every generated course artifact preserves its exact generation instructions in YAML frontmatter (`--- ... ---`):
@@ -607,7 +661,7 @@ The backup and migration system (`/api/backup/export` and `/api/backup/import`) 
    - The archiver yields every 20 files (`await new Promise(r => setTimeout(r, 0))`), allowing concurrent HTTP requests—such as frontend `/api/queue` polling—to be accepted and serviced instantly with 0ms delay.
 4. **Default Exclusion of Raw Upload Archives (`_backup/`)**:
    - When courses are ingested, the original `.zip` or `.mhtml` upload packages are archived in `data/courses/<course_id>/_backup/`. These raw archives typically account for 70–80% of total course disk space.
-   - By default, `/api/backup/export` **excludes** the `_backup/` folder, producing a lean, high-speed export containing 100% of the lessons, markdown notes, prompts, AI summaries, cheatsheets, interactive quizzes, assets, and app settings.
+   - By default, `/api/backup/export` **excludes** the `_backup/` folder, producing a lean, high-speed export containing 100% of the lessons, markdown notes, prompts, AI summaries, notes, interactive quizzes, assets, and app settings.
    - A checkbox in Settings (`Include raw package backups`) allows users to include `_backup/` (`?includeRaw=true`) whenever a full byte-for-byte archival mirror is required.
 5. **Dual Console & UI Progress Telemetry**:
    - **Server Console**: Logs real-time archiving progress (`[Backup Export] Progress: X/Y (Z%) - <file>`).
@@ -618,7 +672,7 @@ The backup and migration system (`/api/backup/export` and `/api/backup/import`) 
 The course ingestion pipeline (`CourseIngest` in `src/lib/parser/courseIngest.ts`) is strictly dynamic:
 - **Mandatory User Input**: New courses require an explicit, user-supplied course code (e.g., `MCR3U`, `CLU3M`, `ENG4U`).
 - **No Mock Defaults**: Ingestion contains zero hardcoded course codes, mock curriculum titles, or fake unit names.
-- **Dynamic Unit Discovery**: Unit titles are extracted from the uploaded course content or preserved from existing `meta.json` manifests, falling back to clean numeric identifiers (`Unit 1`, `Unit 2`, etc.).
+- **Dynamic Unit Discovery**: Unit titles are extracted from the uploaded course content or preserved from existing `.manifest.json` manifests, falling back to clean numeric identifiers (`Unit 1`, `Unit 2`, etc.).
 
 ---
 
@@ -708,7 +762,7 @@ Provider presets live in the dependency-free `app/src/lib/llmProviders.ts`, shar
 
 ### 16.3 API & UI Surface
 - `GET /api/llm` → `{ hasConfig, config (active card summary), activeId, cards[] }`.
-- `POST /api/llm` actions: `save_store` (whole card list + activeId), `set_active`, `test` (a posted card or the active one), `generate` (config optional — falls back to the active card), `save_config` (legacy single-config path used by the first-run setup modal; updates the active card). A blank key in `test`/`generate` reuses the referenced card's stored key only while the request targets that same card's endpoint (compared resolved, so equivalent URL spellings still match) — a posted `cardId` can never forward one card's key to a different host.
+- `POST /api/llm` actions: `save_store` (multi-card store management: persists the complete card list and activeId), `set_active` (switches the active card), `test` (validates connectivity for a posted card draft or active card), `generate` (LLM text generation; config optional — falls back to active card), `save_config` (active-card configuration helper for quick/first-run setup modals; updates the active card in place within the multi-card store). A blank key in `test`/`generate` reuses the referenced card's stored key only while the request targets that same card's endpoint (compared resolved, so equivalent URL spellings still match) — a posted `cardId` can never forward one card's key to a different host.
 - Settings UI: one card per provider with provider/base URL/model/API key/auth header/timeout fields, an inline **Add another model provider** `[+]` tile, per-card **Test** and remove, plus the **Active Model** dropdown whose options are the model ids of all added cards.
 - **Clearing is explicit.** `save_store` counts the cards that would actually survive normalization (a card without a Base URL is dropped, not stored) and rejects a save that would leave none (400 for all-unusable input, 409 without `confirmClear: true`), so no client bug or stale tab can silently wipe the configured models. An unreadable/corrupt `llm_config.json` is reported as an error (HTTP 500, file left untouched) rather than as "no models configured". Saves replace the whole list, so two Settings windows editing at once resolve last-writer-wins — close the other window before re-arranging models.
 - The frontend keeps no LLM state of its own: feature call sites ask `$lib/llmClient` for the active card (guarding "no model configured → open setup modal") and the server resolves the real config, so a stale browser cache can never generate with the wrong model.
@@ -736,14 +790,14 @@ To maintain architectural integrity and eliminate duplicate implementations:
 - **Central Authority (`app/src/lib/tabs.ts`)**:
   All Markdown document filenames and tab route navigation URLs MUST be created and parsed exclusively through the canonical helper functions in `tabs.ts`:
   - `tabFileName(lessonId: string, tab: string): string` -> e.g. `01.01.lesson.md`, `02.04.summary.md`
-  - `courseDocFileName(tab: string): string` -> e.g. `course.summary.md`, `course.cheatsheet.md`
+  - `courseDocFileName(tab: string): string` -> e.g. `course.summary.md`, `course.notes.md`
   - `docFileName(scope: string, tab: string, isCourseScope: boolean): string` -> Unified document resolver
   - `parseDocFileName(file: string): { isCourseScope: boolean; lessonId: string; tab: string } | null` -> Filename parser
   - `courseTabHref(courseId: string, scope: string, tab: string, isCourseScope: boolean): string` -> URL path generator
 - **No Duplicate Helper Functions**: Modules across both frontend and server layers must import and reuse these functions. Writing ad-hoc regexes or local filename/route resolvers is strictly prohibited.
 
-### 17.2 Checkpoint Data Model & Storage (`checkpoint.json`)
-Checkpoints are stored per course in `data/courses/<course_id>/checkpoint.json`:
+### 17.2 Checkpoint Data Model & Storage (`.checkpoints.json`)
+Checkpoints are stored per course in `data/courses/<course_id>/.checkpoints.json`:
 - **`type: 'position'`**:
   Automatically records the user's vertical reading position in a file (debounced during scrolling). Replaces the legacy browser `localStorage` scroll memory with persistent filesystem-backed bookmarking that synchronizes across restarts and sessions.
   - **In-Lesson Position Restoration**: When opening or switching to any specific lesson or tab, the viewport always restores to the recorded vertical position in that file.
@@ -882,7 +936,7 @@ During the integration and real-world evaluation of the CourseDeck MCP server wi
 ### 18.3 Handshake Probe Steering & Dynamic MCP Prompt Instructions
 
 During live pair-programming and autonomous agent workflows, LLMs often default to running bash or Python one-liners (e.g. `python3 -c "open(...)"` or `cat`) to inspect markdown files directly from disk. This creates major operational problems:
-1. **Bypasses Application Architecture**: Ignores `CourseService` and document caching, missing dynamically generated tabs (`summary`, `cheatsheet`, `test`, `schedule`).
+1. **Bypasses Application Architecture**: Ignores `CourseService` and document caching, missing dynamically generated tabs (`summary`, `notes`, `test`, `schedule`).
 2. **Heavy Process & Runtime Latency**: Spawns subshells, boots Python 3 runtimes, and pipes raw output through process harnesses.
 3. **Sandbox & Boundary Violations**: Direct filesystem reads can violate sandbox permissions or require manual user bypass approval.
 4. **Context Flooding**: Dumps unpaginated file content with no slice or line-budget controls.
@@ -900,13 +954,13 @@ Under the standard Model Context Protocol (MCP) specification, client connection
   }
   ```
 - **Editable in Prompts Manager**:
-  - The instructions file resides at `data/prompts/mcp_prompt_instructions.md` (seeded from `data.old/prompts/mcp_prompt_instructions.md`).
+  - The instructions file resides at `data/prompts/mcp_prompt_instructions.md`.
   - It carries the `# MCP Prompt Instructions` header and is classified automatically under the **Custom** category in **Settings > Prompts** (`/settings?tab=prompts`).
   - Prompt managers can tweak, expand, or adjust these instructions live in the CodeMirror editor without restarting the server or modifying code. Any new connection handshake immediately serves the updated markdown.
 
 #### 2. In-Band Tool Schema Steering (`tools/list`)
 When clients probe the available toolset during discovery, the LLM evaluates the `description` attributes of available tools. Core tools explicitly advertise precedence over filesystem hacks:
-- **`get_lesson_doc`**: `"Retrieve lesson or course documents (summary, cheatsheet, test, lesson, notes, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing."`
+- **`get_lesson_doc`**: `"Retrieve lesson or course documents (summary, notes, test, lesson, schedule). PREFERRED: Always use this tool instead of running shell scripts (like python or cat) to inspect course files on disk. Generates on-demand if missing."`
 - **`get_course`**: `"Retrieve course manifest and unit structure. PREFERRED: Use this to explore course curricula instead of browsing filesystem directories."`
 - **`list_lessons`**: `"List lessons for a course with unit numbers, titles, types, and existing tab files on disk. PREFERRED: Use this instead of scanning course directories on disk."`
 
@@ -1098,73 +1152,82 @@ CourseDeck natively transforms course schedules into the expanded ARC Markdown G
 
 ---
 
-## 20. iPad Offline Sync & Course Bundle Architecture
+## 20. iPad Offline Sync & Direct LLM Generation Architecture
 
-The iPad app (`/tauripad`, CourseDeck for iPad) keeps a full offline copy of selected courses. Sync is **one streaming zip archive, downloaded and extracted entirely in Rust** — the webview never sees the payload. There is no browser/paired-web mode and no legacy migration path: both apps are Tauri shells, and old storage formats are dropped rather than converted.
+The iPad app (`/tauri` iOS build, CourseDeck for iPad) operates as an autonomous, offline-first study workstation. It maintains a full offline copy of selected courses and executes LLM generation directly from the device without requiring a running desktop sidecar. Sync with the desktop is **one streaming zip archive, downloaded and extracted entirely in native Rust** — the webview never handles raw asset archives.
 
-### 20.1 End-to-End Flow
+### 20.1 End-to-End Sync Flow
 
-1. **Course picker** (`CourseSyncPickerModal.svelte`): the Sync action in `DeviceSyncDropdown` opens a modal that lists the desktop's active courses via `GET /api/sync/courses` (compact `{ id, title, lessonCount, coursePDF }`, non-archived only, title-sorted). Courses already on the device are badged "On device". All are pre-selected; one tap still syncs everything.
-2. **Bundle request**: `syncFromDesktop({ courseIds, since? })` (in `syncState.svelte.ts`) builds one URL and invokes the Tauri command `sync_fetch_bundle_zip`.
-3. **Rust download + extract** (`tauripad/src/lib.rs`): `reqwest` streams the zip from the desktop's Bun sidecar (port 3182), then the extractor walks the archive and writes entries straight to disk. It returns a summary `{ generatedAt, courses: [{ course_id, files, assets }], llmConfig }`.
-4. **Client bookkeeping**: the summary's `generatedAt` becomes the `last_synced_at` cursor (the natural `since` argument for future incremental syncs), the LLM config is stored locally, and pending pushes are cleared.
+1. **Course Picker** (`CourseSyncPickerModal.svelte`):
+   - The Sync action in `DeviceSyncDropdown` queries desktop courses via `GET /api/sync/courses` (compact `{ id, title, lessonCount, coursePDF }`, non-archived only, title-sorted).
+   - Courses already on device are badged "On device".
+2. **Incremental Bundle Request**:
+   - `syncFromDesktop({ courseIds, since? })` in `syncState.svelte.ts` defaults `since` to `getLastSyncedAt()`, enabling fast incremental delta pulls without manual user configuration. Passing `forceFullSync: true` overrides this for full resynchronization.
+   - Invokes the native Tauri command `sync_fetch_bundle_zip`.
+3. **Rust Download & Streaming Extraction** (`tauri/src/mobile.rs`):
+   - Native `reqwest` streams the zip from the desktop Bun sidecar (port 3182).
+   - The extractor walks entries and writes files directly to the iOS sandbox filesystem (`<Documents>/courses/<course-id>/`).
+   - Returns a structured summary `{ generatedAt, courses: [{ course_id, files, assets }], llmConfig }`.
+4. **Client Bookkeeping & Key Hydration**:
+   - The summary's `generatedAt` timestamp is committed as `last_synced_at` cursor in local storage.
+   - LLM configuration and API keys (if bundled with `includeLlmKeys=true`) are stored locally in IndexedDB, immediately enabling offline and direct mobile LLM generation.
+5. **Optimized Upstream Push (`pushToDesktop`)**:
+   - **Gzip JSON Compression**: Queued text checkpoints, annotations, and study documents are compressed on the iPad using the browser-native `CompressionStream('gzip')` API before POSTing to `/api/sync/push`. The desktop Bun sidecar decompresses the stream via `DecompressionStream('gzip')`.
+   - **Immediate Text Queue Clearing**: Upon confirmed `200 OK` receipt of the batch push payload, `clearPendingPushText()` clears the text pending queue instantly to prevent duplicate submissions or race conditions.
+   - **Parallel Locker-Doc Concurrency Pool**: Binary assets (PDFs, images, user uploads) queued in `pendingPushAssets` are uploaded concurrently through a controlled 3-worker concurrency pool to `/api/courses/:id/assets/locker_docs/:filename`. Each asset is atomically removed from the queue via `removePendingPushAsset(courseId, filename)` as its upload succeeds.
 
-### 20.2 The Bundle: One Streaming Zip (`createSyncBundleZipStream`, `app/src/lib/server/backup.ts`)
+### 20.2 The Bundle: Streaming Zip & Deflate Optimization (`app/src/lib/server/backup.ts`)
 
-**What's inside:**
+**Archive Contents:**
+- `courses/<lowercase-course-id>/**`: Markdown, `.manifest.json`, `assets/**` (images, locker docs, textbook PDF), `.checkpoints.json`, `.annotations.json`.
+- `_sync/meta.json`: Version, `generatedAt`, active prompts, and LLM configuration (including API keys when `includeLlmKeys=true`).
 
-- `courses/<lowercase-course-id>/**` — the complete course folder contents: markdown, `meta.json`/`manifest.json`, `assets/**` (images, locker docs, textbook PDF), `checkpoints.json`, `annotations.json`.
-- `_sync/meta.json` — version, `generatedAt`, LLM config (API keys only when `includeLlmKeys=true`), and prompts.
+**Compression & Performance Optimization:**
+- **Adaptive Deflate Compression**: Text files (`.md`, `.json`, `.txt`) are compressed using `fflate.ZipDeflate`. Full initial syncs use **Deflate Level 1** to maximize server throughput; incremental syncs (`since` parameter present) use **Deflate Level 6** to maximize wire compression for small delta text changes.
+- **Binary Pass-Through**: Pre-compressed binary media (PDF, JPEG, PNG, ZIP) bypass compression entirely via `fflate.ZipPassThrough`, eliminating wasted CPU cycles on both desktop and iPad.
+- **Streaming Response**: Chunks are emitted on-the-fly via Web Streams (`ReadableStream`) yielding to the event loop every 20 files, preventing queue polling stalls or memory bloat on large libraries (up to 2,000MB+).
+- **Lowercase ID Normalization**: Course IDs are normalized to lowercase on both archive creation and extraction, ensuring case-insensitive filesystem compatibility on iOS.
+- **Merge Safety**: On extraction, `.annotations.json` merges last-writer-wins (`merge_annotations_lww`) by ISO timestamp ID so local pencil markup and deletion tombstones are never overwritten by older desktop state.
 
-**Exclusions** (applied at the source, re-verified defensively on extract):
+### 20.3 Direct iPad LLM Generation (Sidecar-Free Operation)
 
-- `_backup/` directories and dotfiles — never leave the desktop.
+Because mobile iOS environments cannot execute background Bun/Node sidecar processes, the iPad generates AI study materials directly from client-side TypeScript:
 
-**Key choices:**
+1. **Client-Side Request Interception (`offlineFetch` in `app/src/lib/api.ts`)**:
+   - When running on mobile Tauri (`isTauriMobile()`), requests to `POST /api/llm` are intercepted locally:
+     - `generate`: Resolves the active model card from local IndexedDB, builds provider payloads, and executes `generateDirect()`.
+     - `test`: Verifies outbound connectivity to the provider endpoint directly from the device.
+     - `save_config` & `save_store`: Updates and persists model provider configurations and API keys directly to client IndexedDB.
+     - `set_active`: Updates the active card selection locally.
+2. **Outbound Native Transport (`generateDirect` with `smartFetch`)**:
+   - Direct LLM calls route through `smartFetch` (`@tauri-apps/plugin-http`).
+   - Outbound HTTP requests to OpenAI-compatible endpoints (`/chat/completions`) or custom endpoints execute via native iOS networking, bypassing WKWebView CORS restrictions and mixed-content blocking.
+3. **Autonomous Study Flow**:
+   - The student can generate notes, summaries, practice quizzes, and post-it note AI explanations completely disconnected from the desktop computer, requiring only standard Wi-Fi or cellular connectivity to the LLM provider.
 
-- **Zip, not JSON.** The previous design base64-encoded every asset into one giant JSON response, parsed it in the webview, and mirrored it byte-by-byte into IndexedDB — three full copies of every byte through the slowest layer. A zip is one deflate pass, one HTTP stream, one native extraction. The old JSON endpoint was deleted rather than kept for compatibility.
-- **fflate streaming** (same machinery as the §14 backup exporter): `ZipDeflate` level 1 for text; `ZipPassThrough` for already-compressed formats (PDF/JPEG/PNG/ZIP — zero wasted deflate CPU). The archive streams out via `ReadableStream` as chunks compress, so the server never buffers the whole zip, and the pump yields to the event loop every 20 files so `/api/queue` polling never stalls.
-- **Entry names normalize to lowercase course ids** so the iPad's `courses_dir.join(course_id.to_lowercase())` lookups always match, regardless of the desktop folder's casing.
-- **Course id comes from the manifest** (lowercased), not the folder name, so renames on disk don't split a course's identity.
+### 20.4 Device Storage & Offline Serving
 
-**Selective & incremental parameters** (composable on `GET /api/sync/bundle`):
+- **Filesystem Placement**: Courses are stored in `<Documents>/courses/<course-id>/`, accessible directly in the iOS Files app (`UIFileSharingEnabled` and `LSSupportsOpenInPlace`). Prompts are stored in `<AppSupport>/prompts/`.
+- **Local Asset Resolution (`courseasset://`)**: `MarkdownViewer` rewrites relative asset paths to `courseasset://localhost/<courseId>/assets/...`. The custom protocol scheme is handled natively in Rust (`tauri/src/pdf.rs`), serving images, diagrams, and locker documents directly from local flash storage with zero remote network requests.
+- **Offline Textbook PDF Rendering**: `resolve_pdf_path` maps course textbook URLs to local storage, allowing the native PDFium rendering pipeline to display complete textbooks without network access.
 
-- `courseIds=a,b` — bundle only those courses. Absent courses are untouched on the device.
-- `since=<ISO 8601>` — mtime-based incremental: only files modified after the timestamp are archived. Semantics:
-  - A course with **zero** changed files is omitted entirely.
-  - When a course has any change, its `meta.json`/`manifest.json` ride along regardless of mtime, so the device's course list stays current.
-  - Unchanged files being absent is what makes it correct: the device keeps its local copy, and only changed files overwrite.
-  - Invalid `since` → HTTP 400 (never silently full-sync).
-- Response headers carry `X-Sync-Generated-At` / `X-Sync-Courses` / `X-Sync-Files` for progress UI and cursors.
+### 20.5 API Surface (Desktop Sidecar, `app/src/lib/server/api.ts`)
 
-**Merge safety on extract** (`merge_annotations_lww`): `annotations.json` is never clobbered — incoming strokes merge last-writer-wins by `id` (ISO date strings compare lexicographically; newer entry always wins, so deletion tombstones survive). This protects iPad-local markup that hasn't been pushed yet. Checkpoint files overwrite, matching the previous behavior.
+| Endpoint | Method | Purpose & Optimizations |
+| :--- | :--- | :--- |
+| `/api/sync/courses` | GET | Compact catalog of non-archived courses for sync picker |
+| `/api/sync/bundle` | GET | Streaming zip bundle (`courseIds`, `since`, `includeLlmKeys`); Deflate Level 6 for delta text |
+| `/api/sync/push` | POST | Receives iPad delta checkpoints & annotations; transparently decompresses Gzip bodies |
+| `/api/courses/:id/assets/locker_docs/:filename` | POST | Dedicated endpoint for parallel binary asset uploads from the iPad client |
 
-### 20.3 Device Storage & Offline Serving
+### 20.6 Design Invariants & Testing Strategy
 
-- **Courses live in `<Documents>/courses/<course-id>/`** — user-visible in the Files app (Info.plist sets `UIFileSharingEnabled` + `LSSupportsOpenInPlace`). Prompts stay in app-support (`prompts/`). There is deliberately no migration from the old app-support location; a re-sync repopulates.
-- **Lesson images load from the device, always.** `MarkdownViewer` rewrites `assets/…` references to `courseasset://localhost/<courseId>/assets/…` on the iPad (`courseAssetBase()` in `api.ts`). The `courseasset` URI scheme is registered in tauripad and served from `Documents/courses` with content-type detection and path-traversal guards (`pdf::parse_course_asset_uri`, shared by both crates via the symlinked `pdf.rs`).
-- **Strictly local, no remote fallback**: if an asset isn't on the device, the image fails visibly. Local asset references never silently fall back to the desktop's IP. External `http(s)` image links pass through untouched and require connectivity by design.
-- **PDFs**: `resolve_pdf_path` (shared `tauri/src/pdf.rs`) understands both `/api/courses/…` and `courseasset://…` URLs and maps them to the on-disk course folder (Documents on iOS), so the pdfium pipeline opens synced textbooks offline.
-
-### 20.4 API Surface (server, `app/src/lib/server/api.ts`)
-
-| Endpoint | Method | Purpose |
-| --- | --- | --- |
-| `/api/sync/courses` | GET | Compact course list for the picker |
-| `/api/sync/bundle` | GET | Streaming zip archive; params `courseIds`, `since`, `includeLlmKeys` |
-| `/api/sync/push` | POST | iPad → desktop push of checkpoints & annotations (separate flow) |
-
-### 20.5 Design Invariants
-
-- No browser/paired-web mode anywhere in the sync path; no compatibility or migration shims. Clean, optimized paths only, for Desktop Tauri and Mobile Tauri.
-- Large payloads never pass through the webview: no JSON asset bundles, no base64, no per-byte IndexedDB mirroring.
-- One bundle format (zip), one bundling function (`createSyncBundleZipStream`), reused concepts from the backup exporter rather than a parallel mechanism.
-
-### 20.6 Testing Strategy
-
-Current coverage: Bun unit tests against `handleApiRequest` (`app/src/lib/server/api.sync.test.ts`) verify bundle contents, `_backup` exclusion, incremental filtering, empty-course omission, invalid-`since` rejection, and the course-list endpoint; Rust unit tests cover the `courseasset` URI parser.
-
-**Preferred direction going forward: testing inside the Tauri builds and via MCP capabilities** rather than browser-level harnesses — i.e. `cargo test` within the `tauri`/`tauripad` crates for extraction/merge/protocol logic, and exercising the live server surface through the `coursedeck` MCP tools where practical. New sync behavior should add coverage in those layers first.
+- **Zero Loopback Relay Hacks**: Mobile LLM generation never attempts to tunnel through desktop loopbacks or faux sidecars; it speaks directly to provider endpoints via native HTTP plugins.
+- **No In-Memory Asset Buffering**: Large course bundles stream directly between network sockets and disk in native Rust; webview memory is never consumed by base64 blobs or multi-megabyte JSON trees.
+- **Fail-Safe Delta Push**: Sync queues maintain strict separation between batch text operations and parallel asset transfers, ensuring no user data is dropped or indefinitely blocked by large binary uploads.
+- **Automated Test Coverage**:
+  - `bun test`: Sidecar sync contracts (`app/src/lib/server/api.sync.test.ts`), gzip compression/decompression pipelines, and incremental `since` filtering.
+  - Rust test suite (`cargo test`): Archive extraction, `merge_annotations_lww`, and `courseasset` URI resolution.
 
 ## 21. Native Apple PencilKit Integration (iPad)
 
@@ -1175,7 +1238,7 @@ Apple Pencil input runs on a **second native layer**: a `PKCanvasView` overlaid 
 The core problem is handoff without a blank frame: native Metal ink must stay on screen until the SVG commit has actually painted. The pipeline:
 
 1. **Accumulate**: strokes stay on the PKCanvasView while writing. A 1.0s idle debounce (`canvasViewDidEndUsingTool` → commit timer, cancelled on `pencilTouchDidBegin`/`canvasViewDidBeginUsingTool`) exports the whole burst at once — exporting per stroke would tear the surface every pen lift.
-2. **Export without clearing**: `commitPendingStrokes` emits `pencilkit:stroke-drawn` per stroke in **viewport coordinates** (page/overlay mapping happens in JS at receipt via live `getBoundingClientRect`, so scroll/zoom never drifts). The native drawing is untouched. Exports are decimated (≥1.3pt spacing with pressure-extreme retention, integer coordinate rounding) to keep payloads and `annotations.json` small.
+2. **Export without clearing**: `commitPendingStrokes` emits `pencilkit:stroke-drawn` per stroke in **viewport coordinates** (page/overlay mapping happens in JS at receipt via live `getBoundingClientRect`, so scroll/zoom never drifts). The native drawing is untouched. Exports are decimated (≥1.3pt spacing with pressure-extreme retention, integer coordinate rounding) to keep payloads and `.annotations.json` small.
 3. **Commit in batches**: the frontend buffers incoming native strokes and commits them in **one `addStrokes()` store pass per animation frame** — a single cache merge, one file-index rebuild, one debounced persistence flush, while each stroke keeps its own undo entry (double-tap undo still peels single strokes). Per-stroke commits made large bursts O(n²) in store work and starved the render pass.
 4. **Retire on acknowledgment**: 2.0s after the last received stroke, `ack_rendered(ids)` tells the plugin those strokes have painted. `reconcileCanvasDrawing` then removes *only acknowledged* strokes — and never while the pencil is down. An 8s failsafe auto-acks anything the frontend never confirmed (e.g. route change races).
 
@@ -1190,7 +1253,7 @@ The matching frontend rule: **PencilKit activation effects must contain no live 
 Two cache layers used to ship stale Swift/Rust into the app:
 
 - **Cargo cannot see Swift sources.** The plugin's `build.rs` emits `cargo:rerun-if-changed` for `ios/Sources/PencilKitPlugin.swift` and `ios/Package.swift`, so Swift edits always recompile into the crate (and thus `libapp.a`).
-- **The Xcode "Build Rust Code" phase no longer reuses any existing `libapp.a`.** It mtime-checks `tauripad` sources/manifests/capabilities *and* the external plugin crate's Rust + Swift, rebuilds when anything is newer (logging the trigger), keeps the x86_64 copy in sync unconditionally, and fails the Xcode build loudly if cargo fails or the plugin crate is missing.
+- **The Xcode "Build Rust Code" phase no longer reuses any existing `libapp.a`.** It mtime-checks `tauri` sources/manifests/capabilities *and* the external plugin crate's Rust + Swift, rebuilds when anything is newer (logging the trigger), keeps the x86_64 copy in sync unconditionally, and fails the Xcode build loudly if cargo fails or the plugin crate is missing.
 
 ### 21.4 Design Invariants
 

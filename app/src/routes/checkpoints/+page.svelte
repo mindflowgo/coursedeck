@@ -21,11 +21,15 @@
   import { parseDocFileName, customTabDisplayName } from '$lib/tabs';
   import { parsePdfPageFileKey } from '$lib/markup/pdfMarkup';
   import { clearFile, flushNow } from '$lib/markup/annotationStore.svelte';
+  import GroupSection from '$lib/components/groups/GroupSection.svelte';
+  import { createGroupCollapseStore } from '$lib/components/groups/groupState.svelte';
+  import { groupItemsByGroups } from '$lib/components/groups/groupUtils';
 
   interface CourseManifestBrief {
     id: string;
     title: string;
     archived?: boolean;
+    group?: string;
   }
 
   interface CheckpointWithMeta extends Checkpoint {
@@ -36,6 +40,7 @@
   interface CourseCardData {
     courseId: string;
     courseTitle: string;
+    group?: string;
     checkpoints: CheckpointWithMeta[];
     filteredCheckpoints: CheckpointWithMeta[];
     latestDate: number;
@@ -43,6 +48,12 @@
 
   let courses: CourseManifestBrief[] = $state([]);
   let checkpoints: CheckpointWithMeta[] = $state([]);
+  let allGroups = $state<Array<{ id: string; name: string; type: string }>>([]);
+  let courseGroups = $derived(
+    allGroups.filter((g) => g.type === 'course').map((g) => g.name)
+  );
+  const groupState = createGroupCollapseStore('coursedeck_checkpoints_collapsed_groups', false);
+
   let isLoading: boolean = $state(true);
   let loadFailed: boolean = $state(false);
   let searchQuery: string = $state('');
@@ -53,9 +64,10 @@
     isLoading = true;
     loadFailed = false;
     try {
-      const [coursesRes, checkpointsRes] = await Promise.all([
+      const [coursesRes, checkpointsRes, groupsRes] = await Promise.all([
         apiFetch('/api/courses'),
-        apiFetch('/api/checkpoints')
+        apiFetch('/api/checkpoints'),
+        apiFetch('/api/settings/groups')
       ]);
 
       if (!coursesRes.ok || !checkpointsRes.ok) {
@@ -67,6 +79,17 @@
 
       courses = (coursesData.courses || []).filter((c: CourseManifestBrief) => !c.archived);
       checkpoints = checkpointsData.checkpoints || [];
+
+      if (groupsRes && groupsRes.ok) {
+        try {
+          const groupsData = await groupsRes.json();
+          if (Array.isArray(groupsData.groups)) {
+            allGroups = groupsData.groups;
+          }
+        } catch (e) {
+          console.warn('Failed to parse groups in checkpoints:', e);
+        }
+      }
     } catch (e) {
       console.error('Failed to load checkpoints:', e);
       loadFailed = true;
@@ -133,15 +156,20 @@
   let totalCheckpointsCount = $derived(checkpoints.length);
 
   let courseCards = $derived.by(() => {
-    const courseMap = new Map<string, { id: string; title: string }>();
+    const courseMap = new Map<string, { id: string; title: string; group?: string }>();
     for (const c of courses) {
-      courseMap.set(c.id.toLowerCase(), { id: c.id, title: c.title || c.id.toUpperCase() });
+      courseMap.set(c.id.toLowerCase(), {
+        id: c.id,
+        title: c.title || c.id.toUpperCase(),
+        group: c.group
+      });
     }
     for (const cp of checkpoints) {
       if (cp.courseId && !courseMap.has(cp.courseId.toLowerCase())) {
         courseMap.set(cp.courseId.toLowerCase(), {
           id: cp.courseId,
-          title: cp.courseTitle || cp.courseId.toUpperCase()
+          title: cp.courseTitle || cp.courseId.toUpperCase(),
+          group: undefined
         });
       }
     }
@@ -174,6 +202,7 @@
       cards.push({
         courseId: meta.id,
         courseTitle: meta.title,
+        group: meta.group,
         checkpoints: courseCps,
         filteredCheckpoints: filtered,
         latestDate
@@ -196,6 +225,15 @@
     // Default: show courses organized alphabetically
     return cards.sort(compareAlphabetical);
   });
+
+  let groupedCards = $derived(
+    groupItemsByGroups(
+      courseCards,
+      (c) => c.group,
+      (c) => c.courseId,
+      courseGroups
+    )
+  );
 
   let totalFilteredCount = $derived.by(() => {
     return courseCards.reduce((sum, c) => sum + c.filteredCheckpoints.length, 0);
@@ -331,104 +369,124 @@
       </button>
     </div>
   {:else}
-    <!-- Courses Cards Grid (like /schedules) -->
-    <div class="grid gap-4 sm:grid-cols-2">
-      {#each courseCards as card (card.courseId)}
-        <div class="rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4 shadow-2xs flex flex-col justify-between">
-          <div class="space-y-3">
-            <!-- Course Card Header -->
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <button
-                  type="button"
-                  onclick={() => goto(`/courses/${card.courseId.toLowerCase()}`)}
-                  class="text-sm font-semibold text-stone-900 dark:text-stone-100 hover:underline truncate block text-left cursor-pointer"
-                >
-                  {card.courseTitle}
-                </button>
-                <p class="text-[11px] text-stone-400">
-                  <span class="font-mono uppercase tracking-wide">{card.courseId}</span>
-                </p>
+    {#snippet cardsGrid(cards: CourseCardData[])}
+      <div class="grid gap-4 sm:grid-cols-2">
+        {#each cards as card (card.courseId)}
+          <div class="rounded-2xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-4 shadow-2xs flex flex-col justify-between">
+            <div class="space-y-3">
+              <!-- Course Card Header -->
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <button
+                    type="button"
+                    onclick={() => goto(`/courses/${card.courseId.toLowerCase()}`)}
+                    class="text-sm font-semibold text-stone-900 dark:text-stone-100 hover:underline truncate block text-left cursor-pointer"
+                  >
+                    {card.courseTitle}
+                  </button>
+                  <p class="text-[11px] text-stone-400">
+                    <span class="font-mono uppercase tracking-wide">{card.courseId}</span>
+                  </p>
+                </div>
+
+                <!-- Course Notes Count -->
+                {#if card.checkpoints.length > 0}
+                  <span class="text-xs text-stone-500 dark:text-stone-400 shrink-0">
+                    {card.checkpoints.length} {card.checkpoints.length === 1 ? 'note' : 'notes'}
+                  </span>
+                {/if}
               </div>
 
-              <!-- Course Notes Count -->
-              {#if card.checkpoints.length > 0}
-                <span class="text-xs text-stone-500 dark:text-stone-400 shrink-0">
-                  {card.checkpoints.length} {card.checkpoints.length === 1 ? 'note' : 'notes'}
-                </span>
+              <!-- Checkpoints list inside course card (scrollable if too many items, sorted newest to oldest) -->
+              {#if card.filteredCheckpoints.length === 0}
+                <p class="text-xs text-stone-400 dark:text-stone-500 italic py-2">
+                  {card.checkpoints.length === 0 ? 'No checkpoints yet.' : 'No matching checkpoints.'}
+                </p>
+              {:else}
+                <div class="max-h-60 overflow-y-auto space-y-1.5 pr-1 focus:outline-hidden">
+                  {#each card.filteredCheckpoints as cp (cp.id)}
+                    {@const color = getCheckpointColor(cp.color)}
+                    {@const href = getCheckpointHref(card.courseId, cp)}
+                    {@const shortLabel = getShortFileLabel(cp.file)}
+                    {@const fullLabel = getFullFileLabel(cp.file)}
+
+                    <div
+                      class="group flex items-center justify-between p-1.5 -mx-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800/70 transition cursor-pointer gap-2"
+                      onclick={() => goto(href)}
+                      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goto(href); } }}
+                      role="button"
+                      tabindex="0"
+                    >
+                      <!-- Book icon (markup) or Color-dot (note) and small font part of written text -->
+                      <div class="flex items-center space-x-2 min-w-0 flex-1">
+                        {#if cp.type === 'markup'}
+                          <span class="shrink-0 flex items-center justify-center" title="PDF Annotations">
+                            <BookOpen class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                          </span>
+                        {:else}
+                          <span
+                            class="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs ring-1 ring-black/10 dark:ring-white/10"
+                            style="background-color: {color.dot};"
+                            title={color.label}
+                          ></span>
+                        {/if}
+
+                        <!-- Short Lesson / Tab / Page Tag -->
+                        {#if shortLabel}
+                          <span class="font-mono text-[10px] px-1.5 py-0.2 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 shrink-0 border border-stone-200/60 dark:border-stone-700/60">
+                            {shortLabel}
+                          </span>
+                        {/if}
+
+                        <!-- Written Text (small font, truncated snippet, no date) -->
+                        <span
+                          class="text-xs text-stone-700 dark:text-stone-300 group-hover:text-stone-900 dark:group-hover:text-stone-100 truncate flex-1 min-w-0"
+                          title="{fullLabel}: {cp.noteText || '(no note text)'}"
+                        >
+                          {cp.noteText || fullLabel}
+                        </span>
+                      </div>
+
+                      <!-- Quick Delete Action on hover -->
+                      <button
+                        type="button"
+                        onclick={(e) => {
+                          e.stopPropagation();
+                          handleDelete(card.courseId, cp.id);
+                        }}
+                        disabled={deletingId === cp.id}
+                        title="Delete checkpoint"
+                        aria-label="Delete checkpoint"
+                        class="opacity-0 group-hover:opacity-100 p-1 text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 rounded transition cursor-pointer shrink-0"
+                      >
+                        <Trash2 class="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  {/each}
+                </div>
               {/if}
             </div>
-
-            <!-- Checkpoints list inside course card (scrollable if too many items, sorted newest to oldest) -->
-            {#if card.filteredCheckpoints.length === 0}
-              <p class="text-xs text-stone-400 dark:text-stone-500 italic py-2">
-                {card.checkpoints.length === 0 ? 'No checkpoints yet.' : 'No matching checkpoints.'}
-              </p>
-            {:else}
-              <div class="max-h-60 overflow-y-auto space-y-1.5 pr-1 focus:outline-hidden">
-                {#each card.filteredCheckpoints as cp (cp.id)}
-                  {@const color = getCheckpointColor(cp.color)}
-                  {@const href = getCheckpointHref(card.courseId, cp)}
-                  {@const shortLabel = getShortFileLabel(cp.file)}
-                  {@const fullLabel = getFullFileLabel(cp.file)}
-
-                  <div
-                    class="group flex items-center justify-between p-1.5 -mx-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800/70 transition cursor-pointer gap-2"
-                    onclick={() => goto(href)}
-                    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goto(href); } }}
-                    role="button"
-                    tabindex="0"
-                  >
-                    <!-- Book icon (markup) or Color-dot (note) and small font part of written text -->
-                    <div class="flex items-center space-x-2 min-w-0 flex-1">
-                      {#if cp.type === 'markup'}
-                        <span class="shrink-0 flex items-center justify-center" title="PDF Annotations">
-                          <BookOpen class="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                        </span>
-                      {:else}
-                        <span
-                          class="w-2.5 h-2.5 rounded-full shrink-0 shadow-2xs ring-1 ring-black/10 dark:ring-white/10"
-                          style="background-color: {color.dot};"
-                          title={color.label}
-                        ></span>
-                      {/if}
-
-                      <!-- Short Lesson / Tab / Page Tag -->
-                      {#if shortLabel}
-                        <span class="font-mono text-[10px] px-1.5 py-0.2 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 shrink-0 border border-stone-200/60 dark:border-stone-700/60">
-                          {shortLabel}
-                        </span>
-                      {/if}
-
-                      <!-- Written Text (small font, truncated snippet, no date) -->
-                      <span
-                        class="text-xs text-stone-700 dark:text-stone-300 group-hover:text-stone-900 dark:group-hover:text-stone-100 truncate flex-1 min-w-0"
-                        title="{fullLabel}: {cp.noteText || '(no note text)'}"
-                      >
-                        {cp.noteText || fullLabel}
-                      </span>
-                    </div>
-
-                    <!-- Quick Delete Action on hover -->
-                    <button
-                      type="button"
-                      onclick={(e) => {
-                        e.stopPropagation();
-                        handleDelete(card.courseId, cp.id);
-                      }}
-                      disabled={deletingId === cp.id}
-                      title="Delete checkpoint"
-                      aria-label="Delete checkpoint"
-                      class="opacity-0 group-hover:opacity-100 p-1 text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 rounded transition cursor-pointer shrink-0"
-                    >
-                      <Trash2 class="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                {/each}
-              </div>
-            {/if}
           </div>
-        </div>
+        {/each}
+      </div>
+    {/snippet}
+
+    <!-- Grouped Courses Checkpoints Grid -->
+    <div class="space-y-6">
+      {#each groupedCards as bucket (bucket.id)}
+        {#if bucket.name}
+          <GroupSection
+            title={bucket.name}
+            count={bucket.items.length}
+            groupId={bucket.id}
+            isOpen={!groupState.isCollapsed(bucket.id) || Boolean(searchQuery.trim())}
+            onToggle={() => groupState.toggle(bucket.id)}
+          >
+            {@render cardsGrid(bucket.items)}
+          </GroupSection>
+        {:else}
+          {@render cardsGrid(bucket.items)}
+        {/if}
       {/each}
     </div>
   {/if}

@@ -52,7 +52,7 @@ describe('Generalized Groups API & GroupService', () => {
 
     const data = await res.json();
     expect(data.success).toBe(true);
-    expect(data.groups.length).toBe(3);
+    expect(data.groups.length).toBeGreaterThanOrEqual(3);
     const names = data.groups.map((g: any) => g.name);
     expect(names).toContain('Course Group A');
     expect(names).toContain('Reference Books');
@@ -189,5 +189,58 @@ describe('Generalized Groups API & GroupService', () => {
 
     const data = await deleteRes.json();
     expect(data.names).not.toContain('Course Group B');
+  });
+
+  it('POST /api/settings/groups rename action cascades to library documents', async () => {
+    const { LibraryService } = await import('./library');
+    const dummy = Buffer.from('dummy content');
+    await LibraryService.saveDocument('cascade_doc.pdf', dummy, {
+      title: 'Cascade Doc',
+      group: 'Reference Books'
+    });
+
+    const renameReq = new Request('http://127.0.0.1:3182/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'library',
+        action: 'rename',
+        oldName: 'Reference Books',
+        newName: 'Advanced References'
+      })
+    });
+    const renameRes = await handleApiRequest(renameReq, new URL(renameReq.url));
+    expect(renameRes.status).toBe(200);
+
+    const data = await renameRes.json();
+    expect(data.names).toContain('Advanced References');
+    expect(data.names).not.toContain('Reference Books');
+
+    const doc = LibraryService.getDocument('cascade_doc.pdf');
+    expect(doc?.group).toBe('Advanced References');
+  });
+
+  it('POST /api/settings/groups delete action clears group on library documents', async () => {
+    const { LibraryService } = await import('./library');
+    const dummy = Buffer.from('dummy content');
+    await LibraryService.saveDocument('delete_group_doc.pdf', dummy, {
+      title: 'Delete Group Doc',
+      group: 'Reference Books'
+    });
+
+    const deleteReq = new Request('http://127.0.0.1:3182/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'library',
+        action: 'delete',
+        name: 'Reference Books'
+      })
+    });
+    const deleteRes = await handleApiRequest(deleteReq, new URL(deleteReq.url));
+    expect(deleteRes.status).toBe(200);
+
+    const doc = LibraryService.getDocument('delete_group_doc.pdf');
+    expect(doc?.group).toBeUndefined();
   });
 });

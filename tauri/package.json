@@ -11,7 +11,12 @@
     "build:portable": "bun run ../scripts/build-portable.ts",
     "build:win:portable": "bun run ../scripts/build-portable.ts",
     "cargo:check": "cargo check",
-    "cargo:build": "cargo build --release"
+    "cargo:build": "cargo build --release",
+    "ios:build": "bun --cwd ../app build && rm -rf gen/apple/assets/* && cp -R ../app/build/* gen/apple/assets/",
+    "ios:rust": "cargo build --target aarch64-apple-ios --release && mkdir -p gen/apple/Externals/arm64/release gen/apple/Externals/arm64/debug && cp target/aarch64-apple-ios/release/libilc_study_tool_lib.a gen/apple/Externals/arm64/release/libapp.a && cp target/aarch64-apple-ios/release/libilc_study_tool_lib.a gen/apple/Externals/arm64/debug/libapp.a",
+    "ios:xcode": "open gen/apple/coursedeck-ipad.xcodeproj",
+    "ios:open": "bun run ios:build && bun run ios:xcode",
+    "ios:install:xspot": "bun run ios:build && xcodebuild -project gen/apple/coursedeck-ipad.xcodeproj -scheme coursedeck-ipad_iOS -configuration release -destination 'id=a0db1cb93df7b788df78d121301d97c4ba6c2888' -allowProvisioningUpdates build && ios-deploy -i a0db1cb93df7b788df78d121301d97c4ba6c2888 -b $(xcodebuild -project gen/apple/coursedeck-ipad.xcodeproj -scheme coursedeck-ipad_iOS -configuration release -showBuildSettings | grep -m 1 'TARGET_BUILD_DIR =' | awk '{print $3}')/CourseDeck.app"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1"

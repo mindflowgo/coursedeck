@@ -156,7 +156,8 @@ async function flush(courseId: string): Promise<void> {
   const upserts = Array.from(queue.values());
   queue.clear();
   try {
-    const res = await apiFetch(`/api/courses/${encodeURIComponent(id)}/annotations`, {
+    const url = id === 'library' ? '/api/library/annotations' : `/api/courses/${encodeURIComponent(id)}/annotations`;
+    const res = await apiFetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ upserts })
@@ -186,7 +187,8 @@ export async function loadAnnotations(courseId: string): Promise<void> {
 
   const promise = (async () => {
     try {
-      const res = await apiFetch(`/api/courses/${encodeURIComponent(id)}/annotations`);
+      const url = id === 'library' ? '/api/library/annotations' : `/api/courses/${encodeURIComponent(id)}/annotations`;
+      const res = await apiFetch(url);
       if (res.ok) {
         const body = (await res.json()) as { strokes?: unknown[] };
         const incoming = Array.isArray(body.strokes) ? body.strokes.filter(isMarkupStroke) : [];

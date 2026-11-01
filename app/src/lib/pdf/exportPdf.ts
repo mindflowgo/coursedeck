@@ -101,8 +101,8 @@ async function savePdfBlob(blob: Blob, filename: string): Promise<'cancelled' | 
     if (!path) return 'cancelled';
 
     console.log(`[PDF] Saving to ${path}…`);
-    const dataB64 = await blobToBase64(blob);
-    await invoke('save_pdf_file', { path, dataB64 });
+    const bytes = await blob.arrayBuffer();
+    await invoke('save_pdf_file', bytes, { headers: { path: encodeURIComponent(path) } });
     return path;
   }
 
@@ -126,17 +126,6 @@ async function savePdfBlob(blob: Blob, filename: string): Promise<'cancelled' | 
 
   downloadBlob(blob, filename);
   return null;
-}
-
-async function blobToBase64(blob: Blob): Promise<string> {
-  const buffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

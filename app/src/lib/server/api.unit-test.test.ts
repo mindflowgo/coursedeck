@@ -55,7 +55,7 @@ prompt: "Test prompt"
         }
       ]
     };
-    fs.writeFileSync(path.join(courseDir, 'meta.json'), JSON.stringify(manifest), 'utf8');
+    fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify(manifest), 'utf8');
     CourseService.saveLessonTab(courseId, unitId, 'test', sampleTestMarkdown);
   });
 

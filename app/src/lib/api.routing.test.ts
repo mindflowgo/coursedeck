@@ -1,7 +1,7 @@
 // app/src/lib/api.routing.test.ts
-// Verifies the local-first routing contract: on Tauri (desktop AND iPad),
-// every file-backed route is served from the local store; only ONLINE_ONLY
-// routes (LLM generation, sync, ...) touch the network.
+// Verifies the local-first routing contract: every file-backed route is served
+// from the local store; anything the local layer does not handle falls
+// through to the server (LLM generation, sync, backup, live job status).
 
 import { describe, expect, it, beforeEach, mock } from 'bun:test';
 
@@ -9,6 +9,14 @@ const storeCalls: string[] = [];
 const fetchCalls: Array<{ url: string; method: string }> = [];
 
 const lessonBundle = { lesson: '# Lesson from local store', tabs: { summary: '# Summary' } };
+
+// Mutable library store state, reset in beforeEach.
+let libManifest: any = { version: 1, documents: [] };
+let libDiskEntries: any | null = null;
+let libSaveShouldFail = false;
+const libSavedDocs = new Map<string, ArrayBuffer>();
+let libAnnotations: any[] = [];
+let libCheckpoints: any[] = [];
 
 const windowStub = {
   __TAURI_INTERNALS__: {},
@@ -157,7 +165,6 @@ await mock.module('./storage/clientStore', () => ({
     storeCalls.push('deleteLockerDocLocally');
     return true;
   },
-  getCachedPdfAsset: async () => undefined,
   getAllGroupsLocally: async () => [{ id: 'stem', name: 'STEM', type: 'course' }],
   getGroupNamesLocally: async (type?: string) => ['STEM'],
   saveGroupsLocally: async () => {},
@@ -180,6 +187,39 @@ await mock.module('./storage/clientStore', () => ({
   reorderGroupsLocally: async (type: string, names: string[]) => {
     storeCalls.push('reorderGroupsLocally');
     return names;
+  },
+  getLibraryManifestLocally: async () => {
+    storeCalls.push('getLibraryManifestLocally');
+    return libManifest;
+  },
+  saveLibraryManifestLocally: async (manifest: unknown) => {
+    storeCalls.push('saveLibraryManifestLocally');
+    libManifest = manifest;
+  },
+  listLibraryDocsOnDisk: async () => {
+    storeCalls.push('listLibraryDocsOnDisk');
+    return libDiskEntries;
+  },
+  saveLibraryDocLocally: async (filename: string, bytes: ArrayBuffer) => {
+    storeCalls.push('saveLibraryDocLocally');
+    if (libSaveShouldFail) {
+      throw new Error('save_library_doc: disk full');
+    }
+    libSavedDocs.set(filename, bytes);
+    return { filename, size: bytes.byteLength, mtime_ms: Date.now() };
+  },
+  deleteLibraryDocLocally: async (filename: string) => {
+    storeCalls.push('deleteLibraryDocLocally');
+    libSavedDocs.delete(filename);
+    return true;
+  },
+  getLibraryAnnotationsLocally: async () => libAnnotations,
+  saveLibraryAnnotationsLocally: async (strokes: unknown[]) => {
+    libAnnotations = strokes as any[];
+  },
+  getLibraryCheckpointsLocally: async () => libCheckpoints,
+  saveLibraryCheckpointsLocally: async (checkpoints: unknown[]) => {
+    libCheckpoints = checkpoints as any[];
   }
 }));
 
@@ -189,6 +229,12 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
   beforeEach(() => {
     storeCalls.length = 0;
     fetchCalls.length = 0;
+    libManifest = { version: 1, documents: [] };
+    libDiskEntries = null;
+    libSaveShouldFail = false;
+    libSavedDocs.clear();
+    libAnnotations = [];
+    libCheckpoints = [];
   });
 
   it('detects the iPad as Tauri mobile', () => {
@@ -299,6 +345,36 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     expect(fetchCalls.length).toBe(0);
   });
 
+  it('manages library groups via /api/settings/groups offline', async () => {
+    // Add library group
+    const addRes = await apiFetch('/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'add', type: 'library', name: 'Reference' })
+    });
+    expect(addRes.status).toBe(200);
+    expect(storeCalls).toContain('addGroupLocally');
+
+    // Rename library group
+    const renameRes = await apiFetch('/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'rename', type: 'library', oldName: 'Reference', newName: 'Documentation' })
+    });
+    expect(renameRes.status).toBe(200);
+    expect(storeCalls).toContain('renameGroupLocally');
+
+    // Delete library group
+    const deleteRes = await apiFetch('/api/settings/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'delete', type: 'library', name: 'Documentation' })
+    });
+    expect(deleteRes.status).toBe(200);
+    expect(storeCalls).toContain('deleteGroupLocally');
+    expect(fetchCalls.length).toBe(0);
+  });
+
   it('keeps LLM generation on the network', async () => {
     await apiFetch('/api/llm', { method: 'POST', body: '{}' });
     expect(fetchCalls.length).toBe(1);
@@ -309,5 +385,95 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     await apiFetch('/api/sync/push', { method: 'POST', body: '{}' });
     expect(fetchCalls.length).toBe(1);
     expect(storeCalls.length).toBe(0);
+  });
+
+  it('falls through to the server for routes the local layer does not handle', async () => {
+    await apiFetch('/api/backup/list');
+    expect(fetchCalls.length).toBe(1);
+    expect(fetchCalls[0].url).toBe('/api/backup/list');
+    expect(storeCalls.length).toBe(0);
+  });
+
+  it('polls course-doc generation status on the network, not from the local store', async () => {
+    await apiFetch('/api/courses/foo/course-docs?status=true&type=summary');
+    expect(fetchCalls.length).toBe(1);
+    expect(storeCalls.length).toBe(0);
+  });
+
+  it('saves library uploads to the local store, never the network', async () => {
+    const formData = new FormData();
+    formData.append('file', new File([new Uint8Array([1, 2, 3])], 'Physics Book.pdf', { type: 'application/pdf' }));
+    formData.append('title', 'Physics 11');
+    formData.append('description', 'Reference textbook');
+    const res = await apiFetch('/api/library/upload', { method: 'POST', body: formData });
+    expect(res.status).toBe(201);
+    const data: any = await res.json();
+    expect(data.success).toBe(true);
+    expect(data.document.title).toBe('Physics 11');
+    expect(data.document.format).toBe('pdf');
+    expect(data.document.description).toBe('Reference textbook');
+    expect(data.document.position).toBe(0);
+    expect(storeCalls).toContain('saveLibraryDocLocally');
+    expect(storeCalls).toContain('saveLibraryManifestLocally');
+    expect(libManifest.documents.length).toBe(1);
+    expect(libManifest.documents[0].filename).toBe('Physics Book.pdf');
+    expect(libSavedDocs.has('Physics Book.pdf')).toBe(true);
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('rejects library uploads with unsupported formats', async () => {
+    const formData = new FormData();
+    formData.append('file', new File([new Uint8Array([1])], 'notes.txt', { type: 'text/plain' }));
+    const res = await apiFetch('/api/library/upload', { method: 'POST', body: formData });
+    expect(res.status).toBe(400);
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('surfaces native save failures from library uploads', async () => {
+    libSaveShouldFail = true;
+    const formData = new FormData();
+    formData.append('file', new File([new Uint8Array([1, 2])], 'bad.pdf', { type: 'application/pdf' }));
+    const res = await apiFetch('/api/library/upload', { method: 'POST', body: formData });
+    expect(res.status).toBe(500);
+    const data: any = await res.json();
+    expect(data.message).toContain('disk full');
+    // The manifest was not touched by the failed upload
+    expect(libManifest.documents.length).toBe(0);
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('reconciles the library manifest with /library files found on disk', async () => {
+    libDiskEntries = [{ filename: 'dropped-book.epub', size: 42, mtime_ms: 1700000000000 }];
+    const res = await apiFetch('/api/library');
+    expect(res.status).toBe(200);
+    const data: any = await res.json();
+    expect(data.documents.length).toBe(1);
+    expect(data.documents[0].filename).toBe('dropped-book.epub');
+    expect(data.documents[0].format).toBe('epub');
+    expect(data.documents[0].title).toBe('Dropped Book');
+    // The reconciled manifest is persisted back to the store
+    expect(libManifest.documents.length).toBe(1);
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('deletes library documents along with their annotations and checkpoints', async () => {
+    libManifest = {
+      version: 1,
+      documents: [
+        { id: 'b.pdf', filename: 'b.pdf', format: 'pdf', title: 'B', description: '', additionDate: '2026-01-01T00:00:00.000Z', position: 0 }
+      ]
+    };
+    libSavedDocs.set('b.pdf', new Uint8Array([1, 2, 3]).slice().buffer);
+    libAnnotations = [{ id: 's1', file: 'b.pdf:p1', tool: 'marker', color: 'yellow', points: [1], authorWidth: 600, date: '2026-01-01T00:00:00.000Z' }];
+    libCheckpoints = [{ id: 'c1', courseId: 'library', file: 'b.pdf:p3', verticalPosition: 3, type: 'position', date: '2026-01-01T00:00:00.000Z' }];
+
+    const res = await apiFetch('/api/library/b.pdf', { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(storeCalls).toContain('deleteLibraryDocLocally');
+    expect(libManifest.documents.length).toBe(0);
+    expect(libSavedDocs.has('b.pdf')).toBe(false);
+    expect(libAnnotations.length).toBe(0);
+    expect(libCheckpoints.length).toBe(0);
+    expect(fetchCalls.length).toBe(0);
   });
 });

@@ -284,6 +284,16 @@ export function getCoursesDir(): string {
   return path.join(getDataDir(), 'courses');
 }
 
+export function getLibraryDir(): string {
+  const dir = path.join(getDataDir(), 'library');
+  if (!fs.existsSync(dir)) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch {}
+  }
+  return dir;
+}
+
 export function getPromptsDir(): string {
   return path.join(getDataDir(), 'prompts');
 }

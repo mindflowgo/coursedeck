@@ -10,7 +10,7 @@ import { parseFrontmatter } from '/Users/fil/Code/app-study-tool/app/src/lib/par
 import { repairMarkdownTables } from '/Users/fil/Code/app-study-tool/app/src/lib/markdown/tableRepair.ts';
 
 const courseDir = process.argv[2];
-const meta = JSON.parse(fs.readFileSync(path.join(courseDir, 'meta.json'), 'utf8'));
+const meta = JSON.parse(fs.readFileSync(path.join(courseDir, '.manifest.json'), 'utf8'));
 const parser = new Marked({ gfm: true, breaks: true });
 
 const lines: string[] = [];

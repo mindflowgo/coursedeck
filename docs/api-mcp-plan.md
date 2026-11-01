@@ -229,7 +229,7 @@ Aligns strictly with `app/src/lib/tabs.ts` (`BUILT_IN_TABS`, `COURSE_TABS`, `RES
   ```
 
 #### 4. `create_course` (Net-New Service Method)
-* **Semantics:** Validates `assertCourseId(id).toLowerCase()`. Throws 409 Conflict if directory exists. Creates directory structure and seeds `meta.json` with `units: []`.
+* **Semantics:** Validates `assertCourseId(id).toLowerCase()`. Throws 409 Conflict if directory exists. Creates directory structure and seeds `.manifest.json` with `units: []`.
 * **Input Schema:**
   ```typescript
   z.object({
@@ -243,7 +243,7 @@ Aligns strictly with `app/src/lib/tabs.ts` (`BUILT_IN_TABS`, `COURSE_TABS`, `RES
 
 #### 5. `delete_course` (Net-New Service Method + Durable Cleanup)
 * **Semantics:**
-  * `permanent: false`: Archives course (sets `archived: true` in `meta.json`).
+  * `permanent: false`: Archives course (sets `archived: true` in `.manifest.json`).
   * `permanent: true`: Recursively deletes directory using `safeJoin` validation.
   * **Calendar Cleanup:** Registers durable cleanup intent in `data/.cleanup_queue.json` to purge remote calendar events matching `extendedProperties.private.courseId === id`.
 * **Input Schema:**
@@ -255,7 +255,7 @@ Aligns strictly with `app/src/lib/tabs.ts` (`BUILT_IN_TABS`, `COURSE_TABS`, `RES
   ```
 
 #### 6. `inject_lessons` (Atomic Batch Injection)
-* **Semantics:** Validates full batch before writing. Distinguishes assignments (`type: 'assignment'`) by generating IDs like `01.06_assign1`. Atomic file writes (`.tmp` $\to$ rename). Updates unit/lesson manifest in `meta.json`. Defaults `overwriteExisting` to `false`.
+* **Semantics:** Validates full batch before writing. Distinguishes assignments (`type: 'assignment'`) by generating IDs like `01.06_assign1`. Atomic file writes (`.tmp` $\to$ rename). Updates unit/lesson manifest in `.manifest.json`. Defaults `overwriteExisting` to `false`.
 * **Input Schema:**
   ```typescript
   z.object({
@@ -442,7 +442,7 @@ graph TD
 - [ ] **Acceptance Gate:** MCP client reads course catalog, searches keywords, and fetches lesson documents with zero queue duplication.
 
 ### Phase C: Mutations, Schedule Skeleton & Unified Jobs
-- [ ] Implement `CourseService.createCourse()` (ID validation, 409 Conflict, seed `meta.json`).
+- [ ] Implement `CourseService.createCourse()` (ID validation, 409 Conflict, seed `.manifest.json`).
 - [ ] Implement `CourseService.deleteCourse()` (archive vs permanent delete, durable cleanup intent).
 - [ ] Implement `CourseService.injectLessons()` (atomic tmp-file replacement, assignment IDs).
 - [ ] Implement `ScheduleService.buildAndSaveSchedule()` wrapping `buildScheduleSkeleton()`.

@@ -131,13 +131,15 @@ export interface SyncBundleZipOptions {
   /**
    * Incremental sync: only files whose modification time is after this ISO
    * timestamp (or Date) are archived. Courses with no modified files are
-   * skipped entirely; when a course does have changes, its meta.json /
-   * manifest.json ride along regardless of mtime so the receiving device
-   * always ends up with a current course list.
+   * skipped entirely; when a course does have changes, its .manifest.json
+   * rides along regardless of mtime so the receiving device always ends up
+   * with a current course list.
    */
   since?: string | Date | null;
   /** JSON-serialized into `_sync/meta.json` inside the archive. */
   syncMeta?: unknown;
+  /** Custom compression level for text files (1-9). Defaults to 6 for incremental sync, 1 for full sync. */
+  deflateLevel?: 1 | 4 | 6 | 9;
 }
 
 /**
@@ -173,7 +175,11 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
     entries: { absPath: string; relPath: string }[]
   ): void => {
     for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
-      if (entry.name.startsWith('.') || entry.name === '_backup') continue;
+      const isAllowedDot =
+        entry.name === '.manifest.json' ||
+        entry.name === '.checkpoints.json' ||
+        entry.name === '.annotations.json';
+      if ((entry.name.startsWith('.') && !isAllowedDot) || entry.name === '_backup') continue;
       const absPath = path.join(absDir, entry.name);
       const relPath = `${relPrefix}/${entry.name}`;
       if (entry.isDirectory()) {
@@ -181,7 +187,7 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
       } else if (entry.isFile()) {
         // Manifests are handled separately in incremental mode (included
         // whenever the course has any real change, not by their own mtime).
-        if (Number.isFinite(sinceMs) && /(?:^|\/)(?:meta|manifest)\.json$/i.test(relPath)) {
+        if (Number.isFinite(sinceMs) && /(?:^|\/)\.manifest\.json$/i.test(relPath)) {
           continue;
         }
         if (Number.isFinite(sinceMs)) {
@@ -203,17 +209,14 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
 
       // Prefer the manifest id (lowercased) for the entry prefix.
       let courseId = dir.name.toLowerCase();
-      for (const metaName of ['meta.json', 'manifest.json']) {
-        const metaPath = path.join(courseFolder, metaName);
-        if (fs.existsSync(metaPath)) {
-          try {
-            const id = JSON.parse(fs.readFileSync(metaPath, 'utf8'))?.id;
-            if (typeof id === 'string' && id.trim()) {
-              courseId = id.toLowerCase();
-              break;
-            }
-          } catch {}
-        }
+      const manifestPath = path.join(courseFolder, '.manifest.json');
+      if (fs.existsSync(manifestPath)) {
+        try {
+          const id = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))?.id;
+          if (typeof id === 'string' && id.trim()) {
+            courseId = id.toLowerCase();
+          }
+        } catch {}
       }
       if (wanted && !wanted.has(courseId)) continue;
 
@@ -223,14 +226,12 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
         continue; // incremental sync: nothing changed in this course
       }
       if (Number.isFinite(sinceMs)) {
-        for (const metaName of ['meta.json', 'manifest.json']) {
-          const metaPath = path.join(courseFolder, metaName);
-          if (fs.existsSync(metaPath)) {
-            courseEntries.unshift({
-              absPath: metaPath,
-              relPath: `courses/${courseId}/${metaName}`
-            });
-          }
+        const manifestPath = path.join(courseFolder, '.manifest.json');
+        if (fs.existsSync(manifestPath)) {
+          courseEntries.unshift({
+            absPath: manifestPath,
+            relPath: `courses/${courseId}/.manifest.json`
+          });
         }
       }
 
@@ -277,9 +278,10 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
               relPath === '_sync/meta.json'
                 ? new TextEncoder().encode(JSON.stringify(options.syncMeta))
                 : new Uint8Array(fs.readFileSync(absPath));
+            const textDeflateLevel = options.deflateLevel ?? (Number.isFinite(sinceMs) ? 6 : 1);
             const file = ALREADY_COMPRESSED.test(relPath)
               ? new ZipPassThrough(relPath)
-              : new ZipDeflate(relPath, { level: 1 });
+              : new ZipDeflate(relPath, { level: textDeflateLevel });
             zip.add(file);
             file.push(data, true);
 

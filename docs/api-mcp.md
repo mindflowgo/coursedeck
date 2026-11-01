@@ -185,7 +185,7 @@ Archive (soft-delete) or permanently delete a course directory and queue remote 
 - **Annotations**: Destructive mutation
 - **Parameters**:
   - `id` *(string, required)*: Course identifier (e.g. `'sph4u'`).
-  - `permanent` *(boolean, optional, default: `false`)*: If `true`, permanently deletes the course folder from disk. If `false`, marks `archived: true` in `meta.json`.
+  - `permanent` *(boolean, optional, default: `false`)*: If `true`, permanently deletes the course folder from disk. If `false`, marks `archived: true` in `.manifest.json`.
 - **Returns**:
   ```json
   {

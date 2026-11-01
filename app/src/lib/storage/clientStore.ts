@@ -47,7 +47,7 @@ export async function saveLlmConfigLocally(config: ClientLlmStore): Promise<void
 }
 
 const DB_NAME = 'coursedeck_v1';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 const STORES = [
   'meta',
@@ -62,8 +62,7 @@ const STORES = [
   'pending_push_documents',
   'pending_push_prompts',
   'pending_push_assets',
-  'locker_docs',
-  'pdf_assets'
+  'locker_docs'
 ] as const;
 
 /** A locally-written course file waiting to be pushed to the desktop. `content: null` = deleted locally (tombstone). */
@@ -105,6 +104,16 @@ export function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = (e) => {
       const db = (e.target as IDBOpenDBRequest).result;
+      // v5: IndexedDB keeps metadata/sync-tracking only — never file content.
+      // Purge the legacy caches that used to hold bytes (pdf_assets blobs,
+      // locker_docs buffers, base64 push payloads).
+      if (e.oldVersion > 0 && e.oldVersion < 5) {
+        for (const stale of ['pdf_assets', 'locker_docs', 'pending_push_assets']) {
+          if (db.objectStoreNames.contains(stale)) {
+            db.deleteObjectStore(stale);
+          }
+        }
+      }
       for (const name of STORES) {
         if (!db.objectStoreNames.contains(name)) {
           db.createObjectStore(name);
@@ -201,41 +210,6 @@ export async function getDesktopUrl(): Promise<string | undefined> {
   return getMeta<string>('desktop_url');
 }
 
-// ── PDF Asset Cache (offline course books) ─────────────────────────────────────
-
-export async function getCachedPdfAsset(key: string): Promise<ArrayBuffer | undefined> {
-  try {
-    const hit = await get<ArrayBuffer>('pdf_assets', key);
-    return hit instanceof ArrayBuffer ? hit : undefined;
-  } catch (err) {
-    console.warn('[PdfAssetCache] read failed:', err);
-    return undefined;
-  }
-}
-
-export async function putCachedPdfAsset(key: string, buffer: ArrayBuffer): Promise<void> {
-  try {
-    await put('pdf_assets', key, buffer);
-  } catch (err) {
-    // Best-effort cache: quota errors must never block viewing the document.
-    console.warn('[PdfAssetCache] write failed (ignored):', err);
-  }
-}
-
-export async function deleteCachedPdfAsset(key: string): Promise<void> {
-  try {
-    const db = await openDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction('pdf_assets', 'readwrite');
-      tx.objectStore('pdf_assets').delete(key);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (err) {
-    console.warn('[PdfAssetCache] delete failed:', err);
-  }
-}
-
 // ── Course & Content Readers ───────────────────────────────────────────────────
 
 export async function listCachedCourses(): Promise<CourseManifest[]> {
@@ -275,15 +249,14 @@ export async function saveCourseManifestLocally(courseId: string, manifest: Cour
   const json = JSON.stringify(manifest, null, 2);
   if (isTauri()) {
     try {
-      await invoke('save_course_doc', { courseId, filename: 'meta.json', content: json });
-      await invoke('save_course_doc', { courseId, filename: 'manifest.json', content: json });
+      await invoke('save_course_doc', { courseId, filename: '.manifest.json', content: json });
       console.log(`[NativeStore] saveCourseManifestLocally: wrote manifest for "${courseId}" directly to filesystem`);
     } catch (err) {
       console.warn('[NativeStore] saveCourseManifestLocally failed:', err);
     }
   }
   await put('courses', courseId.toLowerCase(), manifest);
-  await queuePendingDocument(courseId, 'meta.json', json);
+  await queuePendingDocument(courseId, '.manifest.json', json);
 }
 
 export async function deleteCourseLocally(courseId: string): Promise<void> {
@@ -735,6 +708,23 @@ export async function renameGroupLocally(
     } catch (err) {
       console.warn('[ClientStore] Failed to update course manifests after group rename:', err);
     }
+  } else if (cleanType === 'library') {
+    try {
+      const manifest = await getLibraryManifestLocally();
+      let changed = false;
+      for (const d of manifest.documents) {
+        if (d.group && d.group.trim().toLowerCase() === trimmedOld.toLowerCase()) {
+          d.group = trimmedNew;
+          changed = true;
+          updatedCount++;
+        }
+      }
+      if (changed) {
+        await saveLibraryManifestLocally(manifest);
+      }
+    } catch (err) {
+      console.warn('[ClientStore] Failed to update library manifest after group rename:', err);
+    }
   }
 
   return { groups: all, updatedCount };
@@ -768,6 +758,23 @@ export async function deleteGroupLocally(
       }
     } catch (err) {
       console.warn('[ClientStore] Failed to clear group in course manifests after deletion:', err);
+    }
+  } else if (cleanType === 'library' && clearEntities) {
+    try {
+      const manifest = await getLibraryManifestLocally();
+      let changed = false;
+      for (const d of manifest.documents) {
+        if (d.group && d.group.trim().toLowerCase() === trimmed.toLowerCase()) {
+          delete d.group;
+          changed = true;
+          updatedCount++;
+        }
+      }
+      if (changed) {
+        await saveLibraryManifestLocally(manifest);
+      }
+    } catch (err) {
+      console.warn('[ClientStore] Failed to clear group in library manifest after deletion:', err);
     }
   }
 
@@ -968,15 +975,19 @@ export interface LockerDocItem {
   ext: string;
 }
 
-/** A locally-uploaded locker doc waiting to be pushed to the desktop. `base64: null` = tombstone. */
+/**
+ * A locally-uploaded locker doc waiting to be pushed to the desktop.
+ * Tracking metadata only — the bytes stay on disk and are read at push time
+ * (readLockerDocBytes). `deleted: true` = tombstone.
+ */
 export interface PendingPushAsset {
   filename: string;
-  base64: string | null;
+  deleted?: boolean;
   size: number;
   date: string;
 }
 
-/** Assets above this size are kept local-only (a textbook PDF has no business in the JSON push). */
+/** Assets above this size are kept local-only (a textbook PDF has no business in the push). */
 const MAX_PUSH_ASSET_BYTES = 25 * 1024 * 1024;
 
 function lockerDocItem(courseId: string, filename: string, size: number, updatedAtMs: number): LockerDocItem {
@@ -988,16 +999,6 @@ function lockerDocItem(courseId: string, filename: string, size: number, updated
     url: `/api/courses/${courseId}/assets/locker_docs/${encodeURIComponent(filename)}`,
     ext: dot > 0 ? filename.slice(dot + 1).toLowerCase() : ''
   };
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
-  }
-  return btoa(binary);
 }
 
 export async function listLockerDocsLocally(courseId: string): Promise<LockerDocItem[]> {
@@ -1023,31 +1024,29 @@ export async function listLockerDocsLocally(courseId: string): Promise<LockerDoc
     .sort((a, b) => a.filename.localeCompare(b.filename));
 }
 
+/**
+ * Writes a locker doc straight to the device's own filesystem. The bytes are
+ * sent as the raw IPC body — no base64 inflation — with `course-id` and the
+ * percent-encoded `filename` as headers. IndexedDB keeps only the tracking
+ * entry (no file content).
+ */
 export async function saveLockerDocLocally(
   courseId: string,
   filename: string,
   bytes: ArrayBuffer
 ): Promise<LockerDocItem> {
   const safeName = filename.split('/').pop() || filename;
-  let item = lockerDocItem(courseId, safeName, bytes.byteLength, Date.now());
-
-  if (isTauri()) {
-    try {
-      const entry = await invoke<{ filename: string; size: number; mtime_ms: number }>(
-        'save_locker_doc',
-        { courseId, filename: safeName, base64Data: arrayBufferToBase64(bytes) }
-      );
-      item = lockerDocItem(courseId, entry.filename, entry.size, entry.mtime_ms);
-    } catch (err) {
-      console.warn('[NativeStore] save_locker_doc failed:', err);
-    }
-  }
+  const entry = await invoke<{ filename: string; size: number; mtime_ms: number }>(
+    'save_locker_doc',
+    bytes,
+    { headers: { 'course-id': courseId.toLowerCase(), filename: encodeURIComponent(safeName) } }
+  );
+  const item = lockerDocItem(courseId, entry.filename, entry.size, entry.mtime_ms);
 
   await put('locker_docs', `${courseId.toLowerCase()}:${item.filename}`, {
     filename: item.filename,
     size: item.size,
-    savedAt: Date.now(),
-    buffer: bytes
+    savedAt: Date.now()
   });
 
   // Queue for push to desktop (tombstones included); oversized files stay local-only.
@@ -1058,14 +1057,13 @@ export async function saveLockerDocLocally(
     console.warn(`[NativeStore] locker doc "${item.filename}" (${item.size} bytes) exceeds push limit — kept local-only`);
     if (pi !== -1) pending.splice(pi, 1);
   } else {
-    const entry: PendingPushAsset = {
+    const tracking: PendingPushAsset = {
       filename: item.filename,
-      base64: arrayBufferToBase64(bytes),
       size: item.size,
       date: new Date().toISOString()
     };
-    if (pi !== -1) pending[pi] = entry;
-    else pending.push(entry);
+    if (pi !== -1) pending[pi] = tracking;
+    else pending.push(tracking);
   }
   await put('pending_push_assets', id, pending);
   notifyPushQueued();
@@ -1088,12 +1086,17 @@ export async function deleteLockerDocLocally(courseId: string, filename: string)
   const id = courseId.toLowerCase();
   const pending = (await get<PendingPushAsset[]>('pending_push_assets', id)) ?? [];
   const pi = pending.findIndex((a) => a.filename === safeName);
-  const tombstone: PendingPushAsset = { filename: safeName, base64: null, size: 0, date: new Date().toISOString() };
+  const tombstone: PendingPushAsset = { filename: safeName, deleted: true, size: 0, date: new Date().toISOString() };
   if (pi !== -1) pending[pi] = tombstone;
   else pending.push(tombstone);
   await put('pending_push_assets', id, pending);
   notifyPushQueued();
   return removed;
+}
+
+/** Raw bytes of a locally stored locker doc — read from disk at push time. */
+export async function readLockerDocBytes(courseId: string, filename: string): Promise<ArrayBuffer> {
+  return invoke<ArrayBuffer>('read_locker_doc', { courseId, filename });
 }
 
 export async function getPendingPushAssets(): Promise<Record<string, PendingPushAsset[]>> {
@@ -1123,6 +1126,45 @@ export async function clearPendingPush(): Promise<void> {
     tx.objectStore('pending_push_documents').clear();
     tx.objectStore('pending_push_prompts').clear();
     tx.objectStore('pending_push_assets').clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Clears text entity pending push queues after successful batch push (checkpoints, annotations, docs, prompts). */
+export async function clearPendingPushText(): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(
+      ['pending_push', 'pending_push_annotations', 'pending_push_documents', 'pending_push_prompts'],
+      'readwrite'
+    );
+    tx.objectStore('pending_push').clear();
+    tx.objectStore('pending_push_annotations').clear();
+    tx.objectStore('pending_push_documents').clear();
+    tx.objectStore('pending_push_prompts').clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Removes an individual asset entry from the pending push queue upon successful upload/delete. */
+export async function removePendingPushAsset(courseId: string, filename: string): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('pending_push_assets', 'readwrite');
+    const store = tx.objectStore('pending_push_assets');
+    const key = courseId.toLowerCase();
+    const getReq = store.get(key);
+    getReq.onsuccess = () => {
+      const list = (getReq.result as PendingPushAsset[]) || [];
+      const updated = list.filter((e) => e.filename.toLowerCase() !== filename.toLowerCase());
+      if (updated.length > 0) {
+        store.put(updated, key);
+      } else {
+        store.delete(key);
+      }
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -1191,4 +1233,158 @@ export async function getPendingPushAnnotations(): Promise<Record<string, Markup
   } catch {
     return {};
   }
+}
+
+// ── Library (offline /library storage) ──────────────────────────────────────
+
+export interface ClientLibraryDocument {
+  id: string;
+  filename: string;
+  format: 'pdf' | 'epub' | 'mobi';
+  title: string;
+  description: string;
+  additionDate: string;
+  thumbnail?: string;
+  pages?: number;
+  lastPage?: number;
+  fileSize?: number;
+  position: number;
+  group?: string;
+}
+
+export interface ClientLibraryManifest {
+  version: number;
+  documents: ClientLibraryDocument[];
+}
+
+export async function getLibraryManifestLocally(): Promise<ClientLibraryManifest> {
+  if (isTauri()) {
+    try {
+      const raw = await invoke<string>('get_library_manifest');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return { version: 1, documents: parsed };
+        }
+        if (parsed && Array.isArray(parsed.documents)) {
+          return { version: parsed.version || 1, documents: parsed.documents };
+        }
+      }
+    } catch (err) {
+      console.warn('[NativeStore] get_library_manifest failed, falling back to IDB:', err);
+    }
+  }
+
+  const cached = await get<ClientLibraryManifest>('meta', 'library_manifest');
+  return cached ?? { version: 1, documents: [] };
+}
+
+export async function saveLibraryManifestLocally(manifest: ClientLibraryManifest): Promise<void> {
+  const json = JSON.stringify(manifest, null, 2);
+  if (isTauri()) {
+    try {
+      await invoke('save_library_manifest', { content: json });
+    } catch (err) {
+      console.warn('[NativeStore] save_library_manifest failed:', err);
+    }
+  }
+  await put('meta', 'library_manifest', manifest);
+}
+
+export async function getLibraryAnnotationsLocally(): Promise<MarkupStroke[]> {
+  if (isTauri()) {
+    try {
+      const raw = await invoke<string | null>('get_library_annotations');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed.filter(isMarkupStroke);
+      }
+      return [];
+    } catch (err) {
+      console.warn('[NativeStore] get_library_annotations failed, falling back to IDB:', err);
+    }
+  }
+  return (await get<MarkupStroke[]>('annotations', '__library__')) ?? [];
+}
+
+export async function saveLibraryAnnotationsLocally(strokes: MarkupStroke[]): Promise<void> {
+  const json = JSON.stringify(strokes, null, 2);
+  if (isTauri()) {
+    try {
+      await invoke('save_library_annotations', { content: json });
+    } catch (err) {
+      console.warn('[NativeStore] save_library_annotations failed:', err);
+    }
+  }
+  await put('annotations', '__library__', strokes);
+}
+
+export async function getLibraryCheckpointsLocally(): Promise<Checkpoint[]> {
+  if (isTauri()) {
+    try {
+      const raw = await invoke<string>('get_library_checkpoints');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (err) {
+      console.warn('[NativeStore] get_library_checkpoints failed, falling back to IDB:', err);
+    }
+  }
+  return (await get<Checkpoint[]>('checkpoints', '__library__')) ?? [];
+}
+
+export async function saveLibraryCheckpointsLocally(checkpoints: Checkpoint[]): Promise<void> {
+  const json = JSON.stringify(checkpoints, null, 2);
+  if (isTauri()) {
+    try {
+      await invoke('save_library_checkpoints', { content: json });
+    } catch (err) {
+      console.warn('[NativeStore] save_library_checkpoints failed:', err);
+    }
+  }
+  await put('checkpoints', '__library__', checkpoints);
+}
+
+export interface LibraryDocEntry {
+  filename: string;
+  size: number;
+  mtime_ms: number;
+}
+
+/**
+ * Writes an uploaded library document straight to the device's own /library
+ * directory. The bytes are sent as the raw IPC body — no base64 inflation —
+ * and the filename travels percent-encoded in a header (header values are
+ * ASCII-only).
+ */
+export async function saveLibraryDocLocally(
+  filename: string,
+  bytes: ArrayBuffer
+): Promise<LibraryDocEntry> {
+  const safeName = filename.split('/').pop() || filename;
+  return invoke<LibraryDocEntry>('save_library_doc', bytes, {
+    headers: { filename: encodeURIComponent(safeName) }
+  });
+}
+
+/**
+ * Raw /library directory listing so callers can reconcile the manifest with
+ * disk. Returns null when no listing is available — never an empty array on
+ * failure — so callers never mistake "command failed" for "directory is
+ * empty" and prune a healthy manifest.
+ */
+export async function listLibraryDocsOnDisk(): Promise<LibraryDocEntry[] | null> {
+  try {
+    const entries = await invoke<LibraryDocEntry[]>('list_library_docs');
+    return Array.isArray(entries) ? entries : null;
+  } catch (err) {
+    console.warn('[NativeStore] list_library_docs failed:', err);
+    return null;
+  }
+}
+
+export async function deleteLibraryDocLocally(filename: string): Promise<boolean> {
+  const safeName = filename.split('/').pop() || filename;
+  return invoke<boolean>('delete_library_doc', { filename: safeName });
 }

@@ -2,7 +2,7 @@
  * Free-hand markup domain model.
  *
  * Strokes are drawn over rendered markdown documents (the `.markdown-body`
- * container) and persisted per course in `annotations.json`, mirroring the
+ * container) and persisted per course in `.annotations.json`, mirroring the
  * checkpoint pipeline (server JSON + Tauri offline storage + pending push).
  *
  * Coordinates are stored in author pixels relative to the `.markdown-body`

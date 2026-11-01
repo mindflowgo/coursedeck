@@ -14,7 +14,7 @@ const courseDir = path.join(scratch, 'courses', courseId);
 describe('CourseService accountability and audit logging (logs.md)', () => {
   beforeAll(() => {
     fs.mkdirSync(courseDir, { recursive: true });
-    fs.writeFileSync(path.join(courseDir, 'meta.json'), JSON.stringify({ id: courseId, title: 'Math G11', units: [] }));
+    fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify({ id: courseId, title: 'Math G11', units: [] }));
   });
 
   it('formatLogDate formats as YYYY-MM-DD H:mm', () => {
