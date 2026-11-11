@@ -415,7 +415,7 @@ Packaged desktop builds have no SvelteKit server, and the dev/web app has no com
 - **`app/src/lib/server/api.ts`** exports a framework-agnostic `handleApiRequest(req, url) → Response` covering every endpoint (courses, lessons, assets, queue, prompts, LLM, parse/ingest, course-docs, backups, storage/theme settings, image compression). It is the *only* place endpoint logic lives.
 - **SvelteKit side**: a single catch-all adapter (`src/routes/api/[...path]/+server.ts`, 3 lines per verb) delegates to the shared handler during `bun run dev` and web builds.
 - **Sidecar side**: `server/index.ts` compiles to a standalone executable (`tauri/server` / `server.exe`) and delegates to the same handler, adding only the loopback transport, CORS for Tauri webview origins, and SPA static serving. If its port is already owned by another instance it exits cleanly instead of crashing.
-- **Frontend**: `apiFetch(path, init)` (`app/src/lib/api.ts`) applies the environment base URL (dev server vs `http://127.0.0.1:3182`) at every call site. The old global `window.fetch` monkey-patch (`initApiInterceptor`) is gone; `isTauriEnvironment()` is the single environment detection export.
+- **Frontend**: `apiFetch(path, init)` (`app/src/lib/api.ts`) applies the environment base URL (dev server vs `http://127.0.0.1:3182`) at every call site. Outbound requests are routed by `smartFetch` via `resolveFetchTransport` (§23), which routes local loopback calls to `window.fetch` for maximum zero-IPC performance and directs external cross-origin calls through native Rust `tauriFetch`. The old global `window.fetch` monkey-patch (`initApiInterceptor`) is gone; `isTauriEnvironment()` is the single environment detection export.
 - **Compiled-binary-safe dependencies only**: `Bun.Image` (compression), `Bun.YAML` (frontmatter), `fflate` (zip). Native npm modules (sharp, zip-bun) cannot load inside `bun build --compile` executables and must not be added to this path.
 - **Hardened spawn** (`tauri/src/lib.rs`): per-platform binary lookup (`server`/`server.exe` in resources and beside the executable, bun fallback including `%USERPROFILE%\.bun\bin\bun.exe`), stdout/stderr captured to `<data_dir>/backend.log`, spawn failures logged, and the main window is held back until the backend port answers (10s cap) so the UI never appears before the API is reachable.
 - **Loopback-only**: the sidecar binds `127.0.0.1` and emits CORS headers solely for recognized origins (localhost/127.0.0.1 ports and the Tauri webview origins `tauri://localhost` / `http://tauri.localhost`).
@@ -1201,7 +1201,7 @@ Because mobile iOS environments cannot execute background Bun/Node sidecar proce
      - `set_active`: Updates the active card selection locally.
 2. **Outbound Native Transport (`generateDirect` with `smartFetch`)**:
    - Direct LLM calls route through `smartFetch` (`@tauri-apps/plugin-http`).
-   - Outbound HTTP requests to OpenAI-compatible endpoints (`/chat/completions`) or custom endpoints execute via native iOS networking, bypassing WKWebView CORS restrictions and mixed-content blocking.
+   - Outbound HTTP requests to OpenAI-compatible endpoints (`/chat/completions`) or custom endpoints execute via native iOS networking, bypassing WKWebView CORS restrictions and mixed-content blocking (see §23 for the complete fetch transport matrix and loopback vs. native routing rules).
 3. **Autonomous Study Flow**:
    - The student can generate notes, summaries, practice quizzes, and post-it note AI explanations completely disconnected from the desktop computer, requiring only standard Wi-Fi or cellular connectivity to the LLM provider.
 
@@ -1297,6 +1297,61 @@ Smooth momentum scrolling requires predicting user traversal while preventing IP
 3. **Optimized JPEG Quality (80)**: Native page rasterization defaults to JPEG quality 80 (down from 85), yielding $15\text{--}20\%$ smaller IPC byte payloads and reduced compression latency with zero perceptible degradation on text and line art.
 4. **Idle Prewarming**: When viewing a course, `prewarmCourseBook` inspects the student's remembered reading page during idle time (`requestIdleCallback`) and pre-renders it into a memory blob store (`pdfPrewarm.ts`). Opening the book tab adopts the prewarmed blob instantaneously.
 5. **Course Card Last-Location Resuming**: Dashboard cards record and resume the user's exact state: active lesson, active tab, and for textbooks, the exact `pdfPage` via `buildCourseResumeUrl` (`?page=N`).
+
+---
+
+## 23. Universal Fetch Architecture & Transport Routing (`smartFetch`)
+
+CourseDeck operates across diverse desktop, mobile, and web environments:
+- **Tauri Desktop (macOS, Linux, Windows)**: Frontend webview communicating with a local Bun backend sidecar on `127.0.0.1:3182`.
+- **Tauri Mobile (iPadOS)**: Frontend webview running local-first, syncing with desktop sidecars over LAN (`http://192.168.x.x:3182`), and communicating directly with external cloud LLMs (OpenAI, DeepSeek, Anthropic, Gemini).
+- **Web Browsers (Vite dev server / paired web client)**: Standard browser environment communicating with the local or remote server.
+
+To maintain architectural integrity and eliminate scattered transport logic, **`smartFetch` (`app/src/lib/api.ts`) is the single authoritative source of fetch decisions**. Every outbound network call in the client layer routes through `smartFetch` (either directly or via `apiFetch`).
+
+### 23.1 Performance Bottleneck: Tauri IPC vs. Kernel Loopback TCP
+A common architectural antipattern in Tauri applications is blindly routing all HTTP requests through `@tauri-apps/plugin-http` (`tauriFetch`). While `tauriFetch` provides native Rust networking that bypasses browser CORS for external endpoints, routing local sidecar or high-payload requests through it introduces severe performance degradations:
+
+1. **Tauri IPC Serialization Bottleneck**:
+   - Tauri HTTP plugin bridges requests from JavaScript to Rust via JSON-RPC IPC.
+   - For request bodies, `tauri-plugin-http` converts `ArrayBuffer` and `Blob` payloads into JavaScript arrays of 8-bit integers: `Array.from(new Uint8Array(buffer))`.
+   - A 50 MB course backup zip or textbook upload becomes a **50,000,000-element JavaScript array**, serialized as a **~250 MB JSON string** across the IPC pipe!
+   - On Linux WebKitGTK and macOS WKWebView, this causes catastrophic UI thread locking, multi-second garbage collection pauses, and massive memory spikes.
+   - If the serialized message exceeds the underlying WebKit IPC message size limit, the message is silently dropped or aborted, causing requests (such as backup imports) to stall indefinitely.
+
+2. **Loopback TCP Wire Speed (Standard `window.fetch`)**:
+   - In desktop Tauri, the backend runs as a native Bun sidecar on `127.0.0.1:3182`.
+   - The OS network stack kernel processes loopback TCP connections directly in memory with zero serialization overhead and zero IPC thread locking.
+   - Browser-native `window.fetch` streams request and response bodies directly to `127.0.0.1:3182` at multi-gigabit wire speed.
+   - Full support for HTTP streaming (chunked transfer encoding, NDJSON server-sent progress updates) is natively supported without buffering.
+   - The Bun sidecar explicitly configures CORS headers (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Headers: *`), ensuring WebKit/Blink allow direct loopback access with zero friction.
+
+### 23.2 Webview Protocols & Scheme Incompatibilities
+Tauri's webview registers and utilizes custom internal protocols:
+- `tauri://localhost` (or `http://tauri.localhost`): Serves the frontend web assets.
+- `courseasset://localhost/...`: Custom Wry URI scheme in `tauri/src/pdf.rs` serving offline course assets from local storage.
+- `blob:` and `data:` schemes: In-memory browser representations.
+- Relative URLs (e.g. `/api/...` or `api/...`): Resolved relative to the active document origin.
+
+**Why `tauriFetch` cannot handle these**:
+`@tauri-apps/plugin-http` delegates directly to Rust's `reqwest` crate. `reqwest` is a standard HTTP client that only understands standard `http://` and `https://` schemes. If passed `tauri://`, `courseasset://`, `blob:`, or relative URLs without an origin, `reqwest` immediately errors out. Therefore, all webview-internal schemes and relative paths must divert to browser-native `window.fetch`.
+
+### 23.3 Transport Routing Decision Matrix (`resolveFetchTransport`)
+
+The pure function `resolveFetchTransport(url, init)` evaluates requests in strict priority order:
+
+| Target / Characteristics | Transport | Selected Driver | Architectural Rationale |
+| :--- | :--- | :--- | :--- |
+| **Relative paths** (`/api/...`, `api/...`) | **Browser** | `window.fetch` | Automatically resolves against `location.origin`; Rust `reqwest` fails without base URL. |
+| **Internal Schemes** (`tauri://*`, `http://tauri.localhost*`) | **Browser** | `window.fetch` | Webview asset schemes; unsupported by Rust `reqwest`. |
+| **Custom Schemes** (`courseasset://*`, `blob:*`, `data:*`) | **Browser** | `window.fetch` | Handled by Tauri Wry custom protocol handler or browser memory; unsupported by `reqwest`. |
+| **Local Sidecar Backend** (`127.0.0.1:*`, `localhost:*`, `[::1]:*`) | **Browser** | `window.fetch` | Maximum performance over kernel loopback TCP; zero IPC serialization; streaming NDJSON; no UI thread freeze. |
+| **High-Payload Bodies** (`FormData`, `Blob`, `ArrayBuffer`, `Stream`) | **Browser** | `window.fetch` | Prevents `Array.from(Uint8Array)` JSON-RPC serialization freeze across Tauri IPC. |
+| **External Cross-Origin in Tauri** (Cloud LLMs, remote LAN sync) | **Native** | `tauriFetch` (`reqwest`) | Bypasses WebKit/Safari CORS, App Transport Security (ATS), and mixed-content restrictions. |
+| **Non-Tauri Environments** (Browsers, dev mode, tests) | **Browser** | `window.fetch` | Native Tauri IPC bridge is unavailable. |
+
+### 23.4 Fault Tolerance & Graceful Fallback
+If `resolveFetchTransport` selects `native` (for example, when calling an external cloud LLM in Tauri) and `tauriFetch` throws a network or plugin exception, `smartFetch` catches the failure, logs a diagnostic warning, and transparently attempts `window.fetch` before throwing a combined diagnostic error. This guarantees maximum resilience across diverse network configurations.
 
 
 

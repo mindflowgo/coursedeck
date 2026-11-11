@@ -237,7 +237,7 @@ await mock.module('./storage/clientStore', () => ({
   }
 }));
 
-const { apiFetch, isTauriMobile } = await import('./api');
+const { apiFetch, isTauriMobile, resolveFetchTransport, smartFetch } = await import('./api');
 
 describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
   beforeEach(() => {
@@ -615,5 +615,79 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     expect(libAnnotations.length).toBe(0);
     expect(libCheckpoints.length).toBe(0);
     expect(fetchCalls.length).toBe(0);
+  });
+});
+
+describe('smartFetch & resolveFetchTransport routing', () => {
+  beforeEach(() => {
+    fetchCalls.length = 0;
+  });
+
+  it('routes internal webview schemes to browser window.fetch', () => {
+    expect(resolveFetchTransport('tauri://localhost/index.html')).toBe('browser');
+    expect(resolveFetchTransport('tauri://localhost')).toBe('browser');
+    expect(resolveFetchTransport('http://tauri.localhost/bundle.js')).toBe('browser');
+    expect(resolveFetchTransport('https://tauri.localhost/courses')).toBe('browser');
+    expect(resolveFetchTransport('courseasset://localhost/baf3m/assets/img.png')).toBe('browser');
+    expect(resolveFetchTransport('blob:http://tauri.localhost/f9a8b7c6')).toBe('browser');
+    expect(resolveFetchTransport('data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==')).toBe('browser');
+  });
+
+  it('routes relative paths and empty URLs to browser window.fetch', () => {
+    expect(resolveFetchTransport('/api/courses')).toBe('browser');
+    expect(resolveFetchTransport('/health')).toBe('browser');
+    expect(resolveFetchTransport('api/sync/bundle')).toBe('browser');
+    expect(resolveFetchTransport('')).toBe('browser');
+  });
+
+  it('routes local loopback sidecar backend traffic to browser window.fetch for maximum zero-IPC performance', () => {
+    expect(resolveFetchTransport('http://127.0.0.1:3182/api/courses')).toBe('browser');
+    expect(resolveFetchTransport('http://127.0.0.1:3182/health')).toBe('browser');
+    expect(resolveFetchTransport('http://localhost:3182/api/sync')).toBe('browser');
+    expect(resolveFetchTransport('http://[::1]:3182/health')).toBe('browser');
+    expect(resolveFetchTransport('http://127.0.0.1')).toBe('browser');
+    expect(resolveFetchTransport('http://localhost')).toBe('browser');
+  });
+
+  it('routes heavy or binary request bodies to browser window.fetch to avoid IPC array serialization lockup', () => {
+    const externalUrl = 'https://api.openai.com/v1/audio/transcriptions';
+    const form = new FormData();
+    expect(resolveFetchTransport(externalUrl, { body: form })).toBe('browser');
+
+    const blob = new Blob(['data'], { type: 'application/octet-stream' });
+    expect(resolveFetchTransport(externalUrl, { body: blob })).toBe('browser');
+
+    const buffer = new ArrayBuffer(64);
+    expect(resolveFetchTransport(externalUrl, { body: buffer })).toBe('browser');
+
+    const uint8 = new Uint8Array([1, 2, 3]);
+    expect(resolveFetchTransport(externalUrl, { body: uint8 })).toBe('browser');
+  });
+
+  it('routes external cross-origin and remote LAN requests in Tauri to native tauriFetch', () => {
+    expect(resolveFetchTransport('https://api.openai.com/v1/chat/completions')).toBe('native');
+    expect(resolveFetchTransport('https://api.deepseek.com/chat/completions')).toBe('native');
+    expect(resolveFetchTransport('https://generativelanguage.googleapis.com/v1beta/models')).toBe('native');
+    expect(resolveFetchTransport('http://192.168.1.150:3182/api/sync')).toBe('native');
+  });
+
+  it('smartFetch successfully resolves local loopback requests through window.fetch', async () => {
+    const res = await smartFetch('http://127.0.0.1:3182/health');
+    expect(res.ok).toBe(true);
+    expect(fetchCalls.length).toBe(1);
+    expect(fetchCalls[0].url).toBe('http://127.0.0.1:3182/health');
+  });
+
+  it('smartFetch successfully falls back to window.fetch if native tauriFetch fails', async () => {
+    // In our test harness, @tauri-apps/plugin-http is mocked to throw, so smartFetch
+    // should gracefully fall back to window.fetch and log a warning.
+    const res = await smartFetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'gpt-4o' })
+    });
+    expect(res.ok).toBe(true);
+    expect(fetchCalls.length).toBe(1);
+    expect(fetchCalls[0].url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(fetchCalls[0].method).toBe('POST');
   });
 });

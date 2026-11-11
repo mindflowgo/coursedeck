@@ -32,32 +32,118 @@ export function isTauriMobile(): boolean {
   return isTauriEnvironment() && isMobileDevice();
 }
 
-/**
- * Universal fetch that routes through Tauri's native Rust HTTP client
- * when running in Tauri (bypassing all WebKit/Safari CORS & mixed-content restrictions),
- * and standard window.fetch in standard browser environments.
- *
- * NOTE: For local requests to the sidecar backend (127.0.0.1 or localhost), or requests
- * carrying large FormData/Blob bodies, we intentionally use standard window.fetch.
- * tauri-plugin-http serializes body buffers into full JavaScript arrays (Array.from(new Uint8Array))
- * across Tauri IPC, which locks the UI thread and fails on multi-megabyte payloads.
- */
-export async function smartFetch(url: string, init?: RequestInit): Promise<Response> {
-  const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(url);
-  const isBinaryOrForm =
-    (typeof FormData !== 'undefined' && init?.body instanceof FormData) ||
-    (typeof Blob !== 'undefined' && init?.body instanceof Blob) ||
-    (typeof ArrayBuffer !== 'undefined' && init?.body instanceof ArrayBuffer);
+export type FetchTransport = 'browser' | 'native';
 
-  if (isLocalBackend || isBinaryOrForm) {
-    return fetch(url, init);
+/**
+ * ============================================================================
+ * UNIVERSAL FETCH ARCHITECTURE & TRANSPORT ROUTING
+ * ============================================================================
+ *
+ * CourseDeck operates across multiple desktop, mobile, and web environments:
+ *   1. Tauri Desktop (macOS, Linux, Windows) with a local Bun backend sidecar
+ *   2. Tauri Mobile (iPadOS) operating local-first with remote LAN desktop sync
+ *   3. Standard Web Browsers (Vite dev server at localhost:5173 or paired client)
+ *
+ * `smartFetch` is the SINGLE SOURCE OF TRUTH for outbound fetch routing decisions.
+ * It decides whether to dispatch requests via browser-native `window.fetch` or
+ * Tauri's native Rust HTTP client (`tauri-plugin-http`, powered by `reqwest`).
+ *
+ * TRANSPORT DECISION RULES:
+ *
+ * 1. Webview-Internal Schemes & Relative Paths -> 'browser' (window.fetch)
+ *    - `tauri://*`, `http://tauri.localhost*`, `https://tauri.localhost*`
+ *    - `courseasset://*` (custom Wry URI scheme handled natively in Rust for offline assets)
+ *    - `blob:*`, `data:*`
+ *    - Relative paths: `/api/...`, `api/...`
+ *    WHY: These are internal to the webview runtime (WKWebView / WebKitGTK / WebView2).
+ *    Rust's `reqwest` does NOT understand custom webview protocols (`tauri://`, `courseasset://`)
+ *    or relative URLs without a base origin, and will fail with URL parse errors.
+ *
+ * 2. Local Sidecar Communication (Loopback TCP) -> 'browser' (window.fetch)
+ *    - `http://127.0.0.1:*`, `http://localhost:*`, `http://[::1]:*`
+ *    WHY (SPEED & ZERO IPC OVERHEAD):
+ *    - Loopback TCP traffic runs directly between the webview process and the local Bun sidecar
+ *      via the OS network stack kernel at maximum multi-gigabit wire speed.
+ *    - Tauri HTTP Plugin (`tauri-plugin-http`) routes all calls through the Tauri JSON-RPC IPC bridge.
+ *      For request bodies, it serializes buffers into JavaScript number arrays (`Array.from(new Uint8Array)`).
+ *      A 50MB backup or upload becomes a 50-million-element JSON array across IPC, locking the UI thread
+ *      and causing WebKitGTK (Linux) or WKWebView (macOS) to freeze or drop the request when exceeding
+ *      IPC buffer limits.
+ *    - The local Bun sidecar server explicitly enables CORS headers, so standard `window.fetch` works seamlessly.
+ *
+ * 3. High-Payload Bodies (FormData, Blob, ArrayBuffer, Uint8Array, Stream) -> 'browser' (window.fetch)
+ *    - Even for non-loopback calls, passing large binary/multipart payloads through Tauri's IPC bridge
+ *      triggers the same devastating array serialization penalty.
+ *
+ * 4. External Cross-Origin & Remote LAN in Tauri -> 'native' (tauriFetch)
+ *    - e.g. Cloud LLM providers (OpenAI, DeepSeek, Anthropic, Gemini, OpenRouter) or iPad-to-desktop LAN sync.
+ *    WHY: WebKit / Safari enforce strict CORS and App Transport Security (ATS). Third-party LLM APIs
+ *    often reject cross-origin requests originating from `tauri://localhost`. Tauri's native Rust HTTP client
+ *    executes outside the webview sandbox, completely bypassing CORS and ATS.
+ *
+ * 5. Non-Tauri Browser Environments -> 'browser' (window.fetch)
+ * ============================================================================
+ */
+export function resolveFetchTransport(url: string, init?: RequestInit): FetchTransport {
+  // If not running in a Tauri webview runtime, always use browser fetch.
+  if (!isTauriEnvironment()) {
+    return 'browser';
   }
 
-  if (isTauriEnvironment()) {
+  const trimmedUrl = (url || '').trim();
+
+  // 1. Webview-internal protocols and relative paths:
+  //    - Relative paths (e.g. '/api/...', 'api/...')
+  //    - Tauri webview protocols: 'tauri://*', 'http://tauri.localhost*'
+  //    - Custom app protocols: 'courseasset://*' (registered in Wry)
+  //    - In-memory data schemes: 'blob:*', 'data:*'
+  const isWebviewInternalOrRelative =
+    !trimmedUrl ||
+    trimmedUrl.startsWith('/') ||
+    !/^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(trimmedUrl) ||
+    /^https?:\/\/tauri\.localhost/i.test(trimmedUrl) ||
+    /^(tauri|courseasset|blob|data):/i.test(trimmedUrl);
+
+  if (isWebviewInternalOrRelative) {
+    return 'browser';
+  }
+
+  // 2. Local sidecar communication (loopback TCP):
+  //    Direct loopback TCP socket avoids Tauri IPC JSON-RPC bridge overhead, UI thread locking,
+  //    and message size limits. Bun sidecar has CORS enabled.
+  const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i.test(trimmedUrl);
+  if (isLocalBackend) {
+    return 'browser';
+  }
+
+  // 3. High-payload bodies:
+  //    Avoid serializing multi-megabyte buffers into JSON arrays across Tauri IPC.
+  const body = init?.body;
+  const isBinaryOrForm =
+    body != null &&
+    ((typeof FormData !== 'undefined' && body instanceof FormData) ||
+      (typeof Blob !== 'undefined' && body instanceof Blob) ||
+      (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) ||
+      (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(body)) ||
+      (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream));
+
+  if (isBinaryOrForm) {
+    return 'browser';
+  }
+
+  // 4. External cross-origin requests in Tauri (Cloud LLMs, remote iPad-to-desktop LAN sync):
+  //    Execute via Rust HTTP client (reqwest) to bypass WebKit/Safari CORS & ATS.
+  return 'native';
+}
+
+export async function smartFetch(url: string, init?: RequestInit): Promise<Response> {
+  const transport = resolveFetchTransport(url, init);
+
+  if (transport === 'native') {
     try {
       return await tauriFetch(url, init);
     } catch (e) {
-      console.warn('[smartFetch] tauri-plugin-http fetch error:', e);
+      console.warn('[smartFetch] tauri-plugin-http fetch error, falling back to window.fetch:', e);
       try {
         return await fetch(url, init);
       } catch (windowErr) {
@@ -67,6 +153,7 @@ export async function smartFetch(url: string, init?: RequestInit): Promise<Respo
       }
     }
   }
+
   return fetch(url, init);
 }
 
