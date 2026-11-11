@@ -10,11 +10,13 @@
   import { onMount } from 'svelte';
   import { getCheckpointColor } from '$lib/checkpoint';
   import { elementTopInScroller } from '$lib/checkpoint/coordinates';
+  import { instrumentMarkdownAnchors } from '$lib/checkpoint/sourceAnchors';
   import {
     closestBlock,
     rangeRectsInScroller,
     resolveMarkdownRange,
-    serializeMarkdownSelection
+    serializeMarkdownSelection,
+    attachMarkdownAnchorIds
   } from '$lib/checkpoint/selection';
   import {
     afterPaint,
@@ -255,7 +257,7 @@
 
     // 1. Strip YAML frontmatter
     let cleaned = timeStage(stages, 'frontmatter', () =>
-      markdown.replace(/^---[\s\S]*?---\s*/, '')
+      instrumentMarkdownAnchors(markdown).replace(/^---[\s\S]*?---\s*/, '')
     );
 
     // 2 + 3. Normalize Pandoc/Markdown-it attribute syntax and rewrite
@@ -412,7 +414,7 @@
       return out;
     });
 
-    const sanitized = timeStage(stages, 'sanitize', () => sanitizeRenderedHtml(html));
+    const sanitized = timeStage(stages, 'sanitize', () => sanitizeRenderedHtml(attachMarkdownAnchorIds(html)));
 
     // One line per render. Repeated lines carrying the same signature mean the
     // pipeline is re-running on unchanged input, which multiplies its cost.
@@ -793,9 +795,9 @@
     }
 
     const anchor: import('$lib/checkpoint').Anchor = {
-      type: serialized.blockIndex >= 0 ? 'paragraph' : 'pixel',
+      type: 'block',
+      blockId: serialized.selection.startAnchorId,
       verticalPosition: Math.max(0, Math.round(verticalPosition)),
-      ...(serialized.blockIndex >= 0 ? { paragraphIndex: serialized.blockIndex } : {})
     };
 
     hadSelection = true;

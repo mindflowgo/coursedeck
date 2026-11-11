@@ -31,6 +31,8 @@
   let isExpanded: boolean = $state(false);
   /** Viewport-space center Y of the control inside the reader. */
   let cursorY: number = $state(120);
+  let readingY = 120;
+  let actionPosition: number | null = null;
   let currentScrollTop: number = $state(0);
   let rootEl: HTMLElement | null = $state(null);
   let overlayEl: HTMLDivElement | null = $state(null);
@@ -56,7 +58,8 @@
     return rootRect && rootRect.height > 0 ? rootRect.height : 600;
   }
 
-  function setCursorY(candidateViewportY: number) {
+  function setCursorY(candidateViewportY: number, updateTarget = true) {
+    if (updateTarget) readingY = candidateViewportY;
     cursorY = clampTriggerY(candidateViewportY, { height: readerViewportHeight() }, {
       topClearance: TOP_CLEARANCE,
       controlHalfHeight: CONTROL_HALF_HEIGHT
@@ -75,7 +78,7 @@
 
   /** Content-space position handed to the checkpoint actions. */
   function getVerticalPosition(): number {
-    return Math.max(0, Math.floor(currentScrollTop + cursorY));
+    return actionPosition ?? Math.max(0, Math.floor((containerEl?.scrollTop ?? currentScrollTop) + readingY));
   }
 
   function isFrozen(): boolean {
@@ -142,6 +145,7 @@
 
   function collapse(restoreFocus = false) {
     isExpanded = false;
+    actionPosition = null;
     if (restoreFocus) {
       void tick().then(() => {
         if (!isExpanded) compactBtnEl?.focus();
@@ -150,6 +154,7 @@
   }
 
   function expandFromCompact() {
+    actionPosition = getVerticalPosition();
     isExpanded = true;
   }
 
@@ -212,7 +217,7 @@
     if (!reader || !overlay || disabled) return;
     const updateLayout = () => {
       layoutRevision++;
-      setCursorY(cursorY);
+      setCursorY(cursorY, false);
     };
     const observer = new ResizeObserver(updateLayout);
     observer.observe(reader);
@@ -256,7 +261,7 @@
   <div bind:this={overlayEl} class="pointer-events-none absolute inset-0">
   <div
     bind:this={rootEl}
-    class="pointer-events-auto absolute z-30 select-none {side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'}"
+    class="pointer-events-auto absolute {isExpanded ? 'z-50' : 'z-30'} select-none {side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'}"
     style="top: {renderTop()}px; transform: translateY(-50%);"
     role="toolbar"
     data-checkpoint-controls
@@ -275,10 +280,9 @@
           ? 'Selection captured — click for Highlight, Note, or Ask AI'
           : 'Add highlight, note, or ask AI (moves with your cursor)'}
         aria-label={hasSelection ? 'Checkpoint actions (selection captured)' : 'Checkpoint actions'}
-        class="group flex items-center gap-1 min-h-9 px-2.5 py-1.5 rounded-full bg-white/95 dark:bg-stone-800/95 border border-stone-200/90 dark:border-stone-700 shadow-md hover:shadow-lg hover:border-amber-400 dark:hover:border-amber-500 backdrop-blur-xs transition-all cursor-pointer hover:scale-105 active:scale-95 {hasSelection ? 'ring-2 ring-amber-400/80 dark:ring-amber-500/80' : ''}"
+        class="group flex items-center justify-center w-9 h-9 rounded-full bg-white/95 dark:bg-stone-800/95 border border-stone-200/90 dark:border-stone-700 shadow-md hover:shadow-lg hover:border-amber-400 dark:hover:border-amber-500 backdrop-blur-xs transition-all cursor-pointer hover:scale-105 active:scale-95 {hasSelection ? 'ring-2 ring-amber-400/80 dark:ring-amber-500/80' : ''}"
       >
         <PenLine class="w-3.5 h-3.5 text-stone-600 dark:text-stone-300 group-hover:text-amber-500 transition-colors" />
-        <Sparkles class="w-3.5 h-3.5 text-purple-500 group-hover:scale-110 transition-transform" />
       </button>
     {:else}
       <!-- Expanded: position frozen while choosing an action -->

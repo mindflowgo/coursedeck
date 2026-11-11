@@ -183,6 +183,16 @@ pub fn save_course_doc(
 }
 
 #[tauri::command]
+pub fn read_annotation_source(app: tauri::AppHandle, course_id: String, file: String, renderer: String) -> Result<Option<course_files::AnnotationSource>, String> {
+    course_files::read_annotation_source(&get_courses_root_dir(&app), &course_id, &file, &renderer)
+}
+
+#[tauri::command]
+pub fn save_annotation_source(app: tauri::AppHandle, course_id: String, source_file: String, expected_content: String, content: String) -> Result<(), String> {
+    course_files::save_annotation_source(&get_courses_root_dir(&app), &course_id, &source_file, &expected_content, &content)
+}
+
+#[tauri::command]
 pub fn delete_course_doc(
     app: tauri::AppHandle,
     course_id: String,

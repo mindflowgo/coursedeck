@@ -77,15 +77,16 @@
 </script>
 
 <div
-  class="absolute {side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'} z-20 flex items-center"
-  style="top: {resolvedTop ?? checkpoint.verticalPosition}px;"
+  class="absolute {side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'} z-40 flex items-center"
+  data-checkpoint-marker
+  style="top: {resolvedTop ?? checkpoint.verticalPosition}px; transform: translateY(-50%);"
 >
   <!-- Circular Marker Dot + Date -->
-  <div class="relative flex flex-col items-center justify-center -translate-y-[68%]">
+  <div class="relative flex items-center justify-center w-9 h-9">
     <!-- ABOVE in light grey letters the date -->
     {#if formattedDate}
       <span
-        class="text-xs text-stone-400 dark:text-stone-500 hover:text-stone-700 dark:hover:text-stone-200 transition-colors select-none leading-none mb-1 drop-shadow-2xs pointer-events-none"
+        class="absolute bottom-full mb-1 right-0 whitespace-nowrap text-[10px] text-stone-400 dark:text-stone-500 select-none leading-none pointer-events-none"
       >
         {formattedDate}
       </span>
@@ -115,7 +116,7 @@
   <!-- Non-editable Overlay Post-It Note expanding to the left -->
   {#if isOpen}
     <div
-      class="absolute {side === 'left' ? 'left-[calc(100%+12px)]' : 'right-[calc(100%+12px)]'} top-0 -translate-y-1/2 {checkpoint.type === 'ai' ? 'w-[320px] min-h-[120px] max-h-[220px]' : 'w-[250px] h-[100px]'} rounded-xl border shadow-xl flex flex-col overflow-hidden z-30 transition-all select-text bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)] text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
+      class="absolute {side === 'left' ? 'left-[calc(100%+12px)]' : 'right-[calc(100%+12px)]'} top-1/2 -translate-y-1/2 max-w-[calc(100vw-4.5rem)] {checkpoint.type === 'ai' ? 'w-[320px] min-h-[120px] max-h-[220px]' : 'w-[250px] h-[100px]'} rounded-xl border shadow-xl flex flex-col overflow-hidden z-30 transition-all select-text bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)] text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
       style="
         --note-bg-light: {color.bgLight};
         --note-bg-dark: {color.bgDark};

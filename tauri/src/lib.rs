@@ -749,6 +749,8 @@ pub fn run() {
         settings::set_setting,
         courses_fs::get_lesson_bundle,
         courses_fs::read_course_doc,
+        courses_fs::read_annotation_source,
+        courses_fs::save_annotation_source,
         courses_fs::save_course_doc,
         courses_fs::delete_course_doc,
         courses_fs::list_locker_docs,

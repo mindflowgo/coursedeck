@@ -1,6 +1,8 @@
 <script>
   import FloatingCheckpointTrigger from '../../app/src/lib/components/FloatingCheckpointTrigger.svelte';
   import HtmlViewer from '../../app/src/lib/components/HtmlViewer.svelte';
+  import AnnotationReader from './AnnotationReader.svelte';
+  const annotationMode = new URLSearchParams(location.search).has('annotations');
   const htmlMode = new URLSearchParams(location.search).has('html');
   let lessonId = $state('first');
   let reader = $state(null);
@@ -15,7 +17,9 @@
     };
   });
 </script>
-{#if htmlMode}
+{#if annotationMode}
+  <AnnotationReader />
+{:else if htmlMode}
   <button onclick={() => { lessonId = 'second'; }}>Change synthetic lesson</button>
   <HtmlViewer courseId="fixture" {lessonId} />
 {:else}

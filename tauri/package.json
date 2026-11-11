@@ -8,6 +8,7 @@
     "build": "tauri build",
     "build:mac": "tauri build --bundles dmg",
     "build:win": "tauri build --bundles nsis",
+    "build:linux": "tauri build --bundles deb,appimage",
     "build:portable": "bun run ../scripts/build-portable.ts",
     "build:win:portable": "bun run ../scripts/build-portable.ts",
     "cargo:check": "cargo check",

@@ -16,7 +16,7 @@
     onOpenDocument?: (url: string, title?: string) => void;
     onNavigateLesson?: (rawTarget: string, isAssignment?: boolean) => void;
     /** Live pointer position (mousemove or touch release) inside the iframe. */
-    onMouseMove?: (coords: { cursorY: number; scrollTop: number }) => void;
+    onMouseMove?: (coords: { cursorY: number; scrollTop: number; anchor?: import('$lib/checkpoint').Anchor }) => void;
     onMouseLeave?: () => void;
     onTextSelected?: (params: {
       text: string;
@@ -83,17 +83,12 @@
 
   function sendToBridge(message: Record<string, unknown>) {
     if (!iframeEl?.contentWindow) return;
-    iframeEl.contentWindow.postMessage({ ...message, session: bridgeSession }, '*');
+    iframeEl.contentWindow.postMessage(JSON.parse(JSON.stringify({ ...message, session: bridgeSession })), '*');
   }
 
   function queryAnchors() {
     if (!iframeEl || !checkpoints.length) return;
-    const elementIds = checkpoints
-      .filter((cp) => cp.anchor?.type === 'element-id' && cp.anchor.elementId)
-      .map((cp) => cp.anchor!.elementId!);
-    if (elementIds.length > 0) {
-      sendToBridge({ type: 'courseDeck:queryAnchorPositions', elementIds });
-    }
+    sendToBridge({ type: 'courseDeck:queryAnchorPositions', checkpoints: checkpoints.map(cp => ({ id: cp.id, anchor: cp.anchor, selection: cp.selection })) });
   }
 
   /** Syncs saved highlights into the iframe (the bridge paints/removes them). */
@@ -161,16 +156,14 @@
       const cursorY = iframeClientYToViewportSpace(data.clientY, iframeEl, activeScroller() ?? iframeEl.parentElement!);
       onMouseMove?.({
         cursorY: Math.round(cursorY),
-        scrollTop: scrollerTop
+        scrollTop: scrollerTop,
+        anchor: data.anchor?.blockId ? { ...data.anchor, verticalPosition: Math.round(cursorY + scrollerTop) } : undefined
       });
     } else if (data.type === 'courseDeck:iframeMouseLeave') {
       onMouseLeave?.();
     } else if (data.type === 'courseDeck:textSelected' && typeof data.text === 'string') {
-      const { offsetTop } = getIframeOffsetInScroller();
-      const iframePageY =
-        typeof data.iframePageY === 'number'
-          ? data.iframePageY
-          : (typeof data.verticalPosition === 'number' ? data.verticalPosition : 0);
+      if (!data.start?.anchorId || !data.end?.anchorId || typeof data.iframePageY !== 'number') return;
+      const iframePageY = data.iframePageY;
       const verticalPosition = Math.round(iframePageYToScrollerContent(iframePageY, iframeEl, activeScroller() ?? iframeEl.parentElement!));
 
       const selection: import('$lib/checkpoint').SelectionRange = {
@@ -182,9 +175,9 @@
       };
 
       const anchor: import('$lib/checkpoint').Anchor = {
-        type: data.elementId ? 'element-id' : 'pixel',
+        type: 'block',
+        blockId: selection.start?.anchorId,
         verticalPosition,
-        elementId: data.elementId ?? undefined
       };
 
       onTextSelected?.({

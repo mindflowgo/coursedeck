@@ -177,7 +177,8 @@ export function buildLessonBridgeScript(courseId: string): string {
           type: 'courseDeck:iframeMouseMove',
           clientX: e.clientX,
           clientY: e.clientY,
-          pointerType: 'mouse'
+          pointerType: 'mouse',
+          anchor: pointerAnchor(e)
         });
       });
 
@@ -194,7 +195,8 @@ export function buildLessonBridgeScript(courseId: string): string {
           type: 'courseDeck:iframePointerUp',
           clientX: e.clientX,
           clientY: e.clientY,
-          pointerType: e.pointerType || 'touch'
+          pointerType: e.pointerType || 'touch',
+          anchor: pointerAnchor(e)
         });
       });
 
@@ -228,36 +230,11 @@ export function buildLessonBridgeScript(courseId: string): string {
         return total;
       }
 
-      function cssSelector(el) {
-        var parts = [];
-        var cur = el;
-        var depth = 0;
-        while (cur && cur.nodeType === 1 && depth < 10) {
-          if (cur.id) {
-            parts.unshift('[id="' + cur.id.replace(/"/g, '\\\\"') + '"]');
-            return parts.join(' > ');
-          }
-          var part = cur.tagName.toLowerCase();
-          var parent = cur.parentNode;
-          if (parent && parent.children) {
-            var sameTag = [];
-            for (var i = 0; i < parent.children.length; i++) {
-              if (parent.children[i].tagName === cur.tagName) sameTag.push(parent.children[i]);
-            }
-            if (sameTag.length > 1) part += ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')';
-          }
-          parts.unshift(part);
-          cur = parent;
-          depth++;
-        }
-        return parts.join(' > ');
-      }
-
       function serializePoint(container, offset) {
         var el = container && (container.nodeType === 3 ? container.parentElement : container);
         if (!el || el.nodeType !== 1) return null;
-        var idEl = el.closest ? el.closest('[id]') : null;
-        var owner = idEl || el;
+        var owner = el.closest ? el.closest('[data-anchor-id]') : null;
+        if (!owner) return null;
         var charOffset = 0;
         if (container.nodeType === 3) {
           charOffset = textBefore(owner, container) + Math.min(offset, container.data.length);
@@ -272,8 +249,7 @@ export function buildLessonBridgeScript(courseId: string): string {
           for (var k = 0; k < Math.min(offset, kids2.length); k++) charOffset += nodeTextLength(kids2[k]);
         }
         return {
-          elementId: idEl ? idEl.id : null,
-          elementPath: cssSelector(owner),
+          anchorId: owner.getAttribute('data-anchor-id'),
           charOffset: charOffset,
           _owner: owner
         };
@@ -292,18 +268,57 @@ export function buildLessonBridgeScript(courseId: string): string {
       }
 
       function findByEndpoint(ep) {
-        if (!ep) return null;
-        if (ep.elementId) {
-          var byId = document.getElementById(ep.elementId);
-          if (byId) return byId;
-        }
-        if (ep.elementPath) {
-          try {
-            var byPath = document.querySelector(ep.elementPath);
-            if (byPath) return byPath;
-          } catch (e) {}
-        }
+        return ep && ep.anchorId ? findAnchorBlock(ep.anchorId) : null;
+      }
+
+      function findAnchorBlock(id) {
+        var blocks = document.querySelectorAll('[data-anchor-id]');
+        for (var i = 0; i < blocks.length; i++) if (blocks[i].getAttribute('data-anchor-id') === id) return blocks[i];
         return null;
+      }
+
+      function pointerAnchor(e) {
+        var el = e.target && e.target.closest ? e.target.closest('[data-anchor-id]') : null;
+        if (!el) return null;
+        var r = el.getBoundingClientRect();
+        var anchor = { type: 'block', blockId: el.getAttribute('data-anchor-id'), yRatio: Math.max(0, Math.min(1, (e.clientY-r.top)/(r.height || 1))) };
+        var node = null, offset = 0;
+        if (document.caretPositionFromPoint) {
+          var p = document.caretPositionFromPoint(e.clientX, e.clientY);
+          if (p) { node = p.offsetNode; offset = p.offset; }
+        } else if (document.caretRangeFromPoint) {
+          var p = document.caretRangeFromPoint(e.clientX, e.clientY);
+          if (p) { node = p.startContainer; offset = p.startOffset; }
+        }
+        if (node && el.contains(node)) {
+          var point = serializePoint(node, offset);
+          if (point && point.anchorId === anchor.blockId) anchor.charOffset = point.charOffset;
+        }
+        return anchor;
+      }
+
+      function checkpointPageY(cp) {
+        if (cp.selection && cp.selection.text) {
+          var range = resolveSelection(cp.selection);
+          if (!range) return null;
+          var rect = range.getBoundingClientRect();
+          return rect.height ? rect.top + window.scrollY : null;
+        }
+        var anchor = cp.anchor || {};
+        var block = anchor.blockId ? findAnchorBlock(anchor.blockId) : null;
+        if (!block) return null;
+        if (typeof anchor.charOffset === 'number') {
+          var point = pointAt(block, anchor.charOffset);
+          if (point) {
+            var range = document.createRange();
+            range.setStart(point.node, point.offset);
+            range.setEnd(point.node, Math.min(point.node.length, point.offset + 1));
+            var rect = range.getBoundingClientRect();
+            if (rect.height) return rect.top + window.scrollY;
+          }
+        }
+        var rect = block.getBoundingClientRect();
+        return rect.top + window.scrollY + rect.height * (anchor.yRatio || 0);
       }
 
       function buildIndex(root) {
@@ -463,9 +478,8 @@ export function buildLessonBridgeScript(courseId: string): string {
         post({
           type: 'courseDeck:textSelected',
           text: text,
-          elementId: start.elementId,
-          start: { elementId: start.elementId, elementPath: start.elementPath, charOffset: start.charOffset },
-          end: { elementId: end.elementId, elementPath: end.elementPath, charOffset: end.charOffset },
+          start: { anchorId: start.anchorId, charOffset: start.charOffset },
+          end: { anchorId: end.anchorId, charOffset: end.charOffset },
           prefix: startText.slice(Math.max(0, so - CONTEXT_CHARS), so),
           suffix: endText.slice(eo, eo + CONTEXT_CHARS),
           iframePageY: Math.round(pageY),
@@ -571,16 +585,13 @@ export function buildLessonBridgeScript(courseId: string): string {
         if (!data || typeof data !== 'object') return;
         if (data.session !== undefined && data.session !== session) return;
 
-        if (data.type === 'courseDeck:queryAnchorPositions' && Array.isArray(data.elementIds)) {
+        if (data.type === 'courseDeck:queryAnchorPositions' && Array.isArray(data.checkpoints)) {
           var positions = {};
-          for (var i = 0; i < data.elementIds.length; i++) {
-            var eid = data.elementIds[i];
-            if (!eid) continue;
-            var el = document.getElementById(eid);
-            if (el) {
-              var r = el.getBoundingClientRect();
-              positions[eid] = Math.round(r.top + (window.scrollY || window.pageYOffset || 0));
-            }
+          for (var i = 0; i < data.checkpoints.length; i++) {
+            var cp = data.checkpoints[i];
+            if (!cp || typeof cp.id !== 'string') continue;
+            var y = checkpointPageY(cp);
+            if (typeof y === 'number' && isFinite(y)) positions[cp.id] = Math.round(y);
           }
           post({ type: 'courseDeck:anchorPositions', positions: positions });
         } else if (data.type === 'courseDeck:applyHighlights' && Array.isArray(data.highlights)) {

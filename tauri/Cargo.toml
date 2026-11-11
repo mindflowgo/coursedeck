@@ -35,7 +35,7 @@ tauri-plugin-window-state = "2"
 [target.'cfg(target_os = "ios")'.dependencies]
 tauri = { version = "2", features = ["custom-protocol"] }
 tauri-plugin-barcode-scanner = "2"
-tauri-plugin-pencilkit = { path = "../../tauri-plugin-pencilkit" }
+tauri-plugin-pencilkit = { git = "https://github.com/mindflowgo/tauri-plugin-pencilkit.git" }
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
 # macOS Desktop OCR (Apple Vision via official objc2 bindings)

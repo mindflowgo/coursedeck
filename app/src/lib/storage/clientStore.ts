@@ -6,6 +6,8 @@ import { derivePdfMarkupCheckpoints, type Checkpoint } from '$lib/checkpoint';
 import { mergeStrokes } from '$lib/markup/render';
 import { isMarkupStroke, type MarkupStroke } from '$lib/markup/types';
 import { invoke } from '@tauri-apps/api/core';
+import { AnnotationSourceConflictError, annotationSourceFile, assertAnnotationAnchorIds, instrumentMarkdownAnchors, validateAnnotationSourceFile, type AnnotationRenderer } from '../checkpoint/sourceAnchors';
+import { instrumentHtmlAnchors, stripHtmlAnchorMetadata } from '../checkpoint/htmlSourceAnchors';
 
 export interface ClientLlmModelCard {
   id: string;
@@ -70,6 +72,8 @@ export interface PendingPushDocument {
   filename: string;
   content: string | null;
   date: string; // ISO timestamp of the local write
+  /** HTML migration may add anchors, never overwrite changed instructional content. */
+  annotationSourceBase?: string;
 }
 
 /** A locally-written prompt waiting to be pushed to the desktop. `content: null` = deleted locally (tombstone). */
@@ -327,6 +331,72 @@ export async function getDocument(courseId: string, filename: string): Promise<s
   }
 
   return get<string>('documents', `${courseId.toLowerCase()}:${filename}`);
+}
+
+export interface AnnotationSourceDocument {
+  sourceFile: string;
+  content: string;
+  renderer: AnnotationRenderer;
+}
+
+/** A failed native migration is an error, never an IDB-only success. */
+export async function prepareAnnotationSourceLocally(courseId: string, file: string, renderer: AnnotationRenderer, requiredIds: string[] = []): Promise<AnnotationSourceDocument | null> {
+  validateAnnotationSourceFile(file);
+  if (!/^[A-Za-z0-9_-]+$/.test(courseId)) throw new Error('Invalid course identifier');
+  let source: AnnotationSourceDocument | null;
+  const native = isTauri();
+  if (native) {
+    source = await invoke<AnnotationSourceDocument | null>('read_annotation_source', { courseId, file, renderer });
+  } else {
+    const stem = file.replace(/\.lesson\.(?:md|html)$/, '');
+    const prefix = `${courseId.toLowerCase()}:`;
+    const hasOriginal = (await get('documents', `${prefix}${stem}.lesson.html`)) !== undefined || (await get('documents', `${prefix}${stem}.lesson.pdf`)) !== undefined;
+    const sourceFile = annotationSourceFile(file, renderer, hasOriginal);
+    const content = await get<string>('documents', `${prefix}${sourceFile}`);
+    source = content === undefined ? null : { sourceFile, content, renderer };
+  }
+  if (!source) return null;
+  const content = renderer === 'html' ? instrumentHtmlAnchors(source.content) : instrumentMarkdownAnchors(source.content);
+  assertAnnotationAnchorIds(content, renderer, requiredIds);
+  if (native) {
+    try {
+      await invoke('save_annotation_source', { courseId, sourceFile: source.sourceFile, expectedContent: source.content, content });
+    } catch (err) {
+      if (String(err).includes('Annotation source changed')) throw new AnnotationSourceConflictError(String(err));
+      throw err;
+    }
+  }
+  const db = await openDb();
+  const id = courseId.toLowerCase();
+  const key = `${id}:${source.sourceFile}`;
+  // Store the migrated source and its sync record in one transaction. Check
+  // the browser's source again while holding its read/write transaction.
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(['documents', 'pending_push_documents'], 'readwrite');
+    const documents = tx.objectStore('documents');
+    const current = documents.get(key);
+    current.onsuccess = () => {
+      if (!native && current.result !== source.content) { tx.abort(); return; }
+      const pendingStore = tx.objectStore('pending_push_documents');
+      const pendingRequest = pendingStore.get(id);
+      pendingRequest.onsuccess = () => {
+        const pending: PendingPushDocument[] = pendingRequest.result || [];
+        // A previous native save may have succeeded before this transaction
+        // failed. Recreate its queue entry whenever IDB still has old content.
+        const previous = pending.find((item) => item.filename === source.sourceFile);
+        if (current.result === content && (renderer !== 'html' || (previous?.content === content && previous.annotationSourceBase !== undefined))) return;
+        documents.put(content, key);
+        const updated = pending.filter((item) => item.filename !== source.sourceFile);
+        updated.push({ filename: source.sourceFile, content, date: new Date().toISOString(), ...(renderer === 'html' ? { annotationSourceBase: previous?.annotationSourceBase ?? stripHtmlAnchorMetadata(source.content) } : {}) });
+        pendingStore.put(updated, id);
+      };
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new AnnotationSourceConflictError('Annotation source changed; retry the annotation'));
+  });
+  notifyPushQueued();
+  return { ...source, content };
 }
 
 export async function saveDocumentLocally(courseId: string, filename: string, content: string): Promise<void> {

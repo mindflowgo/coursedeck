@@ -2,7 +2,11 @@
 
 Original investigation: 2026-11-10. Implementation audit: 2026-11-11. The audit below supersedes the earlier implementation-completion claims. The original findings and proposed implementation remain below as the requirements and historical baseline.
 
-## Source-anchor recommendation (investigation; implementation pending)
+## Source-anchor recommendation (historical design; current implementation in annotations.md)
+
+**Scope correction:** `annotations.md` is the current annotation design. The
+user explicitly ruled out mapping annotations between original HTML and its
+companion Markdown. Each source file/view owns its anchors independently.
 
 Use persistent block IDs in HTML and Markdown, combined with exact text ranges
 and quote/context fallback. A source anchor identifies the containing content;
@@ -70,10 +74,9 @@ refer to the same block with different text endpoints.
    If unresolved, retain the checkpoint and mark it unresolved; never attach
    it to an arbitrary repeated phrase or an ancestor section's top. Recompute
    geometry on reflow, resize, image/font loading, and accordion changes.
-5. Preserve a mapping between HTML blocks and companion Markdown during
-   conversion where correspondence is known. Where it is not known, use
-   renderer-specific targets and quote recovery; do not assert that the two
-   representations have identical text or block structure.
+5. Treat original HTML and companion Markdown as separate source identities.
+   Preserve and resolve an annotation only in the file/view where it was
+   created. There is no cross-view conversion or mapping requirement.
 6. During re-import/regeneration, match old anchored content to new content
    and preserve IDs only when correspondence is reliable. A deleted or heavily
    rewritten passage cannot be made permanent by an ID alone. Keep original

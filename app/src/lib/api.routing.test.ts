@@ -4,6 +4,7 @@
 // through to the server (LLM generation, sync, backup, live job status).
 
 import { describe, expect, it, beforeEach, mock } from 'bun:test';
+import { AnnotationSourceConflictError } from './checkpoint/sourceAnchors';
 
 const storeCalls: string[] = [];
 const fetchCalls: Array<{ url: string; method: string }> = [];
@@ -18,6 +19,7 @@ const libSavedDocs = new Map<string, ArrayBuffer>();
 let libAnnotations: any[] = [];
 let libCheckpoints: any[] = [];
 let courseCheckpoints: any[] = [];
+let anchorMigrationError: Error | null = null;
 
 const windowStub = {
   __TAURI_INTERNALS__: {},
@@ -91,6 +93,11 @@ await mock.module('./storage/clientStore', () => ({
   },
   saveDocumentLocally: async () => {
     storeCalls.push('saveDocumentLocally');
+  },
+  prepareAnnotationSourceLocally: async () => {
+    storeCalls.push('prepareAnnotationSourceLocally');
+    if (anchorMigrationError) throw anchorMigrationError;
+    return { sourceFile: '01.01.lesson.html', renderer: 'html', content: '<p data-anchor-id="example">Local</p>' };
   },
   deleteDocumentLocally: async () => {
     storeCalls.push('deleteDocumentLocally');
@@ -243,6 +250,7 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     libAnnotations = [];
     libCheckpoints = [];
     courseCheckpoints = [];
+    anchorMigrationError = null;
   });
 
   it('detects the iPad as Tauri mobile', () => {
@@ -256,6 +264,26 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     expect(data.lesson).toBe('# Lesson from local store');
     expect(storeCalls).toContain('getLessonBundleLocally');
     expect(fetchCalls.length).toBe(0);
+  });
+
+  it('persists annotation anchors locally without falling through to the network', async () => {
+    const res = await apiFetch('/api/courses/foo/annotation-anchors', { method: 'POST', body: JSON.stringify({ file: '01.01.lesson.md', renderer: 'html', requiredAnchorIds: ['example'] }) });
+    expect(res.status).toBe(200);
+    expect((await res.json()).sourceFile).toBe('01.01.lesson.html');
+    expect(storeCalls).toEqual(['prepareAnnotationSourceLocally']);
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it('rejects invalid and stale source migrations and exposes native write failures', async () => {
+    const post = () => apiFetch('/api/courses/foo/annotation-anchors', { method: 'POST', body: JSON.stringify({ file: '01.01.lesson.md', renderer: 'html' }) });
+    const invalid = await apiFetch('/api/courses/foo/annotation-anchors', { method: 'POST', body: JSON.stringify({ file: '../outside.md', renderer: 'markdown' }) });
+    expect(invalid.status).toBe(400);
+    expect(storeCalls).toHaveLength(0);
+    anchorMigrationError = new AnnotationSourceConflictError('Source changed');
+    expect((await post()).status).toBe(409);
+    anchorMigrationError = new Error('Native disk is read-only');
+    expect((await post()).status).toBe(500);
+    expect(fetchCalls).toHaveLength(0);
   });
 
   it('serves the course list and manifest from the local store', async () => {
@@ -282,8 +310,8 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
         verticalPosition: 320,
         type: 'ai',
         color: 'lavender',
-        anchor: { type: 'paragraph', verticalPosition: 320, paragraphIndex: 4 },
-        selection: { text: 'quadratic formula', blockIndex: 4, charStart: 12, charEnd: 29 },
+        anchor: { type: 'block', verticalPosition: 320, blockId: 'cd-test', renderer: 'markdown', sourceFile: '01.01.lesson.md' },
+        selection: { text: 'quadratic formula', startAnchorId: 'cd-test', endAnchorId: 'cd-test', charStart: 12, charEnd: 29 },
         aiQuestion: 'Why does the discriminant matter?',
         aiStatus: 'pending'
       })
@@ -291,13 +319,13 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     expect(res.status).toBe(200);
     const data: any = await res.json();
     expect(data.checkpoint.type).toBe('ai');
-    expect(data.checkpoint.anchor).toEqual({ type: 'paragraph', verticalPosition: 320, paragraphIndex: 4 });
+    expect(data.checkpoint.anchor).toEqual({ type: 'block', verticalPosition: 320, blockId: 'cd-test', renderer: 'markdown', sourceFile: '01.01.lesson.md' });
     expect(data.checkpoint.selection.text).toBe('quadratic formula');
     expect(data.checkpoint.aiQuestion).toBe('Why does the discriminant matter?');
     expect(data.checkpoint.aiStatus).toBe('pending');
     // The stored copy keeps the same fields (queued for desktop push).
     expect(courseCheckpoints.length).toBe(1);
-    expect(courseCheckpoints[0].anchor.type).toBe('paragraph');
+    expect(courseCheckpoints[0].anchor.type).toBe('block');
     expect(courseCheckpoints[0].aiStatus).toBe('pending');
     expect(fetchCalls.length).toBe(0);
   });
@@ -312,7 +340,7 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
         color: 'lavender',
         noteText: '',
         date: '2026-11-01T00:00:00.000Z',
-        anchor: { type: 'paragraph', verticalPosition: 100, paragraphIndex: 2 },
+        anchor: { type: 'block', verticalPosition: 100, blockId: 'cd-test', renderer: 'markdown', sourceFile: '01.01.lesson.md' },
         selection: { text: 'legacy quote' },
         aiQuestion: 'original question',
         aiAnswer: 'original answer',

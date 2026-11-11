@@ -611,6 +611,9 @@ fn resolve_pdfium_bindings() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
                 candidates.push(dir.join("pdfium.dll"));
                 candidates.push(dir.join("bin/pdfium.dll"));
                 candidates.push(dir.join("libpdfium.so"));
+                candidates.push(dir.join("bin/libpdfium.so"));
+                candidates.push(dir.join("lib/libpdfium.so"));
+                candidates.push(dir.join("../lib/libpdfium.so"));
             }
         }
 
@@ -624,6 +627,10 @@ fn resolve_pdfium_bindings() -> Result<Box<dyn PdfiumLibraryBindings>, String> {
             candidates.push(cwd.join("bin/pdfium.dll"));
             candidates.push(cwd.join("tauri/bin/pdfium.dll"));
             candidates.push(cwd.join("libpdfium.so"));
+            candidates.push(cwd.join("bin/libpdfium.so"));
+            candidates.push(cwd.join("tauri/libpdfium.so"));
+            candidates.push(cwd.join("tauri/bin/libpdfium.so"));
+            candidates.push(cwd.join("../tauri/bin/libpdfium.so"));
         }
 
         for path in candidates {

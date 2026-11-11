@@ -24,6 +24,84 @@ describe('CourseService checkpoint persistence', () => {
     expect(CourseService.getCheckpoints(courseId)).toEqual([]);
   });
 
+  it('persists source IDs only on explicit migration and separates original from companion', () => {
+    const html = '<html><body><p>Original lesson</p></body></html>';
+    const markdown = '# Companion\n\nDifferent paragraph.\n';
+    const htmlPath = path.join(courseDir, '07.01.lesson.html');
+    const mdPath = path.join(courseDir, '07.01.lesson.companion.md');
+    fs.writeFileSync(htmlPath, html);
+    fs.writeFileSync(mdPath, markdown);
+    const original = CourseService.prepareAnnotationSource(courseId, '07.01.lesson.md', 'html');
+    expect(original?.sourceFile).toBe('07.01.lesson.html');
+    expect(original?.content).toContain('data-anchor-id=');
+    expect(fs.readFileSync(htmlPath, 'utf8')).toBe(original!.content);
+    expect(fs.readFileSync(mdPath, 'utf8')).toBe(markdown);
+    const stat = fs.statSync(htmlPath).mtimeMs;
+    expect(CourseService.prepareAnnotationSource(courseId, '07.01.lesson.md', 'html')).toEqual(original);
+    expect(fs.statSync(htmlPath).mtimeMs).toBe(stat);
+    const companion = CourseService.prepareAnnotationSource(courseId, '07.01.lesson.md', 'markdown');
+    expect(companion?.sourceFile).toBe('07.01.lesson.companion.md');
+    expect(fs.readFileSync(mdPath, 'utf8')).toBe(companion!.content);
+    expect(CourseService.prepareAnnotationSource(courseId, '08.01.lesson.md', 'markdown')).toBeNull();
+    expect(() => CourseService.prepareAnnotationSource(courseId, '../escape.md', 'markdown')).toThrow();
+  });
+
+  it('serves the source migration contract and rejects stale render IDs before writing', async () => {
+    const { handleApiRequest } = await import('./api');
+    const sourceFile = '09.01.summary.md';
+    const filePath = path.join(courseDir, sourceFile);
+    const content = '# Synthetic summary\n\nA paragraph.\n';
+    fs.writeFileSync(filePath, content);
+    const post = async (body: Record<string, unknown>) => {
+      const request = new Request(`http://localhost/api/courses/${courseId}/annotation-anchors`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      return handleApiRequest(request, new URL(request.url));
+    };
+    const stale = await post({ file: sourceFile, renderer: 'markdown', requiredAnchorIds: ['old-render-id'] });
+    expect(stale.status).toBe(409);
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(content);
+    const migrated = await post({ file: sourceFile, renderer: 'markdown' });
+    expect(migrated.status).toBe(200);
+    const body = await migrated.json();
+    expect(body.sourceFile).toBe(sourceFile);
+    expect(body.renderer).toBe('markdown');
+    expect(body.content).toBe(fs.readFileSync(filePath, 'utf8'));
+    expect((await post({ file: '../escape.md', renderer: 'markdown' })).status).toBe(400);
+    expect((await post({ file: 'missing.summary.md', renderer: 'markdown' })).status).toBe(404);
+    const pushedHtml = '<p data-anchor-id="synced-block">Synthetic original</p>';
+    fs.writeFileSync(path.join(courseDir, '09.02.lesson.html'), '<p>Synthetic original</p>');
+    const pushRequest = new Request('http://localhost/api/sync/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ documents: { [courseId]: [{ filename: '09.02.lesson.html', content: pushedHtml, annotationSourceBase: '<p>Synthetic original</p>', date: new Date().toISOString() }] } }) });
+    const pushed = await handleApiRequest(pushRequest, new URL(pushRequest.url));
+    expect(pushed.status).toBe(200);
+    expect(fs.readFileSync(path.join(courseDir, '09.02.lesson.html'), 'utf8')).toBe(pushedHtml);
+  });
+
+  it('rejects stale HTML anchor sync before merging annotations or replacing newer content and IDs', async () => {
+    const { handleApiRequest } = await import('./api');
+    const file = '09.03.lesson.html';
+    const sourcePath = path.join(courseDir, file);
+    const base = '<p>Old instructional content</p>';
+    const incoming = '<p data-anchor-id="old-device">Old instructional content</p>';
+    const push = async (content: string | null, annotationSourceBase?: string) => {
+      const request = new Request('http://localhost/api/sync/push', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ documents: { [courseId]: [{ filename: file, content, annotationSourceBase, date: new Date(Date.now() + 60_000).toISOString() }] }, checkpoints: { [courseId]: [{ id: 'should-not-merge', file, verticalPosition: 20, type: 'note', noteText: 'Stale source', date: new Date().toISOString() }] } }) });
+      return handleApiRequest(request, new URL(request.url));
+    };
+    const newer = '<p data-anchor-id="server-new">New instructional content</p>';
+    fs.writeFileSync(sourcePath, newer);
+    expect((await push(incoming, base)).status).toBe(409);
+    expect(fs.readFileSync(sourcePath, 'utf8')).toBe(newer);
+    expect(CourseService.getCheckpoints(courseId).some((cp) => cp.id === 'should-not-merge')).toBe(false);
+    const existing = '<p data-anchor-id="server-existing">Old instructional content</p>';
+    fs.writeFileSync(sourcePath, existing);
+    expect((await push(incoming, base)).status).toBe(409);
+    expect(fs.readFileSync(sourcePath, 'utf8')).toBe(existing);
+    expect((await push(base, base)).status).toBe(409);
+    expect((await push(incoming)).status).toBe(409);
+    expect((await push(null, base)).status).toBe(409);
+    expect((await push(existing, base)).status).toBe(200);
+    expect(fs.readFileSync(sourcePath, 'utf8')).toBe(existing);
+    CourseService.deleteCheckpoint(courseId, 'should-not-merge');
+  });
+
   it('records and updates position checkpoints into .checkpoints.json only', () => {
     const pos1 = CourseService.recordPositionCheckpoint(courseId, '01.01.lesson.md', 250);
     expect(pos1.type).toBe('position');
@@ -101,13 +179,13 @@ describe('CourseService checkpoint persistence', () => {
       type: 'ai',
       color: 'lavender',
       noteText: '',
-      anchor: { type: 'paragraph', verticalPosition: 610, paragraphIndex: 7 },
-      selection: { text: 'the selected passage', blockIndex: 7, charStart: 3, charEnd: 24, prefix: 'ctx ', suffix: ' end' },
+      anchor: { type: 'block', verticalPosition: 610, blockId: 'cd-test', renderer: 'markdown', sourceFile: '02.03.lesson.md' },
+      selection: { text: 'the selected passage', startAnchorId: 'cd-test', endAnchorId: 'cd-test', charStart: 3, charEnd: 24, prefix: 'ctx ', suffix: ' end' },
       aiQuestion: 'What does this passage mean?',
       aiStatus: 'pending'
     });
     expect(created.type).toBe('ai');
-    expect(created.anchor).toEqual({ type: 'paragraph', verticalPosition: 610, paragraphIndex: 7 });
+    expect(created.anchor).toEqual({ type: 'block', verticalPosition: 610, blockId: 'cd-test', renderer: 'markdown', sourceFile: '02.03.lesson.md' });
     expect(created.selection?.text).toBe('the selected passage');
     expect(created.selection?.prefix).toBe('ctx ');
     expect(created.aiQuestion).toBe('What does this passage mean?');
@@ -123,7 +201,7 @@ describe('CourseService checkpoint persistence', () => {
     expect(updated.aiQuestion).toBe('What does this passage mean?');
     expect(updated.aiStatus).toBe('pending');
     expect(updated.selection?.text).toBe('the selected passage');
-    expect(updated.anchor?.paragraphIndex).toBe(7);
+    expect(updated.anchor?.blockId).toBe('cd-test');
 
     // AI completion patch normalizes the legacy 'ready' value.
     const patched = CourseService.patchCheckpoint(courseId, created.id, {

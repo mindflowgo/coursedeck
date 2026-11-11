@@ -92,7 +92,9 @@
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
   import { afterPaint, installPerfObservers, perf } from '$lib/perf';
   import type { Checkpoint, Anchor } from '$lib/checkpoint';
-  import { resolveMarkdownAnchorPixel } from '$lib/checkpoint';
+  import { checkpointBelongsToSource } from '$lib/checkpoint';
+  import { annotationSourceFile, stripMarkdownAnchorMetadata } from '$lib/checkpoint/sourceAnchors';
+  import { anchorAtReaderY, resolveCheckpointTop } from '$lib/checkpoint/selection';
   import { buildCheckpointAskUserPrompt, DEFAULT_CHECKPOINT_ASK_PROMPT } from '$lib/checkpoint/askPrompt';
   import FloatingCheckpointTrigger from '$lib/components/FloatingCheckpointTrigger.svelte';
   import CheckpointMarker from '$lib/components/CheckpointMarker.svelte';
@@ -373,9 +375,12 @@
   let currentFile = $derived(
     docFileName(isCourseScope ? 'course' : selectedLessonId, activeTab, isCourseScope)
   );
+  const annotationRenderer = $derived(activeTab === 'lesson' && effectiveFormat === 'html' && lessonViewMode === 'original' ? 'html' : 'markdown');
+  const annotationFile = $derived(currentFile.startsWith('.') ? currentFile : annotationSourceFile(currentFile, annotationRenderer, activeTab === 'lesson' && effectiveFormat !== 'markdown'));
   let currentFileNotes = $derived(
     checkpoints.filter(
-      (c) => (c.type === 'note' || c.type === 'highlight' || c.type === 'ai') && c.file === currentFile
+      (c) => (c.type === 'note' || c.type === 'highlight' || c.type === 'ai') && c.file === currentFile &&
+        checkpointBelongsToSource(c, annotationFile, annotationRenderer)
     )
   );
 
@@ -386,7 +391,8 @@
     verticalPosition: number;
   } | null>(null);
 
-  let externalCursorPosition = $state<{ cursorY: number; scrollTop: number } | null>(null);
+  let externalCursorPosition = $state<{ cursorY: number; scrollTop: number; anchor?: Anchor } | null>(null);
+  let lastHtmlPointerAnchor = $state<Anchor | undefined>();
   let htmlAnchorPositions = $state<Record<string, number>>({});
 
   // Selections and anchor lookups belong to one document. Clear them whenever
@@ -399,6 +405,7 @@
     lastSelectionScope = scope;
     activeSelection = null;
     externalCursorPosition = null;
+    lastHtmlPointerAnchor = undefined;
     htmlAnchorPositions = {};
     openNoteIds = new Set();
   });
@@ -531,6 +538,30 @@
     }, 6000);
   }
 
+  function captureCheckpointAnchor(verticalPosition: number): Anchor {
+    let anchor = activeSelection?.anchor;
+    if (!anchor && annotationRenderer === 'html') anchor = lastHtmlPointerAnchor;
+    if (!anchor && contentScroller) {
+      const body = contentScroller.querySelector<HTMLElement>('.markdown-body');
+      if (body) anchor = anchorAtReaderY(body, contentScroller, verticalPosition);
+    }
+    return { ...(anchor ?? { type: 'pixel', verticalPosition }), sourceFile: annotationFile, renderer: annotationRenderer };
+  }
+
+  async function persistSourceAnchors(targetCourseId: string, file: string, renderer: 'html' | 'markdown', anchor?: Anchor, selection?: import('$lib/checkpoint').SelectionRange): Promise<void> {
+    const requiredAnchorIds = [...new Set([anchor?.blockId, selection?.startAnchorId, selection?.endAnchorId, selection?.start?.anchorId, selection?.end?.anchorId].filter((id): id is string => Boolean(id)))];
+    const res = await apiFetch(`/api/courses/${targetCourseId}/annotation-anchors`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ file, renderer, requiredAnchorIds })
+    });
+    if (!res.ok) throw new Error('Could not preserve the annotation anchors in the original file. Please reload and try again.');
+    const data = await res.json();
+    if (anchor?.sourceFile && data.sourceFile !== anchor.sourceFile) throw new Error('The source file changed. Reload before saving this annotation.');
+    if (renderer === 'markdown' && targetCourseId === courseId && file === currentFile && typeof data.content === 'string') {
+      tabContents[activeTab] = data.content;
+      originalContents[activeTab] = data.content;
+    }
+  }
+
   /**
    * Saves a highlight checkpoint. All identity (course, file, anchor,
    * selection) is snapshotted up front so navigation while the request is in
@@ -542,13 +573,14 @@
       courseId,
       file: currentFile,
       verticalPosition: activeSelection?.verticalPosition ?? verticalPosition,
-      anchor: activeSelection?.anchor ?? ({ type: 'pixel', verticalPosition } as Anchor),
+      anchor: captureCheckpointAnchor(verticalPosition),
       selection:
         activeSelection?.selection ??
         (activeSelection?.text ? ({ text: activeSelection.text } as import('$lib/checkpoint').SelectionRange) : undefined)
     };
 
     try {
+      await persistSourceAnchors(snapshot.courseId, snapshot.file, snapshot.anchor.renderer!, snapshot.anchor, snapshot.selection);
       const res = await apiFetch(`/api/courses/${snapshot.courseId}/checkpoints`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -580,15 +612,17 @@
   }
 
   function handleTriggerNote(verticalPosition: number) {
-    const targetVp = activeSelection?.verticalPosition ?? verticalPosition;
+    const targetAnchor = captureCheckpointAnchor(verticalPosition);
+    const targetVp = targetAnchor.verticalPosition;
     const targetSelection =
       activeSelection?.selection ??
       (activeSelection?.text ? ({ text: activeSelection.text } as import('$lib/checkpoint').SelectionRange) : undefined);
 
     activeCheckpoint = {
+      courseId,
       file: currentFile,
       verticalPosition: targetVp,
-      anchor: activeSelection?.anchor ?? { type: 'pixel', verticalPosition: targetVp },
+      anchor: targetAnchor,
       selection: targetSelection,
       color: 'yellow',
       noteText: ''
@@ -615,12 +649,13 @@
 
   function handleTriggerAskAI(verticalPosition: number) {
     if (!courseId) return;
-    const targetVp = activeSelection?.verticalPosition ?? verticalPosition;
+    const targetAnchor = captureCheckpointAnchor(verticalPosition);
+    const targetVp = targetAnchor.verticalPosition;
     aiComposer = {
       courseId,
       file: currentFile,
       verticalPosition: targetVp,
-      anchor: activeSelection?.anchor ?? { type: 'pixel', verticalPosition: targetVp },
+      anchor: targetAnchor,
       selection:
         activeSelection?.selection ??
         (activeSelection?.text ? ({ text: activeSelection.text } as import('$lib/checkpoint').SelectionRange) : undefined),
@@ -639,9 +674,9 @@
    */
   function currentReferenceMarkdown(): string {
     if (isCourseScope || isUnitScope) {
-      return parsedActiveTab.body || tabContents[activeTab] || '';
+      return stripMarkdownAnchorMetadata(parsedActiveTab.body || tabContents[activeTab] || '');
     }
-    return tabContents.lesson || parsedActiveTab.body || tabContents[activeTab] || '';
+    return stripMarkdownAnchorMetadata(tabContents.lesson || parsedActiveTab.body || tabContents[activeTab] || '');
   }
 
   async function handleAskAiSubmit(question: string): Promise<void | false> {
@@ -657,6 +692,7 @@
     }
 
     try {
+      await persistSourceAnchors(snap.courseId, snap.file, snap.anchor.renderer!, snap.anchor, snap.selection);
       const res = await apiFetch(`/api/courses/${snap.courseId}/checkpoints`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -853,7 +889,7 @@
       courseTitle: retryCourseTitle,
       lessonTitle,
       sourceTab,
-      referenceText: stripLessonMedia(referenceText)
+      referenceText: stripLessonMedia(stripMarkdownAnchorMetadata(referenceText))
     });
   }
 
@@ -874,27 +910,31 @@
   }
 
   function handleEditCheckpoint(cp: Checkpoint) {
-    activeCheckpoint = cp;
+    activeCheckpoint = { ...cp, courseId };
     isCheckpointModalOpen = true;
   }
 
-  async function handleSaveCheckpoint(data: { color: string; noteText: string }) {
+  async function handleSaveCheckpoint(data: { color: string; noteText: string }): Promise<void | false> {
     if (!activeCheckpoint || !courseId) return;
+    const snapshot = { ...activeCheckpoint };
+    const targetCourseId = snapshot.courseId || courseId;
     try {
-      const res = await apiFetch(`/api/courses/${courseId}/checkpoints`, {
+      if (snapshot.anchor?.renderer) await persistSourceAnchors(targetCourseId, snapshot.file || currentFile, snapshot.anchor.renderer, snapshot.anchor, snapshot.selection);
+      const res = await apiFetch(`/api/courses/${targetCourseId}/checkpoints`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: activeCheckpoint.id,
-          file: activeCheckpoint.file || currentFile,
-          verticalPosition: activeCheckpoint.verticalPosition ?? contentScroller?.scrollTop ?? 0,
+          id: snapshot.id,
+          file: snapshot.file || currentFile,
+          verticalPosition: snapshot.verticalPosition ?? contentScroller?.scrollTop ?? 0,
           color: data.color,
           noteText: data.noteText,
-          ...(activeCheckpoint.anchor ? { anchor: activeCheckpoint.anchor } : {}),
-          ...(activeCheckpoint.selection ? { selection: activeCheckpoint.selection } : {})
+          ...(snapshot.anchor ? { anchor: snapshot.anchor } : {}),
+          ...(snapshot.selection ? { selection: snapshot.selection } : {})
         })
       });
-      if (res.ok) {
+      if (!res.ok) throw new Error('Could not save checkpoint note.');
+      if (targetCourseId === courseId) {
         const body = await res.json();
         const saved: Checkpoint = body.checkpoint;
         const idx = checkpoints.findIndex((c) => c.id === saved.id);
@@ -910,7 +950,8 @@
       }
     } catch (e) {
       console.error('Failed to save checkpoint note:', e);
-      alert('Could not save checkpoint note.');
+      showCheckpointError(e instanceof Error ? e.message : 'Could not save checkpoint note.');
+      return false;
     }
   }
 
@@ -3299,7 +3340,7 @@
         class="relative flex-1 flex flex-col overflow-hidden w-full max-w-full min-w-0"
         class:hidden={activeTab === 'book'}
       >
-        <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
+        <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full">
           <FloatingCheckpointTrigger
             containerEl={contentScroller}
             disabled={isEditing || activeTab === 'book' || !!activeDocument || isCheckpointModalOpen || aiComposer !== null}
@@ -3312,7 +3353,7 @@
         </div>
 
       <div
-        class="relative flex-1 overflow-y-auto overflow-x-hidden p-0 sm:p-8 max-w-5xl mx-auto w-full min-w-0 [overflow-anchor:none]"
+        class="relative flex-1 overflow-y-auto overflow-x-hidden py-0 pl-0 pr-12 sm:py-8 sm:pl-8 sm:pr-12 max-w-5xl mx-auto w-full min-w-0 [overflow-anchor:none]"
         bind:this={contentScroller}
         onscroll={handleContentScroll}
       >
@@ -3322,15 +3363,11 @@
             <CheckpointMarker
               checkpoint={note}
               resolvedTop={(() => {
-                if (note.anchor?.type === 'element-id' && note.anchor.elementId && htmlAnchorPositions[note.anchor.elementId] !== undefined) {
-                  return htmlAnchorPositions[note.anchor.elementId];
+                if (annotationRenderer === 'html') {
+                  return htmlAnchorPositions[note.id] ?? note.verticalPosition;
                 }
-                if (note.anchor?.type === 'paragraph' && note.anchor.paragraphIndex !== undefined) {
-                  const container = contentScroller?.querySelector('.markdown-body');
-                  if (container instanceof HTMLElement) {
-                    return resolveMarkdownAnchorPixel(note, container, contentScroller);
-                  }
-                }
+                const body = contentScroller?.querySelector<HTMLElement>('.markdown-body');
+                if (body && contentScroller && (note.selection?.text || note.anchor?.blockId)) return resolveCheckpointTop(note, body, contentScroller);
                 return undefined;
               })()}
               isOpen={openNoteIds.has(note.id)}
@@ -3660,6 +3697,7 @@
                     onNavigateLesson={handleNavigateFromLesson}
                     onMouseMove={(coords) => {
                       externalCursorPosition = coords;
+                      lastHtmlPointerAnchor = coords.anchor;
                     }}
                     onMouseLeave={() => {
                       externalCursorPosition = null;

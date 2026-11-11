@@ -24,4 +24,6 @@ tauri/bin/
 tauri/*.dylib
 tauri/*.dll
 tauri/*.so
+.cargo/
+tauri/.cargo/
 tauripad/gen/apple/Frameworks/

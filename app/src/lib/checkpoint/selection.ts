@@ -1,22 +1,93 @@
 /**
  * Markdown/DOM selection capture and re-resolution.
  *
- * Captured selections are stored as a SerializableSelection: block indexes +
- * character offsets within block text content, the exact quote, and short
+ * Captured selections store stable source block IDs, character offsets within
+ * block text content, the exact quote, and short
  * disambiguation context. Resolution prefers the offsets and falls back to a
  * context-disambiguated quote search when the document has changed (edited,
- * re-rendered, or switched renderer).
+ * re-rendered). Resolution is scoped to the file where the annotation belongs.
  *
  * DOM helpers are only called from browser code paths.
  */
-import type { SelectionRange } from '../checkpoint';
+import type { Anchor, Checkpoint, SelectionRange } from '../checkpoint';
+
+/** Convert source-only metadata to attributes before the sanitizer drops comments. */
+export function attachMarkdownAnchorIds(html: string): string {
+  if (typeof DOMParser === 'undefined') return html;
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_COMMENT);
+  const comments: Comment[] = [];
+  let node: Node | null;
+  while ((node = walker.nextNode())) comments.push(node as Comment);
+  for (const comment of comments) {
+    const match = comment.data.trim().match(/^coursedeck-anchor:([a-zA-Z0-9_-]+)$/);
+    if (!match) continue;
+    let next = comment.nextSibling;
+    while (next && (next.nodeType === Node.COMMENT_NODE || (next.nodeType === Node.TEXT_NODE && !next.textContent?.trim()))) next = next.nextSibling;
+    if (next instanceof Element) next.setAttribute('data-anchor-id', match[1]);
+    comment.remove();
+  }
+  return doc.body.innerHTML;
+}
+
+export function findAnchorBlock(root: Element, id: string): HTMLElement | null {
+  return Array.from(root.querySelectorAll<HTMLElement>('[data-anchor-id]')).find(el => el.dataset.anchorId === id) ?? null;
+}
+
+export function anchorAtReaderY(root: Element, scroller: HTMLElement, contentY: number): Anchor {
+  const clientY = contentY - scroller.scrollTop + scroller.getBoundingClientRect().top;
+  const blocks = Array.from(root.querySelectorAll<HTMLElement>('[data-anchor-id]'));
+  let best: HTMLElement | null = null;
+  let distance = Infinity;
+  for (const block of blocks) {
+    const r = block.getBoundingClientRect();
+    if (!r.height) continue;
+    const d = Math.max(r.top - clientY, clientY - r.bottom, 0);
+    if (d < distance) { best = block; distance = d; }
+  }
+  if (!best) return { type: 'pixel', verticalPosition: contentY };
+  const rect = best.getBoundingClientRect();
+  const doc = document as Document & {
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+  };
+  const x = rect.left + Math.min(8, rect.width / 2);
+  const y = Math.max(rect.top + 1, Math.min(rect.bottom - 1, clientY));
+  const caret = doc.caretPositionFromPoint?.(x, y);
+  const range = caret ? null : doc.caretRangeFromPoint?.(x, y);
+  const node = caret?.offsetNode ?? range?.startContainer;
+  const offset = caret?.offset ?? range?.startOffset ?? 0;
+  const charOffset = node ? offsetWithinBlock(best, node, offset) : null;
+  return { type: 'block', blockId: best.dataset.anchorId, verticalPosition: contentY,
+    ...(charOffset !== null ? { charOffset } : {}),
+    yRatio: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)) };
+}
+
+export function resolveCheckpointTop(cp: Checkpoint, root: HTMLElement, scroller: HTMLElement): number {
+  if (cp.selection?.text) {
+    const range = resolveMarkdownRange(root, cp.selection);
+    const rect = range?.getBoundingClientRect();
+    if (rect && rect.height) return rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    return cp.verticalPosition;
+  }
+  const block = cp.anchor?.blockId ? findAnchorBlock(root, cp.anchor.blockId) : null;
+  if (!block) return cp.verticalPosition;
+  if (cp.anchor?.charOffset !== undefined) {
+    const point = pointFromOffset(block, cp.anchor.charOffset);
+    if (point) {
+      const range = document.createRange();
+      range.setStart(point.node, point.offset);
+      range.setEnd(point.node, Math.min(point.node.length, point.offset + 1));
+      const rect = range.getBoundingClientRect();
+      if (rect.height) return rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    }
+  }
+  const rect = block.getBoundingClientRect();
+  return rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop + rect.height * (cp.anchor?.yRatio ?? 0);
+}
 
 export const MARKDOWN_BLOCK_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, table, dd, dt';
-
-export function getMarkdownBlocks(root: Element): HTMLElement[] {
-  return Array.from(root.querySelectorAll<HTMLElement>(MARKDOWN_BLOCK_SELECTOR));
-}
 
 /** Finds the closest ancestor (or self) matching the block selector. */
 export function closestBlock(node: Node | null): HTMLElement | null {
@@ -101,14 +172,14 @@ const CONTEXT_CHARS = 32;
 
 /**
  * Serializes the live selection into a stored SelectionRange plus block
- * indexes. Returns null when the selection does not intersect the root's
+ * identities. Returns null when the selection does not intersect the root's
  * blocks, is collapsed, or has no text (e.g. 1-char selections are kept —
  * math tokens can be a single character).
  */
 export function serializeMarkdownSelection(
   sel: Selection,
   root: Element
-): { selection: SelectionRange; blockIndex: number; endBlockIndex: number } | null {
+): { selection: SelectionRange } | null {
   if (sel.isCollapsed || sel.rangeCount === 0) return null;
   const range = sel.getRangeAt(0);
   if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return null;
@@ -116,11 +187,11 @@ export function serializeMarkdownSelection(
   const text = sel.toString().replace(/\s+$/g, '');
   if (!text.trim()) return null;
 
-  const blocks = getMarkdownBlocks(root);
-  const startBlock = closestBlock(range.startContainer);
-  const endBlock = closestBlock(range.endContainer);
-  const blockIndex = startBlock ? blocks.indexOf(startBlock) : -1;
-  const endBlockIndex = endBlock ? blocks.indexOf(endBlock) : -1;
+  const startElement = range.startContainer.nodeType === Node.TEXT_NODE ? range.startContainer.parentElement : range.startContainer as Element;
+  const endElement = range.endContainer.nodeType === Node.TEXT_NODE ? range.endContainer.parentElement : range.endContainer as Element;
+  const startBlock = startElement?.closest<HTMLElement>('[data-anchor-id]');
+  const endBlock = endElement?.closest<HTMLElement>('[data-anchor-id]');
+  if (!startBlock?.dataset.anchorId || !endBlock?.dataset.anchorId) return null;
 
   const charStart =
     startBlock !== null ? offsetWithinBlock(startBlock, range.startContainer, range.startOffset) : null;
@@ -134,18 +205,14 @@ export function serializeMarkdownSelection(
 
   const serialized: SelectionRange = {
     text,
-    ...(blockIndex >= 0 ? { blockIndex } : {}),
-    ...(endBlockIndex >= 0 ? { endBlockIndex } : {}),
+    ...(startBlock?.dataset.anchorId ? { startAnchorId: startBlock.dataset.anchorId } : {}),
+    ...(endBlock?.dataset.anchorId ? { endAnchorId: endBlock.dataset.anchorId } : {}),
     ...(charStart !== null ? { charStart } : {}),
     ...(charEnd !== null ? { charEnd } : {}),
     prefix: startText.slice(Math.max(0, safeStart - CONTEXT_CHARS), safeStart).slice(-CONTEXT_CHARS),
     suffix: endText.slice(safeEnd, safeEnd + CONTEXT_CHARS)
   };
-  return {
-    selection: serialized,
-    blockIndex: blockIndex >= 0 ? blockIndex : 0,
-    endBlockIndex: endBlockIndex >= 0 ? endBlockIndex : Math.max(0, blockIndex)
-  };
+  return { selection: serialized };
 }
 
 // ── resolution ──────────────────────────────────────────────────────────────
@@ -235,10 +302,8 @@ function rangeFromSpan(root: Element, index: TextIndex, start: number, end: numb
  * the selection can no longer be located unambiguously.
  */
 export function resolveMarkdownRange(root: Element, sel: SelectionRange): Range | null {
-  const blocks = getMarkdownBlocks(root);
-  const startBlock = sel.blockIndex !== undefined ? blocks[sel.blockIndex] : undefined;
-  const endBlockIdx = sel.endBlockIndex ?? sel.blockIndex;
-  const endBlock = endBlockIdx !== undefined ? blocks[endBlockIdx] : undefined;
+  const startBlock = sel.startAnchorId ? findAnchorBlock(root, sel.startAnchorId) : null;
+  const endBlock = sel.endAnchorId ? findAnchorBlock(root, sel.endAnchorId) : null;
 
   if (startBlock && endBlock) {
     const sp = pointFromOffset(startBlock, sel.charStart ?? 0);
@@ -246,7 +311,7 @@ export function resolveMarkdownRange(root: Element, sel: SelectionRange): Range 
     if (sp && ep) {
       try {
         const r = document.createRange();
-        const order = startBlock === endBlock || blocks.indexOf(startBlock) <= blocks.indexOf(endBlock);
+        const order = startBlock === endBlock || Boolean(startBlock.compareDocumentPosition(endBlock) & Node.DOCUMENT_POSITION_FOLLOWING);
         if (order) {
           r.setStart(sp.node, sp.offset);
           r.setEnd(ep.node, ep.offset);

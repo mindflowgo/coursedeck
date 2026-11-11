@@ -5,6 +5,8 @@ import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { LibraryService } from './library';
 import { isCheckpointType, normalizeAiStatus, normalizeCheckpointRecord } from '../checkpoint';
+import { AnnotationSourceConflictError, annotationSourceCandidates, requiredAnnotationAnchorIds, type AnnotationRenderer } from '../checkpoint/sourceAnchors';
+import { instrumentHtmlAnchors, preservesHtmlAnchorIds, stripHtmlAnchorMetadata } from '../checkpoint/htmlSourceAnchors';
 import { buildLessonBridgeScript } from './lessonBridge';
 import type { MarkupStroke } from '../markup/types';
 import { PromptService } from './prompts';
@@ -734,12 +736,43 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       const body = reqJson as {
         checkpoints?: Record<string, any[]>;
         annotations?: Record<string, any[]>;
-        documents?: Record<string, Array<{ filename: string; content: string | null; date: string }>>;
+        documents?: Record<string, Array<{ filename: string; content: string | null; date: string; annotationSourceBase?: string }>>;
         prompts?: Array<{ id: string; content: string | null; date: string }>;
       };
 
       if (!body || typeof body !== 'object') {
         return error(400, 'Invalid push payload');
+      }
+
+      // Preflight anchor-only HTML migrations BEFORE merging checkpoints or
+      // documents. HTTP409 keeps the client's whole pending queue intact.
+      // A recent migration timestamp cannot authorize replacing lesson text
+      // from an older device, deleting an original, or replacing saved IDs.
+      const htmlMigrations = new Map<string, { content: string; expected: string }>();
+      if (body.documents && typeof body.documents === 'object') {
+        for (const [rawCourseId, documents] of Object.entries(body.documents)) {
+          if (!Array.isArray(documents)) continue;
+          for (const doc of documents) {
+            if (typeof doc?.filename !== 'string' || !doc.filename.endsWith('.lesson.html')) continue;
+            try {
+              const courseId = assertCourseId(rawCourseId).toLowerCase();
+              if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\.lesson\.html$/.test(doc.filename) || typeof doc.content !== 'string' || typeof doc.annotationSourceBase !== 'string' || typeof doc.date !== 'string' || Number.isNaN(new Date(doc.date).getTime())) {
+                return error(409, 'HTML anchor sync requires its unchanged source base');
+              }
+              const sourcePath = safeJoin(getCoursesDir(), courseId, doc.filename);
+              if (!fs.existsSync(sourcePath)) return error(409, 'HTML annotation source was removed; pending changes retained');
+              const current = fs.readFileSync(sourcePath, 'utf8');
+              const base = stripHtmlAnchorMetadata(doc.annotationSourceBase);
+              if (stripHtmlAnchorMetadata(current) !== base || stripHtmlAnchorMetadata(doc.content) !== base || !preservesHtmlAnchorIds(current, doc.content)) {
+                return error(409, 'HTML annotation source changed; pending changes retained');
+              }
+              if (htmlMigrations.has(sourcePath) && htmlMigrations.get(sourcePath)!.content !== doc.content) return error(409, 'Conflicting HTML anchor migrations; pending changes retained');
+              htmlMigrations.set(sourcePath, { content: doc.content, expected: current });
+            } catch {
+              return error(409, 'Could not verify HTML annotation source; pending changes retained');
+            }
+          }
+        }
       }
 
       const results: Record<string, { merged: number; errors: string[] }> = {};
@@ -819,7 +852,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           typeof filename === 'string' &&
           !filename.includes('/') &&
           !filename.includes('\\') &&
-          (filename === '.manifest.json' || (!filename.startsWith('.') && filename.endsWith('.md')));
+          (filename === '.manifest.json' || (!filename.startsWith('.') && (filename.endsWith('.md') || /^[A-Za-z0-9][A-Za-z0-9_.-]*\.lesson\.html$/.test(filename))));
 
         for (const [rawCourseId, docs] of Object.entries(body.documents)) {
           let courseId: string;
@@ -845,6 +878,23 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               }
               const fileTime = fs.existsSync(filePath) ? fs.statSync(filePath).mtime : null;
 
+              if (htmlMigrations.has(filePath)) {
+                const { content, expected } = htmlMigrations.get(filePath)!;
+                const current = fs.readFileSync(filePath, 'utf8');
+                if (current !== expected && current !== content) return error(409, 'HTML annotation source changed; pending changes retained');
+                if (current !== content) {
+                  const temporary = `${filePath}.anchors-${crypto.randomUUID()}.tmp`;
+                  try {
+                    fs.writeFileSync(temporary, content, { encoding: 'utf8', flag: 'wx', mode: fs.statSync(filePath).mode });
+                    fs.renameSync(temporary, filePath);
+                  } finally {
+                    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+                  }
+                }
+                entry.merged++;
+                continue;
+              }
+
               if (doc.content === null) {
                 if (fileTime && fileTime <= incomingDate) {
                   fs.rmSync(filePath, { force: true });
@@ -860,6 +910,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
                 entry.errors.push(`invalid content for ${doc.filename}`);
               }
             } catch (e) {
+              if (doc.filename.endsWith('.lesson.html')) return error(500, 'Could not save HTML anchor migration; pending changes retained');
               entry.errors.push(e instanceof Error ? e.message : String(e));
             }
           }
@@ -3598,6 +3649,26 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         return fileResponse(fullPath, { 'Cache-Control': 'public, max-age=86400' });
       }
 
+      // Explicit source migration before saving an annotation. Ordinary GETs
+      // render deterministic IDs in memory without writing the source file.
+      if (subpath === 'annotation-anchors' && method === 'POST') {
+        const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+        try {
+          annotationSourceCandidates(body.file, body.renderer as AnnotationRenderer);
+          requiredAnnotationAnchorIds(body.requiredAnchorIds);
+        } catch (err) {
+          return error(400, err instanceof Error ? err.message : 'Invalid annotation source');
+        }
+        try {
+          const result = CourseService.prepareAnnotationSource(courseId, body.file as string, body.renderer as AnnotationRenderer, requiredAnnotationAnchorIds(body.requiredAnchorIds));
+          return result ? json(result) : error(404, 'Annotation source file not found');
+        } catch (err) {
+          if (err instanceof AnnotationSourceConflictError) return error(409, err.message);
+          console.error('Failed to persist annotation anchors:', err);
+          return error(500, 'Could not persist annotation anchors');
+        }
+      }
+
       // ---- Checkpoints for course ----
       // GET /api/courses/:course_id/annotations
       if (subpath === 'annotations' && method === 'GET') {
@@ -3716,7 +3787,7 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
           const htmlPath = safeJoin(courseDir, `${lessonId}.lesson.html`);
           if (!fs.existsSync(htmlPath)) return error(404, 'HTML source not found');
 
-          let html = fs.readFileSync(htmlPath, 'utf8');
+          let html = instrumentHtmlAnchors(fs.readFileSync(htmlPath, 'utf8'));
 
           // Inject <base href> so relative asset paths (./assets/...) resolve through our proxy
           const baseTag = `<base href="/api/courses/${courseId}/">`;

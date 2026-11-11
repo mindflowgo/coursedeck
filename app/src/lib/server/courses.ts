@@ -8,6 +8,8 @@ import { tabFileName, courseDocFileName, parseDocFileName, parseUnitNumber, isUn
 import { parseFrontmatter } from '../parser/frontmatter';
 import { computeSummaryDensity, countWords } from '../parser/scheduleMetrics';
 import { stripLessonMedia } from '../markdown/stripMedia';
+import { annotationSourceFile, assertAnnotationAnchorIds, instrumentMarkdownAnchors, type AnnotationRenderer } from '../checkpoint/sourceAnchors';
+import { instrumentHtmlAnchors } from '../checkpoint/htmlSourceAnchors';
 import type { LessonEffort, PlannedSession } from '../scheduleGenerator';
 export type { LessonEffort };
 
@@ -88,6 +90,34 @@ export interface SchedulePayloadStats {
 }
 
 export class CourseService {
+  /** Explicit lazy migration: normal reads never rewrite a course source. */
+  static prepareAnnotationSource(courseId: string, file: string, renderer: AnnotationRenderer, requiredIds: string[] = []) {
+    const dir = this.courseDir(courseId);
+    const stem = file.replace(/\.lesson\.(?:md|html)$/, '');
+    const hasOriginal = fs.existsSync(safeJoin(dir, `${stem}.lesson.html`)) || fs.existsSync(safeJoin(dir, `${stem}.lesson.pdf`));
+    const sourceFile = annotationSourceFile(file, renderer, hasOriginal);
+    const sourcePath = safeJoin(dir, sourceFile);
+    if (!fs.existsSync(sourcePath)) return null;
+    const realDir = fs.realpathSync(dir);
+    const realPath = fs.realpathSync(sourcePath);
+    if (path.dirname(realPath) !== realDir || path.dirname(realDir) !== fs.realpathSync(this.getCoursesDir())) {
+      throw new Error('Annotation source escapes course directory');
+    }
+    const original = fs.readFileSync(sourcePath, 'utf8');
+    const content = renderer === 'html' ? instrumentHtmlAnchors(original) : instrumentMarkdownAnchors(original);
+    assertAnnotationAnchorIds(content, renderer, requiredIds);
+    if (content !== original) {
+      const temporary = safeJoin(dir, `${sourceFile}.anchors-${crypto.randomUUID()}.tmp`);
+      try {
+        fs.writeFileSync(temporary, content, { encoding: 'utf8', flag: 'wx', mode: fs.statSync(sourcePath).mode });
+        fs.renameSync(temporary, sourcePath);
+      } finally {
+        if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+      }
+    }
+    return { sourceFile, content, renderer };
+  }
+
   static getCoursesDir(): string {
     return resolveCoursesDir();
   }

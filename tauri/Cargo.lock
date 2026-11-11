@@ -4735,6 +4735,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-pencilkit"
 version = "0.1.0"
+source = "git+https://github.com/mindflowgo/tauri-plugin-pencilkit.git#64f979d943ed7ec3fcab640620515bd4e4f64f93"
 dependencies = [
  "log",
  "serde",

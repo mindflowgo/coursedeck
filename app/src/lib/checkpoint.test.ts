@@ -13,6 +13,23 @@ import {
   resolveRouteFromFile,
   type Checkpoint
 } from './checkpoint';
+import { checkpointBelongsToSource } from './checkpoint';
+
+describe('file-local annotation ownership', () => {
+  const cp = { id: 'note', file: '01-01.lesson.md', type: 'note' as const, verticalPosition: 200, date: '2026-11-11' };
+  it('does not share an original HTML note with its Markdown companion', () => {
+    const note = { ...cp, anchor: { type: 'block' as const, verticalPosition: 200, sourceFile: '01-01.lesson.html', renderer: 'html' as const } };
+    expect(checkpointBelongsToSource(note, '01-01.lesson.html', 'html')).toBe(true);
+    expect(checkpointBelongsToSource(note, '01-01.lesson.companion.md', 'markdown')).toBe(false);
+  });
+  it('requires explicit source and renderer identity', () => {
+    expect(checkpointBelongsToSource(cp, '01-01.lesson.html', 'html')).toBe(false);
+    expect(checkpointBelongsToSource(cp, '01-01.lesson.companion.md', 'markdown')).toBe(false);
+    const note = { ...cp, anchor: { type: 'block' as const, verticalPosition: 200, sourceFile: '01-01.lesson.companion.md', renderer: 'markdown' as const } };
+    expect(checkpointBelongsToSource(note, '01-01.lesson.companion.md', 'markdown')).toBe(true);
+    expect(checkpointBelongsToSource(note, '01-01.lesson.companion.md', 'html')).toBe(false);
+  });
+});
 
 describe('Checkpoint contract normalization', () => {
   it('normalizeAiStatus maps legacy values onto the canonical set', () => {
@@ -51,7 +68,7 @@ describe('Checkpoint contract normalization', () => {
       aiStatus: 'ready',
       aiAnswer: 'text',
       anchor: { type: 'pixel', verticalPosition: 100 },
-      selection: { text: 'quote', prefix: 'pre', suffix: 'post', blockIndex: 3, charStart: 4, charEnd: 9 }
+      selection: { text: 'quote', prefix: 'pre', suffix: 'post', startAnchorId: 'cd-test', endAnchorId: 'cd-test', charStart: 4, charEnd: 9 }
     });
     expect(legacy).not.toBeNull();
     expect(legacy!.aiStatus).toBe('done');

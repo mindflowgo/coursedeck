@@ -1,12 +1,13 @@
 /**
  * Fetches precompiled PDFium binaries from bblanchon/pdfium-binaries.
- * Supports macOS (arm64/x64), Windows (x64), and iOS (device/simulator).
+ * Supports macOS (arm64/x64), Windows (x64), Linux (x64/arm64), and iOS (device/simulator).
  *
  * Usage:
- *   bun run scripts/fetch-pdfium.ts          # fetches current platform + stages for desktop
- *   bun run scripts/fetch-pdfium.ts --all    # fetches all platforms (desktop + iOS)
- *   bun run scripts/fetch-pdfium.ts --ios    # fetches iOS frameworks and creates XCFramework
- *   bun run scripts/fetch-pdfium.ts --force  # re-downloads even if binaries already exist
+ *   bun run scripts/fetch-pdfium.ts                     # fetches current platform + stages for desktop
+ *   bun run scripts/fetch-pdfium.ts --target linux-x64  # fetches specific target platform
+ *   bun run scripts/fetch-pdfium.ts --all               # fetches all platforms (desktop + iOS)
+ *   bun run scripts/fetch-pdfium.ts --ios               # fetches iOS frameworks and creates XCFramework
+ *   bun run scripts/fetch-pdfium.ts --force             # re-downloads even if binaries already exist
  */
 
 import fs from 'node:fs';
@@ -46,6 +47,18 @@ const DESKTOP_TARGETS: Record<string, DownloadTarget> = {
     archive: 'pdfium-win-x64.tgz',
     extractPath: 'bin/pdfium.dll',
     destFile: path.join(TAURI_BIN_DIR, 'pdfium.dll')
+  },
+  'linux-x64': {
+    name: 'Linux x64',
+    archive: 'pdfium-linux-x64.tgz',
+    extractPath: 'lib/libpdfium.so',
+    destFile: path.join(TAURI_BIN_DIR, 'libpdfium.so')
+  },
+  'linux-arm64': {
+    name: 'Linux arm64',
+    archive: 'pdfium-linux-arm64.tgz',
+    extractPath: 'lib/libpdfium.so',
+    destFile: path.join(TAURI_BIN_DIR, 'libpdfium.so')
   }
 };
 
@@ -83,6 +96,12 @@ async function fetchDesktopTarget(targetKey: string, force = false) {
         fs.copyFileSync(target.destFile, rootDylib);
       }
     }
+    if (targetKey.startsWith('linux') && process.platform === 'linux') {
+      const rootSo = path.join(TAURI_DIR, 'libpdfium.so');
+      if (!fs.existsSync(rootSo)) {
+        fs.copyFileSync(target.destFile, rootSo);
+      }
+    }
     return;
   }
 
@@ -93,6 +112,11 @@ async function fetchDesktopTarget(targetKey: string, force = false) {
   if (targetKey.startsWith('darwin') && process.platform === 'darwin') {
     const rootDylib = path.join(TAURI_DIR, 'libpdfium.dylib');
     fs.copyFileSync(target.destFile, rootDylib);
+  }
+  // For Linux host machine, also place a copy directly in tauri/ for debug builds
+  if (targetKey.startsWith('linux') && process.platform === 'linux') {
+    const rootSo = path.join(TAURI_DIR, 'libpdfium.so');
+    fs.copyFileSync(target.destFile, rootSo);
   }
 }
 
@@ -168,6 +192,9 @@ async function main() {
   const isAll = args.includes('--all');
   const isIos = args.includes('--ios');
   const isForce = args.includes('--force');
+  const targetArg = args.find((a) => a.startsWith('--target='));
+  const targetIdx = args.indexOf('--target');
+  const explicitTarget = targetArg ? targetArg.split('=')[1] : targetIdx !== -1 ? args[targetIdx + 1] : undefined;
 
   fs.mkdirSync(TAURI_BIN_DIR, { recursive: true });
 
@@ -175,7 +202,10 @@ async function main() {
     await fetchIosFrameworks(isForce);
   }
 
-  if (isAll) {
+  if (explicitTarget) {
+    console.log(`[fetch-pdfium] Fetching explicitly requested target (${explicitTarget})...`);
+    await fetchDesktopTarget(explicitTarget, isForce);
+  } else if (isAll) {
     for (const key of Object.keys(DESKTOP_TARGETS)) {
       await fetchDesktopTarget(key, isForce);
     }

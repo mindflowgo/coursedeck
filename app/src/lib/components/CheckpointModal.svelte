@@ -11,7 +11,7 @@
   interface Props {
     checkpoint?: Partial<Checkpoint> | null;
     isOpen: boolean;
-    onSave: (data: { color: string; noteText: string }) => Promise<void> | void;
+    onSave: (data: { color: string; noteText: string }) => Promise<void | false> | void | false;
     onDelete?: () => Promise<void> | void;
     onClose: () => void;
   }
@@ -50,11 +50,11 @@
     if (isSaving) return;
     isSaving = true;
     try {
-      await onSave({
+      const result = await onSave({
         color: selectedColorId,
         noteText: noteText.trim()
       });
-      onClose();
+      if (result !== false) onClose();
     } finally {
       isSaving = false;
     }

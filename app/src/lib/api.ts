@@ -1,4 +1,5 @@
 import { isCheckpointType, normalizeAiStatus, type Anchor, type Checkpoint, type SelectionRange } from '$lib/checkpoint';
+import { AnnotationSourceConflictError, annotationSourceCandidates, requiredAnnotationAnchorIds, type AnnotationRenderer } from '$lib/checkpoint/sourceAnchors';
 import * as store from './storage/clientStore';
 import { pdfGetInfo } from './pdfClient';
 import { invoke } from '@tauri-apps/api/core';
@@ -676,7 +677,26 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     return jsonRes({ schedules });
   }
 
-  const reservedSubpaths = ['course-docs', 'checkpoints', 'annotations', 'open', 'meta', 'unit-test', 'export-pdf', 'locker-docs'];
+  const anchorSourceMatch = pathname.match(/^\/api\/courses\/([^/]+)\/annotation-anchors$/);
+  if (anchorSourceMatch && method === 'POST') {
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse((init?.body as string) || '{}');
+      annotationSourceCandidates(body.file, body.renderer as AnnotationRenderer);
+      requiredAnnotationAnchorIds(body.requiredAnchorIds);
+    } catch (err) {
+      return jsonRes({ message: err instanceof Error ? err.message : 'Invalid annotation source' }, 400);
+    }
+    try {
+      const source = await store.prepareAnnotationSourceLocally(decodeURIComponent(anchorSourceMatch[1]), body.file as string, body.renderer as AnnotationRenderer, requiredAnnotationAnchorIds(body.requiredAnchorIds));
+      return source ? jsonRes(source) : jsonRes({ message: 'Annotation source file not found' }, 404);
+    } catch (err) {
+      if (err instanceof AnnotationSourceConflictError) return jsonRes({ message: err.message }, 409);
+      return jsonRes({ message: err instanceof Error ? err.message : String(err) }, 500);
+    }
+  }
+
+  const reservedSubpaths = ['course-docs', 'checkpoints', 'annotations', 'annotation-anchors', 'open', 'meta', 'unit-test', 'export-pdf', 'locker-docs'];
 
   // GET|DELETE /api/courses/:id
   const courseGetMatch = pathname.match(/^\/api\/courses\/([^/]+)$/);

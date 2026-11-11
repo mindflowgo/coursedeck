@@ -79,19 +79,16 @@ export interface Checkpoint {
   aiStatus?: AiStatus;
 }
 
-export type AnchorType = 'pixel' | 'paragraph' | 'element-id' | 'pdf-page';
+export type AnchorType = 'pixel' | 'pdf-page' | 'block';
 
 export interface Anchor {
   type: AnchorType;
-  verticalPosition: number;    // always kept as pixel fallback
-
-  /** Markdown: 0-based index among block elements (p, h1–h6, li, blockquote, pre, table) */
-  paragraphIndex?: number;
-
-  /** HTML iframe: nearest ancestor's id attribute */
-  elementId?: string;
-  /** HTML iframe fallback when no id exists */
-  elementPath?: string;
+  verticalPosition: number;    // content position when an anchor cannot currently be resolved
+  blockId?: string;
+  charOffset?: number;
+  yRatio?: number;
+  sourceFile?: string;
+  renderer?: 'html' | 'markdown';
 
   /** PDF: 1-based page number */
   pdfPage?: number;
@@ -102,16 +99,14 @@ export interface Anchor {
 export interface SelectionRange {
   /** The raw selected text (exact quote) */
   text: string;
+  startAnchorId?: string;
+  endAnchorId?: string;
 
   /** Disambiguation context: text immediately before the quote */
   prefix?: string;
   /** Disambiguation context: text immediately after the quote */
   suffix?: string;
 
-  /** Markdown renderer: 0-based index of the block containing the selection start */
-  blockIndex?: number;
-  /** Markdown renderer: 0-based index of the block containing the selection end */
-  endBlockIndex?: number;
   /** Markdown renderer: character offsets within the respective blocks' text content */
   charStart?: number;
   charEnd?: number;
@@ -126,12 +121,18 @@ export interface SelectionRange {
  * information to re-resolve the exact DOM position after a reload.
  */
 export interface SelectionEndpoint {
-  /** Nearest ancestor element with an id */
-  elementId?: string;
-  /** CSS-like path fallback when no id exists */
-  elementPath?: string;
+  anchorId?: string;
   /** Character offset within the endpoint element's text content */
   charOffset?: number;
+}
+
+/** An annotation is visible only in its tagged source file and renderer. */
+export function checkpointBelongsToSource(
+  checkpoint: Checkpoint,
+  sourceFile: string,
+  renderer: 'html' | 'markdown'
+): boolean {
+  return checkpoint.anchor?.sourceFile === sourceFile && checkpoint.anchor.renderer === renderer;
 }
 
 export interface CheckpointColor {
@@ -396,35 +397,6 @@ export function derivePdfMarkupCheckpoints(
   }
 
   return list;
-}
-
-/**
- * Given a checkpoint with a paragraph anchor, resolves the best pixel top offset
- * for rendering a marker inside the reader's scroll container. Rect-based so
- * nested offset parents and reader padding cannot displace markers. Falls back
- * to verticalPosition when no paragraph anchor resolves.
- */
-export function resolveMarkdownAnchorPixel(
-  cp: Checkpoint,
-  container: HTMLElement,
-  scroller?: HTMLElement | null
-): number {
-  if (cp.anchor?.type === 'paragraph' && cp.anchor.paragraphIndex !== undefined) {
-    const blocks = container.querySelectorAll<HTMLElement>(
-      'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, table'
-    );
-    const el = blocks[cp.anchor.paragraphIndex];
-    if (el) {
-      const sc = scroller ?? container.parentElement;
-      if (sc instanceof HTMLElement) {
-        const elRect = el.getBoundingClientRect();
-        const scRect = sc.getBoundingClientRect();
-        return elRect.top - scRect.top + sc.scrollTop;
-      }
-      return el.offsetTop;
-    }
-  }
-  return cp.verticalPosition;
 }
 
 /**

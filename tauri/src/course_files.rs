@@ -181,6 +181,102 @@ pub fn read_course_doc(
     Ok(None)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnotationSource {
+    pub source_file: String,
+    pub content: String,
+    pub renderer: String,
+}
+
+static ANNOTATION_SOURCE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn annotation_source_path(root: &Path, course_id: &str, file: &str) -> Result<PathBuf, String> {
+    if course_id.is_empty() || !course_id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_') {
+        return Err("Invalid course identifier".into());
+    }
+    if file.is_empty() || !file.as_bytes()[0].is_ascii_alphanumeric()
+        || file.split('.').any(|part| part.is_empty() || !part.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
+        || !(file.ends_with(".md") || file.ends_with(".html")) {
+        return Err("Invalid annotation source filename".into());
+    }
+    let dir = course_dir(root, course_id);
+    let canonical_root = root.canonicalize().map_err(|e| e.to_string())?;
+    let canonical_dir = dir.canonicalize().map_err(|e| e.to_string())?;
+    if canonical_dir.parent() != Some(canonical_root.as_path()) {
+        return Err("Annotation course escapes source directory".into());
+    }
+    let source = dir.join(file);
+    if source.exists() {
+        let canonical_source = source.canonicalize().map_err(|e| e.to_string())?;
+        if canonical_source.parent() != Some(canonical_dir.as_path()) {
+            return Err("Annotation source escapes course directory".into());
+        }
+    }
+    Ok(source)
+}
+
+pub fn read_annotation_source(root: &Path, course_id: &str, file: &str, renderer: &str) -> Result<Option<AnnotationSource>, String> {
+    // Validate the requested name before deriving an original or companion.
+    annotation_source_path(root, course_id, file)?;
+    let stem = file.strip_suffix(".lesson.md").or_else(|| file.strip_suffix(".lesson.html"));
+    let source_file = match renderer {
+        "html" => format!("{}.lesson.html", stem.ok_or("HTML annotations require a lesson HTML source")?),
+        "markdown" => {
+            if let Some(stem) = stem {
+                let dir = course_dir(root, course_id);
+                if dir.join(format!("{stem}.lesson.html")).exists() || dir.join(format!("{stem}.lesson.pdf")).exists() {
+                    format!("{stem}.lesson.companion.md")
+                } else {
+                    format!("{stem}.lesson.md")
+                }
+            } else if file.ends_with(".md") { file.to_string() }
+            else { return Err("Markdown annotations require a Markdown source".into()); }
+        },
+        _ => return Err("Invalid annotation renderer".into()),
+    };
+    let path = annotation_source_path(root, course_id, &source_file)?;
+    if !path.exists() { return Ok(None); }
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    Ok(Some(AnnotationSource { source_file, content, renderer: renderer.to_string() }))
+}
+
+/// Compare-and-swap prevents a lazy migration from overwriting an intervening edit.
+pub fn save_annotation_source(root: &Path, course_id: &str, source_file: &str, expected_content: &str, content: &str) -> Result<(), String> {
+    let _guard = ANNOTATION_SOURCE_WRITE.lock().map_err(|e| e.to_string())?;
+    let path = annotation_source_path(root, course_id, source_file)?;
+    let original = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    if original != expected_content { return Err("Annotation source changed; retry the annotation".into()); }
+    if original != content { write_file_atomic(&path, content.as_bytes())?; }
+    Ok(())
+}
+
+#[cfg(test)]
+mod annotation_source_tests {
+    use super::*;
+
+    #[test]
+    fn annotation_source_is_file_local_and_rejects_stale_writes() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("coursedeck-anchor-test-{}-{unique}", std::process::id()));
+        let dir = root.join("example");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("01.01.lesson.html"), "<p>Original</p>").unwrap();
+        std::fs::write(dir.join("01.01.lesson.companion.md"), "Companion").unwrap();
+        let html = read_annotation_source(&root, "EXAMPLE", "01.01.lesson.md", "html").unwrap().unwrap();
+        assert_eq!(html.source_file, "01.01.lesson.html");
+        let markdown = read_annotation_source(&root, "example", "01.01.lesson.md", "markdown").unwrap().unwrap();
+        assert_eq!(markdown.source_file, "01.01.lesson.companion.md");
+        save_annotation_source(&root, "example", &html.source_file, &html.content, "<p data-anchor-id=\"keep\">Original</p>").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(&markdown.source_file)).unwrap(), "Companion");
+        assert!(save_annotation_source(&root, "example", &html.source_file, &html.content, "stale").is_err());
+        assert!(read_annotation_source(&root, "../example", "01.01.lesson.md", "html").is_err());
+        assert!(read_annotation_source(&root, "example", "../outside.md", "markdown").is_err());
+        assert!(read_annotation_source(&root, "example", "C:\\outside.md", "markdown").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
 pub fn save_course_doc(
     courses_root: &Path,
     course_id: &str,
