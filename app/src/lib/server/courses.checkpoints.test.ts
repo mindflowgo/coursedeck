@@ -75,6 +75,38 @@ describe('CourseService checkpoint persistence', () => {
     expect(fs.readFileSync(path.join(courseDir, '09.02.lesson.html'), 'utf8')).toBe(pushedHtml);
   });
 
+  it('only writes anchors for annotated blocks when requiredAnchorIds are specified', async () => {
+    const { handleApiRequest } = await import('./api');
+    const { instrumentMarkdownAnchors } = await import('../checkpoint/sourceAnchors');
+    const sourceFile = '09.04.notes.md';
+    const filePath = path.join(courseDir, sourceFile);
+    const content = '# Notes Title\n\nSection intro.\n\nKey definition to highlight.\n\nClosing summary.\n';
+    fs.writeFileSync(filePath, content);
+
+    // Compute deterministic IDs in memory
+    const inMemory = instrumentMarkdownAnchors(content);
+    const ids = Array.from(inMemory.matchAll(/<!--coursedeck-anchor:([^>]+)-->/g), (m) => m[1]);
+    expect(ids).toHaveLength(4);
+
+    const definitionId = ids[2]; // "Key definition to highlight."
+    const request = new Request(`http://localhost/api/courses/${courseId}/annotation-anchors`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: sourceFile, renderer: 'markdown', requiredAnchorIds: [definitionId] })
+    });
+    const res = await handleApiRequest(request, new URL(request.url));
+    expect(res.status).toBe(200);
+
+    const onDisk = fs.readFileSync(filePath, 'utf8');
+    const diskAnchors = Array.from(onDisk.matchAll(/<!--coursedeck-anchor:([^>]+)-->/g), (m) => m[1]);
+    // ONLY the single targeted anchor was written to disk!
+    expect(diskAnchors).toEqual([definitionId]);
+    expect(onDisk).toContain(`<!--coursedeck-anchor:${definitionId}-->\nKey definition to highlight.`);
+    expect(onDisk).not.toContain('<!--coursedeck-anchor:' + ids[0]);
+    expect(onDisk).not.toContain('<!--coursedeck-anchor:' + ids[1]);
+    expect(onDisk).not.toContain('<!--coursedeck-anchor:' + ids[3]);
+  });
+
   it('rejects stale HTML anchor sync before merging annotations or replacing newer content and IDs', async () => {
     const { handleApiRequest } = await import('./api');
     const file = '09.03.lesson.html';

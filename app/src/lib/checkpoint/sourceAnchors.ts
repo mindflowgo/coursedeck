@@ -51,7 +51,7 @@ export function sourceAnchorId(text: string, occurrence: number): string {
   return `a-${(a >>> 0).toString(16).padStart(8, '0')}${(b >>> 0).toString(16).padStart(8, '0')}`;
 }
 
-export function instrumentMarkdownAnchors(source: string): string {
+export function instrumentMarkdownAnchors(source: string, targetIds?: string[] | Set<string>): string {
   const frontmatter = /^(?:\uFEFF)?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(source)?.[0] || '';
   const body = source.slice(frontmatter.length);
   const used = new Set(Array.from(source.matchAll(/<!--coursedeck-anchor:([A-Za-z0-9_-]+)-->/g), (m) => m[1]));
@@ -59,6 +59,10 @@ export function instrumentMarkdownAnchors(source: string): string {
   let anchored = false;
   let result = frontmatter;
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
+  const targetSet = targetIds && (Array.isArray(targetIds) ? targetIds.length > 0 : targetIds.size > 0)
+    ? (targetIds instanceof Set ? targetIds : new Set(targetIds))
+    : null;
+
   for (const token of markdownBlocks(body)) {
     const raw = token.raw;
     if (token.type === 'space' || token.type === 'def') {
@@ -78,7 +82,9 @@ export function instrumentMarkdownAnchors(source: string): string {
       let id = sourceAnchorId(key, suffix);
       while (used.has(id)) id = sourceAnchorId(key, ++suffix);
       used.add(id);
-      result += `<!--coursedeck-anchor:${id}-->${newline}`;
+      if (!targetSet || targetSet.has(id)) {
+        result += `<!--coursedeck-anchor:${id}-->${newline}`;
+      }
     }
     anchored = false;
     result += token.original;

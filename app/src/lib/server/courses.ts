@@ -104,7 +104,7 @@ export class CourseService {
       throw new Error('Annotation source escapes course directory');
     }
     const original = fs.readFileSync(sourcePath, 'utf8');
-    const content = renderer === 'html' ? instrumentHtmlAnchors(original) : instrumentMarkdownAnchors(original);
+    const content = renderer === 'html' ? instrumentHtmlAnchors(original, requiredIds) : instrumentMarkdownAnchors(original, requiredIds);
     assertAnnotationAnchorIds(content, renderer, requiredIds);
     if (content !== original) {
       const temporary = safeJoin(dir, `${sourceFile}.anchors-${crypto.randomUUID()}.tmp`);

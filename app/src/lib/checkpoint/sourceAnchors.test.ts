@@ -68,4 +68,43 @@ describe('file-local source anchor migration', () => {
     expect(() => annotationSourceFile('C:\\course.schedule.md', 'markdown')).toThrow();
     expect(() => annotationSourceFile('course.schedule.md', 'html')).toThrow();
   });
+
+  it('only inserts anchors for targeted required IDs and leaves unannotated blocks clean', () => {
+    const source = '# Heading\n\nFirst paragraph.\n\nSecond paragraph.\n\nThird paragraph.\n';
+    // Full in-memory instrumentation
+    const inMemory = instrumentMarkdownAnchors(source);
+    const allIds = Array.from(inMemory.matchAll(/<!--coursedeck-anchor:([^>]+)-->/g), (m) => m[1]);
+    expect(allIds).toHaveLength(4);
+
+    // Target ONLY the second paragraph (allIds[2])
+    const targetedId = allIds[2];
+    const targetedOutput = instrumentMarkdownAnchors(source, [targetedId]);
+
+    // Only 1 anchor should be in the file
+    const targetedFound = Array.from(targetedOutput.matchAll(/<!--coursedeck-anchor:([^>]+)-->/g), (m) => m[1]);
+    expect(targetedFound).toEqual([targetedId]);
+    expect(targetedOutput).toContain(`<!--coursedeck-anchor:${targetedId}-->\nSecond paragraph.`);
+    expect(targetedOutput).not.toContain('<!--coursedeck-anchor:' + allIds[0]);
+    expect(targetedOutput).not.toContain('<!--coursedeck-anchor:' + allIds[1]);
+    expect(targetedOutput).not.toContain('<!--coursedeck-anchor:' + allIds[3]);
+
+    // Subsequent in-memory render of the targeted file reproduces all IDs identically
+    const reRendered = instrumentMarkdownAnchors(targetedOutput);
+    const reRenderedIds = Array.from(reRendered.matchAll(/<!--coursedeck-anchor:([^>]+)-->/g), (m) => m[1]);
+    expect(reRenderedIds).toEqual(allIds);
+  });
+
+  it('only adds HTML data-anchor-id for targeted required IDs and leaves unannotated elements clean', () => {
+    const source = '<p>First</p><p>Second</p><p>Third</p>';
+    const inMemory = instrumentHtmlAnchors(source);
+    const allIds = Array.from(inMemory.matchAll(/data-anchor-id="([^"]+)"/g), (m) => m[1]);
+    expect(allIds).toHaveLength(3);
+
+    // Target ONLY the second paragraph (allIds[1])
+    const targetedId = allIds[1];
+    const targetedOutput = instrumentHtmlAnchors(source, [targetedId]);
+    const targetedFound = Array.from(targetedOutput.matchAll(/data-anchor-id="([^"]+)"/g), (m) => m[1]);
+    expect(targetedFound).toEqual([targetedId]);
+    expect(targetedOutput).toBe(`<p>First</p><p data-anchor-id="${targetedId}">Second</p><p>Third</p>`);
+  });
 });

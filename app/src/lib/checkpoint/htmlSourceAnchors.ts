@@ -30,9 +30,13 @@ function transformStartTags(source: string, transform: (tag: string, name: strin
 }
 
 /** Insert attributes without reserializing the document or touching script text. */
-export function instrumentHtmlAnchors(source: string): string {
+export function instrumentHtmlAnchors(source: string, targetIds?: string[] | Set<string>): string {
   const used = new Set(Array.from(source.matchAll(/\bdata-anchor-id\s*=\s*["']([^"']+)["']/gi), (m) => m[1]));
   const counts = new Map<string, number>();
+  const targetSet = targetIds && (Array.isArray(targetIds) ? targetIds.length > 0 : targetIds.size > 0)
+    ? (targetIds instanceof Set ? targetIds : new Set(targetIds))
+    : null;
+
   return transformStartTags(source, (tag, name) => {
     if (BLOCKS.has(name) && !/\sdata-anchor-id(?:\s|=|\/?>)/i.test(tag)) {
       const occurrence = counts.get(tag) || 0;
@@ -41,7 +45,9 @@ export function instrumentHtmlAnchors(source: string): string {
       let id = sourceAnchorId(tag, suffix);
       while (used.has(id)) id = sourceAnchorId(tag, ++suffix);
       used.add(id);
-      tag = tag.replace(/\s*\/?>$/, (end) => ` data-anchor-id="${id}"${end}`);
+      if (!targetSet || targetSet.has(id)) {
+        tag = tag.replace(/\s*\/?>$/, (end) => ` data-anchor-id="${id}"${end}`);
+      }
     }
     return tag;
   });

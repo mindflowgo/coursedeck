@@ -356,7 +356,7 @@ export async function prepareAnnotationSourceLocally(courseId: string, file: str
     source = content === undefined ? null : { sourceFile, content, renderer };
   }
   if (!source) return null;
-  const content = renderer === 'html' ? instrumentHtmlAnchors(source.content) : instrumentMarkdownAnchors(source.content);
+  const content = renderer === 'html' ? instrumentHtmlAnchors(source.content, requiredIds) : instrumentMarkdownAnchors(source.content, requiredIds);
   assertAnnotationAnchorIds(content, renderer, requiredIds);
   if (native) {
     try {
