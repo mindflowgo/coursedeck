@@ -6,7 +6,61 @@ import type { MarkupStroke } from './markup/types';
  * Checkpoint domain models, color palette, and routing utilities.
  */
 
-export type CheckpointType = 'note' | 'position' | 'markup';
+export type CheckpointType = 'note' | 'position' | 'markup' | 'highlight' | 'ai';
+
+/** The only AI generation statuses written by current clients. */
+export type AiStatus = 'pending' | 'done' | 'error';
+
+export const CHECKPOINT_TYPES: readonly CheckpointType[] = [
+  'note',
+  'position',
+  'markup',
+  'highlight',
+  'ai'
+];
+
+export function isCheckpointType(value: unknown): value is CheckpointType {
+  return typeof value === 'string' && (CHECKPOINT_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Coerces a stored or incoming AI status to the canonical set
+ * ('pending' | 'done' | 'error'). Legacy values map onto it; anything
+ * unrecognized yields undefined so callers can reject or drop the field.
+ */
+export function normalizeAiStatus(value: unknown): AiStatus | undefined {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  if (v === 'pending' || v === 'done' || v === 'error') return v;
+  // Legacy aliases written before the status contract was standardized.
+  if (v === 'ready' || v === 'complete' || v === 'completed' || v === 'success') return 'done';
+  if (v === 'failed' || v === 'fail') return 'error';
+  return undefined;
+}
+
+/**
+ * Validates and normalizes a raw checkpoint record (disk cache, sync push,
+ * or request body). Returns null when the record lacks identity fields.
+ */
+export function normalizeCheckpointRecord(raw: unknown): Checkpoint | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const cp = raw as Record<string, unknown>;
+  if (typeof cp.id !== 'string' || !cp.id) return null;
+  if (typeof cp.file !== 'string' || !cp.file) return null;
+  if (typeof cp.verticalPosition !== 'number' || Number.isNaN(cp.verticalPosition)) return null;
+
+  const normalized: Checkpoint = {
+    ...(cp as unknown as Checkpoint),
+    type: isCheckpointType(cp.type) ? cp.type : 'note'
+  };
+  const aiStatus = normalizeAiStatus(cp.aiStatus);
+  if (aiStatus) {
+    normalized.aiStatus = aiStatus;
+  } else {
+    delete normalized.aiStatus;
+  }
+  return normalized;
+}
 
 export interface Checkpoint {
   id: string;
@@ -18,6 +72,66 @@ export interface Checkpoint {
   noteText?: string;
   date: string; // ISO 8601
   deleted?: boolean; // tombstone: set when deleted locally, consumed by the desktop push merge
+  anchor?: Anchor;
+  selection?: SelectionRange;
+  aiQuestion?: string;
+  aiAnswer?: string;
+  aiStatus?: AiStatus;
+}
+
+export type AnchorType = 'pixel' | 'paragraph' | 'element-id' | 'pdf-page';
+
+export interface Anchor {
+  type: AnchorType;
+  verticalPosition: number;    // always kept as pixel fallback
+
+  /** Markdown: 0-based index among block elements (p, h1–h6, li, blockquote, pre, table) */
+  paragraphIndex?: number;
+
+  /** HTML iframe: nearest ancestor's id attribute */
+  elementId?: string;
+  /** HTML iframe fallback when no id exists */
+  elementPath?: string;
+
+  /** PDF: 1-based page number */
+  pdfPage?: number;
+  /** PDF: fractional Y within the page canvas (0 = top, 1 = bottom) */
+  pdfYRatio?: number;
+}
+
+export interface SelectionRange {
+  /** The raw selected text (exact quote) */
+  text: string;
+
+  /** Disambiguation context: text immediately before the quote */
+  prefix?: string;
+  /** Disambiguation context: text immediately after the quote */
+  suffix?: string;
+
+  /** Markdown renderer: 0-based index of the block containing the selection start */
+  blockIndex?: number;
+  /** Markdown renderer: 0-based index of the block containing the selection end */
+  endBlockIndex?: number;
+  /** Markdown renderer: character offsets within the respective blocks' text content */
+  charStart?: number;
+  charEnd?: number;
+
+  /** HTML iframe renderer: resolved endpoints (see SelectionEndpoint) */
+  start?: SelectionEndpoint;
+  end?: SelectionEndpoint;
+}
+
+/**
+ * A serialized selection endpoint for the HTML iframe renderer: enough
+ * information to re-resolve the exact DOM position after a reload.
+ */
+export interface SelectionEndpoint {
+  /** Nearest ancestor element with an id */
+  elementId?: string;
+  /** CSS-like path fallback when no id exists */
+  elementPath?: string;
+  /** Character offset within the endpoint element's text content */
+  charOffset?: number;
 }
 
 export interface CheckpointColor {
@@ -282,6 +396,35 @@ export function derivePdfMarkupCheckpoints(
   }
 
   return list;
+}
+
+/**
+ * Given a checkpoint with a paragraph anchor, resolves the best pixel top offset
+ * for rendering a marker inside the reader's scroll container. Rect-based so
+ * nested offset parents and reader padding cannot displace markers. Falls back
+ * to verticalPosition when no paragraph anchor resolves.
+ */
+export function resolveMarkdownAnchorPixel(
+  cp: Checkpoint,
+  container: HTMLElement,
+  scroller?: HTMLElement | null
+): number {
+  if (cp.anchor?.type === 'paragraph' && cp.anchor.paragraphIndex !== undefined) {
+    const blocks = container.querySelectorAll<HTMLElement>(
+      'p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, table'
+    );
+    const el = blocks[cp.anchor.paragraphIndex];
+    if (el) {
+      const sc = scroller ?? container.parentElement;
+      if (sc instanceof HTMLElement) {
+        const elRect = el.getBoundingClientRect();
+        const scRect = sc.getBoundingClientRect();
+        return elRect.top - scRect.top + sc.scrollTop;
+      }
+      return el.offsetTop;
+    }
+  }
+  return cp.verticalPosition;
 }
 
 /**

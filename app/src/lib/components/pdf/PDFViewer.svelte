@@ -1,6 +1,7 @@
 <script lang="ts">
   import { isTauriEnvironment, pdfGetInfo, type PdfDocumentInfo } from '$lib/pdfClient';
   import ViewerToolbar from './ViewerToolbar.svelte';
+  import type { BookmarkedLesson } from './ReadingGuideOverlay.svelte';
   import { Loader2, FileWarning, RefreshCw } from 'lucide-svelte';
 
   interface Props {
@@ -11,6 +12,7 @@
     lessonTitle?: string;
     pageRange?: string;
     readingDescription?: string;
+    bookmarkedLessons?: BookmarkedLesson[];
     initialPage?: number | null;
     onPageChange?: (page: number) => void;
   }
@@ -23,6 +25,7 @@
     lessonTitle = '',
     pageRange = '',
     readingDescription = '',
+    bookmarkedLessons = [],
     initialPage = null,
     onPageChange
   }: Props = $props();
@@ -108,6 +111,7 @@
     {lessonTitle}
     {pageRange}
     {readingDescription}
+    {bookmarkedLessons}
     {initialPage}
     {onPageChange}
   />

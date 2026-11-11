@@ -35,6 +35,7 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.36.2",
+    "@firecrawl/pdf-inspector": "^1.25.2",
     "@lacspace/mailer": "^1.3.0",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-barcode-scanner": "2",

@@ -104,7 +104,7 @@
             style="color: {activeColor.dot}; fill: {activeColor.dot};"
           />
           <h2 class="text-sm font-semibold text-stone-900 dark:text-stone-100">
-            {checkpoint?.id ? 'Edit Checkpoint Note' : 'Add Checkpoint Note'}
+            {checkpoint?.id ? 'Edit Note' : checkpoint?.selection?.text ? 'Note on Selection' : 'Add Checkpoint Note'}
           </h2>
         </div>
 
@@ -122,6 +122,14 @@
 
       <!-- EDIT FORM -->
       <div class="p-5 space-y-4">
+        {#if checkpoint?.selection?.text}
+          <div class="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-200 italic leading-relaxed">
+            <span class="not-italic font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wider text-[10px] mr-1.5">Selection</span>"{checkpoint.selection.text.length > 200
+              ? checkpoint.selection.text.slice(0, 200) + '…'
+              : checkpoint.selection.text}"
+          </div>
+        {/if}
+
         <!-- Color Picker: First set grouped together then second set grouped together -->
         <div>
           <div class="flex items-center justify-between mb-2">

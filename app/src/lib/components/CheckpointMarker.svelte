@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { FlagTriangleRight, Edit3, Trash2 } from 'lucide-svelte';
+  import { FlagTriangleRight, Edit3, Trash2, Sparkles, Highlighter } from 'lucide-svelte';
   import {
     formatCheckpointDate,
     getCheckpointColor,
@@ -9,6 +9,8 @@
 
   interface Props {
     checkpoint: Checkpoint;
+    /** Override pixel top position (computed from anchor at render time). Falls back to checkpoint.verticalPosition. */
+    resolvedTop?: number;
     isOpen?: boolean;
     isActive?: boolean;
     side?: 'left' | 'right';
@@ -17,17 +19,21 @@
     onDelete?: (checkpoint: Checkpoint) => void;
     onClose?: (checkpoint: Checkpoint) => void;
     onClick?: (checkpoint: Checkpoint) => void;
+    /** Retry a failed AI generation for this checkpoint. */
+    onRetryAi?: (checkpoint: Checkpoint) => void;
   }
 
   let {
     checkpoint,
+    resolvedTop,
     isOpen = false,
     isActive = false,
     side = 'right',
     onToggle,
     onEdit,
     onDelete,
-    onClick
+    onClick,
+    onRetryAi
   }: Props = $props();
 
   let color: CheckpointColor = $derived(getCheckpointColor(checkpoint.color));
@@ -72,7 +78,7 @@
 
 <div
   class="absolute {side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'} z-20 flex items-center"
-  style="top: {checkpoint.verticalPosition}px;"
+  style="top: {resolvedTop ?? checkpoint.verticalPosition}px;"
 >
   <!-- Circular Marker Dot + Date -->
   <div class="relative flex flex-col items-center justify-center -translate-y-[68%]">
@@ -94,16 +100,22 @@
       title={isOpen ? 'Close note' : checkpoint.noteText ? `Checkpoint (${formattedDate}): ${checkpoint.noteText}` : `Checkpoint (${formattedDate})`}
       aria-label={isOpen ? 'Close checkpoint note' : `Open checkpoint note from ${formattedDate}`}
     >
-      <FlagTriangleRight
-        class="w-5 h-5 drop-shadow-xs {color.isLight ? 'text-stone-900 fill-stone-900' : 'text-white fill-white'}"
-      />
+      {#if checkpoint.type === 'ai'}
+        <Sparkles class="w-4 h-4 drop-shadow-xs {color.isLight ? 'text-stone-900' : 'text-white'}" />
+      {:else if checkpoint.type === 'highlight'}
+        <Highlighter class="w-4 h-4 drop-shadow-xs {color.isLight ? 'text-stone-900' : 'text-white'}" />
+      {:else}
+        <FlagTriangleRight
+          class="w-5 h-5 drop-shadow-xs {color.isLight ? 'text-stone-900 fill-stone-900' : 'text-white fill-white'}"
+        />
+      {/if}
     </button>
   </div>
 
-  <!-- Non-editable Overlay Post-It Note expanding to the left (250px by 100px scrollable) -->
+  <!-- Non-editable Overlay Post-It Note expanding to the left -->
   {#if isOpen}
     <div
-      class="absolute {side === 'left' ? 'left-[calc(100%+12px)]' : 'right-[calc(100%+12px)]'} top-0 -translate-y-1/2 w-[250px] h-[100px] rounded-xl border shadow-xl flex flex-col overflow-hidden z-30 transition-all select-text bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)] text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
+      class="absolute {side === 'left' ? 'left-[calc(100%+12px)]' : 'right-[calc(100%+12px)]'} top-0 -translate-y-1/2 {checkpoint.type === 'ai' ? 'w-[320px] min-h-[120px] max-h-[220px]' : 'w-[250px] h-[100px]'} rounded-xl border shadow-xl flex flex-col overflow-hidden z-30 transition-all select-text bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)] text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
       style="
         --note-bg-light: {color.bgLight};
         --note-bg-dark: {color.bgDark};
@@ -116,7 +128,7 @@
       <!-- Top colored sticky strip accent -->
       <div class="h-1 w-full shrink-0" style="background-color: {color.dot};"></div>
 
-      <!-- Note body: scrollable text inside 100px total height, text starts on first line -->
+      <!-- Note body: scrollable text inside note height, text starts on first line -->
       <div
         class="flex-1 overflow-y-auto px-2.5 py-2 text-xs font-medium leading-relaxed select-text whitespace-pre-wrap break-words scrollbar-thin"
       >
@@ -169,7 +181,42 @@
           {/if}
         </div>
 
-        {checkpoint.noteText || ''}
+        {#if checkpoint.type === 'ai'}
+          {#if checkpoint.aiStatus === 'pending'}
+            <div class="flex items-center gap-1.5 text-violet-600 dark:text-violet-400 italic text-[11px] py-1">
+              <div class="w-3 h-3 border border-violet-500 border-t-transparent rounded-full animate-spin shrink-0"></div>
+              <span>Asking AI…</span>
+            </div>
+          {:else if checkpoint.aiStatus === 'error'}
+            <div class="flex items-center gap-2 py-0.5">
+              <span class="text-rose-600 dark:text-rose-400 text-[11px] italic">AI answer failed.</span>
+              {#if onRetryAi}
+                <button
+                  type="button"
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    onRetryAi(checkpoint);
+                  }}
+                  class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 hover:bg-rose-200 dark:hover:bg-rose-900/60 transition cursor-pointer"
+                  title="Retry AI generation"
+                >
+                  Retry
+                </button>
+              {/if}
+            </div>
+            {#if checkpoint.aiAnswer}
+              <div class="text-[11px] opacity-70 whitespace-pre-wrap">{checkpoint.aiAnswer}</div>
+            {/if}
+          {:else}
+            <div class="text-[11px] leading-relaxed whitespace-pre-wrap">{checkpoint.aiAnswer || checkpoint.noteText}</div>
+          {/if}
+        {:else if checkpoint.type === 'highlight' && checkpoint.selection?.text && !checkpoint.noteText}
+          <div class="italic text-[11px] leading-relaxed opacity-80">"{checkpoint.selection.text.length > 120
+            ? checkpoint.selection.text.slice(0, 120) + '…'
+            : checkpoint.selection.text}"</div>
+        {:else}
+          {checkpoint.noteText || ''}
+        {/if}
       </div>
 
       <!-- Decorative pointer tether pointing towards the dot -->

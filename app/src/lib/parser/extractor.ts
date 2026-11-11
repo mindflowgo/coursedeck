@@ -76,6 +76,8 @@ export class ArchiveExtractor {
     fs.mkdirSync(path.join(assetsOutputDir, 'img'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'icons'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'locker_docs'), { recursive: true });
+    fs.mkdirSync(path.join(assetsOutputDir, 'css'), { recursive: true });
+    fs.mkdirSync(path.join(assetsOutputDir, 'fonts'), { recursive: true });
 
     const cleanZipName = zipBasename
       .replace(/\.(html\.zip|zip|mhtml|mht|html|htm)$/i, '')
@@ -106,16 +108,30 @@ export class ArchiveExtractor {
           fs.writeFileSync(dest, entry.getData());
         }
       }
-      // Extract documents & PDFs
-      else if (/\.(pdf|docx?|xlsx?|pptx?)$/i.test(ext)) {
+      // Extract documents & PDFs (or any document inside locker_docs/)
+      else if (entryName.toLowerCase().includes('locker_docs') || /\.(pdf|docx?|xlsx?|pptx?)$/i.test(ext)) {
         const dest = path.join(assetsOutputDir, 'locker_docs', filename);
         if (!fs.existsSync(dest)) {
           fs.writeFileSync(dest, entry.getData());
         }
       }
+      // Extract stylesheets (.css)
+      else if (ext === '.css') {
+        const dest = path.join(assetsOutputDir, 'css', filename);
+        if (!fs.existsSync(dest)) {
+          fs.writeFileSync(dest, entry.getData());
+        }
+      }
+      // Extract webfonts (.woff, .woff2, .ttf, .eot, .otf)
+      else if (/\.(woff2?|ttf|eot|otf)$/i.test(ext)) {
+        const dest = path.join(assetsOutputDir, 'fonts', filename);
+        if (!fs.existsSync(dest)) {
+          fs.writeFileSync(dest, entry.getData());
+        }
+      }
 
-      // Check for HTML lesson candidates
-      if (ext === '.html' || ext === '.htm') {
+      // Check for HTML lesson candidates (skip files in locker_docs)
+      if ((ext === '.html' || ext === '.htm') && !entryName.toLowerCase().includes('locker_docs')) {
         const lowerName = entryName.toLowerCase();
         const lowerFilename = filename.toLowerCase();
         const entryStem = path.basename(lowerFilename, ext);
@@ -229,6 +245,8 @@ export class ArchiveExtractor {
     fs.mkdirSync(path.join(assetsOutputDir, 'img'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'icons'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'locker_docs'), { recursive: true });
+    fs.mkdirSync(path.join(assetsOutputDir, 'css'), { recursive: true });
+    fs.mkdirSync(path.join(assetsOutputDir, 'fonts'), { recursive: true });
 
     // Locate boundary
     const boundaryMatch = raw.match(/boundary="?([^"\r\n]+)"?/i);
@@ -282,6 +300,32 @@ export class ArchiveExtractor {
       if (ctype.includes('pdf') || /\.(pdf|docx?|xlsx?)$/i.test(filename)) {
         if (filename && filename !== '/' && filename.length > 2) {
           const dest = path.join(assetsOutputDir, 'locker_docs', filename);
+          if (!fs.existsSync(dest)) {
+            const buf = encoding.includes('base64')
+              ? Buffer.from(body.replace(/\s+/g, ''), 'base64')
+              : Buffer.from(body, 'utf8');
+            fs.writeFileSync(dest, buf);
+          }
+        }
+      }
+
+      // Extract stylesheets
+      if (ctype.includes('text/css') || filename.endsWith('.css')) {
+        if (filename && filename !== '/' && filename.length > 2) {
+          const dest = path.join(assetsOutputDir, 'css', filename);
+          if (!fs.existsSync(dest)) {
+            const buf = encoding.includes('base64')
+              ? Buffer.from(body.replace(/\s+/g, ''), 'base64')
+              : Buffer.from(body, 'utf8');
+            fs.writeFileSync(dest, buf);
+          }
+        }
+      }
+
+      // Extract fonts
+      if (ctype.includes('font') || /\.(woff2?|ttf|eot|otf)$/i.test(filename)) {
+        if (filename && filename !== '/' && filename.length > 2) {
+          const dest = path.join(assetsOutputDir, 'fonts', filename);
           if (!fs.existsSync(dest)) {
             const buf = encoding.includes('base64')
               ? Buffer.from(body.replace(/\s+/g, ''), 'base64')
@@ -348,6 +392,8 @@ export class ArchiveExtractor {
     fs.mkdirSync(path.join(assetsOutputDir, 'img'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'icons'), { recursive: true });
     fs.mkdirSync(path.join(assetsOutputDir, 'locker_docs'), { recursive: true });
+    fs.mkdirSync(path.join(assetsOutputDir, 'css'), { recursive: true });
+    fs.mkdirSync(path.join(assetsOutputDir, 'fonts'), { recursive: true });
 
     // Look for companion folder: e.g. "Lesson 1.1_files" or "Lesson 1.1.files"
     const dir = path.dirname(htmlPath);
@@ -373,6 +419,12 @@ export class ArchiveExtractor {
             if (!fs.existsSync(dest)) fs.copyFileSync(filePath, dest);
           } else if (/\.(pdf|docx?|xlsx?)$/i.test(ext)) {
             const dest = path.join(assetsOutputDir, 'locker_docs', file);
+            if (!fs.existsSync(dest)) fs.copyFileSync(filePath, dest);
+          } else if (ext === '.css') {
+            const dest = path.join(assetsOutputDir, 'css', file);
+            if (!fs.existsSync(dest)) fs.copyFileSync(filePath, dest);
+          } else if (/\.(woff2?|ttf|eot|otf)$/i.test(ext)) {
+            const dest = path.join(assetsOutputDir, 'fonts', file);
             if (!fs.existsSync(dest)) fs.copyFileSync(filePath, dest);
           }
         }

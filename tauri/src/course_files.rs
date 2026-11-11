@@ -9,11 +9,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct LessonBundleResponse {
     pub course_id: String,
     pub lesson_id: String,
     pub lesson: String,
     pub tabs: HashMap<String, String>,
+    pub format: String,
+    pub has_companion: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -28,11 +31,11 @@ pub fn course_dir(courses_root: &Path, course_id: &str) -> PathBuf {
     courses_root.join(course_id.to_lowercase())
 }
 
-/// Normalizes a lesson id like `1.2` or `1.10` to zero-padded `01.02` / `01.10`,
-/// leaving non-lesson ids (`course.schedule`) untouched.
+/// Normalizes a lesson id like `1-2` or `1-10` to zero-padded `01-02` / `01-10`,
+/// leaving non-lesson ids (`course.schedule`, `01.unit`) untouched.
 pub fn normalize_lesson_id(s: &str) -> String {
     let s = s.trim().to_lowercase();
-    if let Some(pos) = s.find('.') {
+    if let Some(pos) = s.find('-') {
         let (first, rest) = s.split_at(pos);
         let rest = &rest[1..];
         if let Ok(u) = first.parse::<u32>() {
@@ -47,7 +50,7 @@ pub fn normalize_lesson_id(s: &str) -> String {
             if digits_end > 0 {
                 if let Ok(l) = rest[..digits_end].parse::<u32>() {
                     let suffix = &rest[digits_end..];
-                    return format!("{:02}.{:02}{}", u, l, suffix);
+                    return format!("{:02}-{:02}{}", u, l, suffix);
                 }
             }
         }
@@ -62,21 +65,47 @@ pub fn lesson_bundle(
     course_id: &str,
     lesson_id: &str,
 ) -> Result<LessonBundleResponse, String> {
-    let empty = LessonBundleResponse {
-        course_id: course_id.to_string(),
-        lesson_id: lesson_id.to_string(),
-        lesson: String::new(),
-        tabs: HashMap::new(),
-    };
     let course_dir = course_dir(courses_root, course_id);
     if !course_dir.exists() {
-        return Ok(empty);
+        return Ok(LessonBundleResponse {
+            course_id: course_id.to_string(),
+            lesson_id: lesson_id.to_string(),
+            lesson: String::new(),
+            tabs: HashMap::new(),
+            format: "markdown".to_string(),
+            has_companion: false,
+        });
     }
 
     let target_norm = normalize_lesson_id(lesson_id);
     let target_raw = lesson_id.trim().to_lowercase();
 
-    let mut lesson_content = String::new();
+    // 1. Detect primary format
+    let html_path = course_dir.join(format!("{}.lesson.html", target_norm));
+    let pdf_path  = course_dir.join(format!("{}.lesson.pdf", target_norm));
+    let md_path   = course_dir.join(format!("{}.lesson.md", target_norm));
+    let comp_path = course_dir.join(format!("{}.lesson.companion.md", target_norm));
+
+    let format = if html_path.exists() {
+        "html"
+    } else if pdf_path.exists() {
+        "pdf"
+    } else {
+        "markdown"
+    };
+
+    // 2. Load companion or lesson markdown
+    let lesson_content = if format != "markdown" {
+        std::fs::read_to_string(&comp_path).unwrap_or_default()
+    } else {
+        std::fs::read_to_string(&md_path).unwrap_or_default()
+    };
+
+    let has_companion = format != "markdown"
+        && comp_path.exists()
+        && !lesson_content.trim().is_empty();
+
+    // 3. Collect other tab files; skip companion files
     let mut tabs = HashMap::new();
     let mut matched_files = Vec::new();
 
@@ -89,6 +118,10 @@ pub fn lesson_bundle(
             continue;
         }
         let file_name = entry.file_name().to_string_lossy().to_string();
+        // Skip companion files
+        if file_name.ends_with(".companion.md") {
+            continue;
+        }
         if !file_name.ends_with(".md") {
             continue;
         }
@@ -102,23 +135,23 @@ pub fn lesson_bundle(
             let file_raw = file_lesson.trim().to_lowercase();
 
             if file_norm == target_norm || file_raw == target_raw {
+                if file_tab == "lesson" {
+                    continue;
+                }
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     matched_files.push(file_name.clone());
-                    if file_tab == "lesson" {
-                        lesson_content = content;
-                    } else {
-                        tabs.insert(file_tab.to_string(), content);
-                    }
+                    tabs.insert(file_tab.to_string(), content);
                 }
             }
         }
     }
 
     eprintln!(
-        "[core] lesson_bundle: course={} lesson_id={} (norm={}) matched {} files, has_lesson={}, tabs={:?}",
+        "[core] lesson_bundle: course={} lesson_id={} (norm={}) format={} matched {} tabs, has_lesson={}, tabs={:?}",
         course_id,
         lesson_id,
         target_norm,
+        format,
         matched_files.len(),
         !lesson_content.is_empty(),
         tabs.keys().collect::<Vec<_>>()
@@ -129,6 +162,8 @@ pub fn lesson_bundle(
         lesson_id: lesson_id.to_string(),
         lesson: lesson_content,
         tabs,
+        format: format.to_string(),
+        has_companion,
     })
 }
 
@@ -160,7 +195,7 @@ pub fn save_course_doc(
 }
 
 /// Deletes a course doc, also probing the normalized-lesson-id spelling of
-/// the filename (e.g. `1.1.tab.md` stored as `01.01.tab.md`).
+/// the filename (e.g. `1-1.tab.md` stored as `01-01.tab.md`).
 pub fn delete_course_doc(
     courses_root: &Path,
     course_id: &str,

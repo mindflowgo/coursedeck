@@ -32,7 +32,7 @@ export const COURSE_PROMPT_ORDER = [
   'course_builder'
 ] as const;
 export const UNIT_PROMPT_ORDER = ['unit_assignments', 'unit_test'] as const;
-export const LESSON_PROMPT_ORDER = ['summary', 'notes', 'popquiz', 'lesson'] as const;
+export const LESSON_PROMPT_ORDER = ['summary', 'notes', 'popquiz', 'lesson', 'checkpoint_ask'] as const;
 
 export function classifyPrompt(p: { id: string }): PromptGroupKey {
   const id = p.id.toLowerCase().replace(/\.md$/, '').replace(/\./g, '_');
@@ -67,7 +67,8 @@ export function classifyPrompt(p: { id: string }): PromptGroupKey {
     id === 'studysheet' ||
     id === 'popquiz' ||
     id === 'pop_quiz' ||
-    id === 'lesson'
+    id === 'lesson' ||
+    id === 'checkpoint_ask'
   ) {
     return 'lessons';
   }

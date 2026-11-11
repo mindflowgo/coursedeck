@@ -373,7 +373,7 @@ export async function listAllCheckpointsLocally(): Promise<Array<Checkpoint & { 
     const courseTitle = c.title || c.id.toUpperCase();
     const cps = await getCachedCheckpoints(c.id);
     for (const cp of cps) {
-      if (cp.type === 'note') {
+      if (cp.type === 'note' || cp.type === 'highlight' || cp.type === 'ai') {
         all.push({
           ...cp,
           courseId: c.id,
@@ -393,7 +393,12 @@ export async function listAllCheckpointsLocally(): Promise<Array<Checkpoint & { 
 export async function getLessonBundleLocally(
   courseId: string,
   lessonId: string
-): Promise<{ lesson: string; tabs: Record<string, string> }> {
+): Promise<{
+  lesson: string;
+  tabs: Record<string, string>;
+  format?: 'markdown' | 'html' | 'pdf' | 'video';
+  hasCompanion?: boolean;
+}> {
   if (isTauri()) {
     try {
       console.log(`[NativeStore] getLessonBundleLocally: reading "${courseId}/${lessonId}" from native filesystem...`);
@@ -402,14 +407,21 @@ export async function getLessonBundleLocally(
         lesson_id: string;
         lesson: string;
         tabs: Record<string, string>;
+        format?: string;
+        has_companion?: boolean;
       }>('get_lesson_bundle', { courseId, lessonId });
 
       console.log(
-        `[NativeStore] getLessonBundleLocally from filesystem: hasLesson=${Boolean(res.lesson)}, lessonLen=${res.lesson?.length || 0}, tabs=[${Object.keys(res.tabs || {}).join(', ')}]`
+        `[NativeStore] getLessonBundleLocally from filesystem: hasLesson=${Boolean(res.lesson)}, lessonLen=${res.lesson?.length || 0}, format=${res.format}, tabs=[${Object.keys(res.tabs || {}).join(', ')}]`
       );
 
-      if (res.lesson || Object.keys(res.tabs || {}).length > 0) {
-        return { lesson: res.lesson || '', tabs: res.tabs || {} };
+      if (res.lesson || Object.keys(res.tabs || {}).length > 0 || res.format) {
+        return {
+          lesson: res.lesson || '',
+          tabs: res.tabs || {},
+          format: (res.format as any) || 'markdown',
+          hasCompanion: Boolean(res.has_companion)
+        };
       }
     } catch (err) {
       console.warn('[NativeStore] Native get_lesson_bundle failed, falling back to IDB:', err);
@@ -455,7 +467,7 @@ export async function getLessonBundleLocally(
     `[ClientStore] IDB fallback for "${courseId}/${lessonId}" (norm="${targetNorm}") -> matched ${matchedFiles.length} file(s) [${matchedFiles.join(', ')}], hasLesson=${Boolean(lessonMd)}, tabs=[${Object.keys(tabs).join(', ')}]`
   );
 
-  return { lesson: lessonMd, tabs };
+  return { lesson: lessonMd, tabs, format: 'markdown', hasCompanion: false };
 }
 
 export async function getCachedCheckpoints(courseId: string): Promise<Checkpoint[]> {

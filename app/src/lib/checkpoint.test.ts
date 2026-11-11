@@ -1,14 +1,90 @@
 import { describe, expect, it } from 'bun:test';
 import {
   CHECKPOINT_COLORS,
+  CHECKPOINT_TYPES,
   DEFAULT_CHECKPOINT_COLOR,
   formatCheckpointDate,
   getCheckpointColor,
   getCheckpointHref,
+  isCheckpointType,
+  normalizeAiStatus,
+  normalizeCheckpointRecord,
   resolveFileFromRoute,
   resolveRouteFromFile,
   type Checkpoint
 } from './checkpoint';
+
+describe('Checkpoint contract normalization', () => {
+  it('normalizeAiStatus maps legacy values onto the canonical set', () => {
+    expect(normalizeAiStatus('pending')).toBe('pending');
+    expect(normalizeAiStatus('done')).toBe('done');
+    expect(normalizeAiStatus('error')).toBe('error');
+    // Legacy aliases written by older clients.
+    expect(normalizeAiStatus('ready')).toBe('done');
+    expect(normalizeAiStatus('Ready')).toBe('done');
+    expect(normalizeAiStatus('completed')).toBe('done');
+    expect(normalizeAiStatus('failed')).toBe('error');
+    // Anything else is rejected (undefined) so boundaries can 400.
+    expect(normalizeAiStatus('bogus')).toBeUndefined();
+    expect(normalizeAiStatus('')).toBeUndefined();
+    expect(normalizeAiStatus(42)).toBeUndefined();
+    expect(normalizeAiStatus(undefined)).toBeUndefined();
+  });
+
+  it('isCheckpointType accepts only the supported types', () => {
+    for (const t of CHECKPOINT_TYPES) {
+      expect(isCheckpointType(t)).toBe(true);
+    }
+    expect(isCheckpointType('annotation')).toBe(false);
+    expect(isCheckpointType('')).toBe(false);
+    expect(isCheckpointType(undefined)).toBe(false);
+  });
+
+  it('normalizeCheckpointRecord repairs legacy records and rejects broken ones', () => {
+    // Legacy 'ready' status + valid record → normalized in place.
+    const legacy = normalizeCheckpointRecord({
+      id: 'cp_1',
+      file: '01.01.lesson.md',
+      verticalPosition: 100,
+      type: 'ai',
+      date: '2026-10-01T00:00:00.000Z',
+      aiStatus: 'ready',
+      aiAnswer: 'text',
+      anchor: { type: 'pixel', verticalPosition: 100 },
+      selection: { text: 'quote', prefix: 'pre', suffix: 'post', blockIndex: 3, charStart: 4, charEnd: 9 }
+    });
+    expect(legacy).not.toBeNull();
+    expect(legacy!.aiStatus).toBe('done');
+    expect(legacy!.anchor!.type).toBe('pixel');
+    expect(legacy!.selection!.prefix).toBe('pre');
+
+    // Invalid type degrades to 'note' rather than dropping the record.
+    const badType = normalizeCheckpointRecord({
+      id: 'cp_2',
+      file: '01.01.lesson.md',
+      verticalPosition: 0,
+      type: 'weird'
+    });
+    expect(badType!.type).toBe('note');
+
+    // Invalid aiStatus is dropped, not passed through.
+    const badStatus = normalizeCheckpointRecord({
+      id: 'cp_3',
+      file: '01.01.lesson.md',
+      verticalPosition: 0,
+      type: 'note',
+      aiStatus: 'unknown-value'
+    });
+    expect(badStatus!.aiStatus).toBeUndefined();
+
+    // Records without identity are rejected.
+    expect(normalizeCheckpointRecord(null)).toBeNull();
+    expect(normalizeCheckpointRecord({ id: 'x' })).toBeNull();
+    expect(
+      normalizeCheckpointRecord({ id: 'x', file: 'f.md', verticalPosition: 'NaN-bait', type: 'note' })
+    ).toBeNull();
+  });
+});
 
 describe('Checkpoint Palette & Models', () => {
   it('defines 10 distinct colors grouped into Set 1 (pastel) and Set 2 (vibrant)', () => {
@@ -59,17 +135,17 @@ describe('Checkpoint Palette & Models', () => {
   });
 
   it('resolves filename from route', () => {
-    expect(resolveFileFromRoute('01.01', 'lesson', false)).toBe('01.01.lesson.md');
-    expect(resolveFileFromRoute('02.04', 'summary', false)).toBe('02.04.summary.md');
+    expect(resolveFileFromRoute('01-01', 'lesson', false)).toBe('01-01.lesson.md');
+    expect(resolveFileFromRoute('02-04', 'summary', false)).toBe('02-04.summary.md');
     expect(resolveFileFromRoute('course', 'summary', true)).toBe('course.summary.md');
     expect(resolveFileFromRoute('course', 'notes', false)).toBe('course.notes.md');
   });
 
   it('resolves route from filename', () => {
-    expect(resolveRouteFromFile('01.01.lesson.md')).toEqual({
+    expect(resolveRouteFromFile('01-01.lesson.md')).toEqual({
       isCourseScope: false,
       isUnitScope: false,
-      lessonId: '01.01',
+      lessonId: '01-01',
       tab: 'lesson'
     });
     expect(resolveRouteFromFile('course.summary.md')).toEqual({
@@ -90,13 +166,13 @@ describe('Checkpoint Palette & Models', () => {
   it('builds checkpoint href', () => {
     const cp: Checkpoint = {
       id: 'cp_123',
-      file: '01.01.lesson.md',
+      file: '01-01.lesson.md',
       verticalPosition: 450,
       type: 'note',
       color: 'blue',
       date: '2026-10-16T12:00:00Z'
     };
-    expect(getCheckpointHref('BAF3M', cp)).toBe('/courses/baf3m/01.01/lesson?checkpoint=cp_123');
+    expect(getCheckpointHref('BAF3M', cp)).toBe('/courses/baf3m/01-01/lesson?checkpoint=cp_123');
 
     const courseCp: Checkpoint = {
       id: 'cp_course_1',

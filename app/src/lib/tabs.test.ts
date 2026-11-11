@@ -166,8 +166,8 @@ describe('starterPromptForTab', () => {
 
 describe('tab and document filenames', () => {
   it('formats tabFileName for lessons', () => {
-    expect(tabFileName('01.01', 'lesson')).toBe('01.01.lesson.md');
-    expect(tabFileName('02.03', 'Assignment')).toBe('02.03.assignment.md');
+    expect(tabFileName('01-01', 'lesson')).toBe('01-01.lesson.md');
+    expect(tabFileName('02-03', 'Assignment')).toBe('02-03.assignment.md');
   });
 
   it('formats courseDocFileName for course docs', () => {
@@ -184,17 +184,17 @@ describe('tab and document filenames', () => {
   });
 
   it('formats docFileName based on scope', () => {
-    expect(docFileName('01.01', 'lesson')).toBe('01.01.lesson.md');
+    expect(docFileName('01-01', 'lesson')).toBe('01-01.lesson.md');
     expect(docFileName('01.unit', 'test')).toBe('01.unit.test.md');
     expect(docFileName('course', 'summary')).toBe('course.summary.md');
-    expect(docFileName('01.01', 'summary', true)).toBe('course.summary.md');
+    expect(docFileName('01-01', 'summary', true)).toBe('course.summary.md');
   });
 
   it('parses valid document filenames', () => {
-    expect(parseDocFileName('01.01.lesson.md')).toEqual({
+    expect(parseDocFileName('01-01.lesson.md')).toEqual({
       isCourseScope: false,
       isUnitScope: false,
-      lessonId: '01.01',
+      lessonId: '01-01',
       tab: 'lesson'
     });
     expect(parseDocFileName('01.unit.test.md')).toEqual({
@@ -211,10 +211,10 @@ describe('tab and document filenames', () => {
       lessonId: '02.unit',
       tab: 'assignments'
     });
-    expect(parseDocFileName('01.06_assign1.test.md')).toEqual({
+    expect(parseDocFileName('01-06_assign1.test.md')).toEqual({
       isCourseScope: false,
       isUnitScope: false,
-      lessonId: '01.06_assign1',
+      lessonId: '01-06_assign1',
       tab: 'test'
     });
     expect(parseDocFileName('course.summary.md')).toEqual({
@@ -234,19 +234,19 @@ describe('tab and document filenames', () => {
 
   it('handles unit scope helpers', () => {
     expect(isUnitScopeId('01.unit')).toBe(true);
-    expect(isUnitScopeId('01.02')).toBe(false);
+    expect(isUnitScopeId('01-02')).toBe(false);
     expect(isUnitScopeId('course')).toBe(false);
     expect(formatUnitScopeId(1)).toBe('01.unit');
     expect(formatUnitScopeId('02')).toBe('02.unit');
     expect(parseUnitNumber('01.unit')).toBe(1);
-    expect(parseUnitNumber('02.03')).toBe(2);
+    expect(parseUnitNumber('02-03')).toBe(2);
     expect(isUnitTab('assignments')).toBe(true);
     expect(isUnitTab('test')).toBe(true);
     expect(isUnitTab('summary')).toBe(false);
   });
 
   it('builds courseTabHref paths', () => {
-    expect(courseTabHref('baf3m', '01.01', 'lesson')).toBe('/courses/baf3m/01.01/lesson');
+    expect(courseTabHref('baf3m', '01-01', 'lesson')).toBe('/courses/baf3m/01-01/lesson');
     expect(courseTabHref('baf3m', 'course', 'summary')).toBe('/courses/baf3m/course/summary');
     expect(courseTabHref('baf3m', 'any', 'schedule', true)).toBe('/courses/baf3m/course/schedule');
   });

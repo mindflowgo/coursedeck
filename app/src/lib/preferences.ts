@@ -54,6 +54,7 @@ export interface CourseLastLocation {
   isCourseScope: boolean;
   isUnitScope: boolean;
   pdfPage?: number | null;
+  lessonViewMode?: 'original' | 'markdown';
   updatedAt: number;
 }
 
@@ -71,6 +72,7 @@ export function getCourseLastLocation(courseId: string): CourseLastLocation | nu
           isCourseScope: Boolean(parsed.isCourseScope),
           isUnitScope: Boolean(parsed.isUnitScope),
           pdfPage: typeof parsed.pdfPage === 'number' && Number.isFinite(parsed.pdfPage) ? parsed.pdfPage : null,
+          lessonViewMode: parsed.lessonViewMode === 'markdown' ? 'markdown' : 'original',
           updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : Date.now()
         };
       }
@@ -87,6 +89,7 @@ export function setCourseLastLocation(
     isCourseScope?: boolean;
     isUnitScope?: boolean;
     pdfPage?: number | null;
+    lessonViewMode?: 'original' | 'markdown';
   }
 ): void {
   if (typeof localStorage === 'undefined' || !courseId) return;
@@ -100,10 +103,32 @@ export function setCourseLastLocation(
       isCourseScope: loc.isCourseScope !== undefined ? loc.isCourseScope : Boolean(prev?.isCourseScope),
       isUnitScope: loc.isUnitScope !== undefined ? loc.isUnitScope : Boolean(prev?.isUnitScope),
       pdfPage: loc.pdfPage !== undefined ? loc.pdfPage : (prev?.pdfPage ?? null),
+      lessonViewMode: loc.lessonViewMode !== undefined ? loc.lessonViewMode : (prev?.lessonViewMode ?? 'original'),
       updatedAt: Date.now()
     };
     localStorage.setItem(`coursedeck_last_location_${cleanId}`, JSON.stringify(updated));
   } catch {}
+}
+
+/** Returns the user's preferred lesson view mode for a course. Defaults to 'original'. */
+export function getLessonViewMode(courseId: string): 'original' | 'markdown' {
+  const loc = getCourseLastLocation(courseId);
+  return loc?.lessonViewMode ?? 'original';
+}
+
+/** Persists the user's preferred lesson view mode for a course. */
+export function setLessonViewMode(courseId: string, mode: 'original' | 'markdown'): void {
+  const cleanId = (courseId || '').toLowerCase().trim();
+  if (!cleanId) return;
+  const prev = getCourseLastLocation(cleanId);
+  setCourseLastLocation(cleanId, {
+    tab: prev?.tab || 'lesson',
+    lessonId: prev?.lessonId,
+    isCourseScope: prev?.isCourseScope,
+    isUnitScope: prev?.isUnitScope,
+    pdfPage: prev?.pdfPage,
+    lessonViewMode: mode
+  });
 }
 
 export function buildCourseResumeUrl(

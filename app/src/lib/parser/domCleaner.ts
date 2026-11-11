@@ -109,7 +109,7 @@ export class DomCleaner {
       if (!href) return;
       if (href.startsWith('#') || href.startsWith('./assets/')) return;
       const filename = href.split('?')[0].split('/').pop() || '';
-      if (/\.(pdf|docx?|xlsx?|pptx?)$/i.test(filename)) {
+      if (href.includes('locker_docs') || /\.(pdf|docx?|xlsx?|pptx?)$/i.test(filename)) {
         $(link).attr('href', `./assets/locker_docs/${filename}`);
       }
     });
@@ -128,5 +128,88 @@ export class DomCleaner {
       learningGoals,
       successCriteria
     };
+  }
+
+  /**
+   * Prepares raw ILC HTML for sandboxed in-app display.
+   * Lighter than clean() — preserves layout, inline styles, accordions, images.
+   * Strips only: external scripts, external stylesheets, LMS nav chrome.
+   */
+  static preparePresentationHtml(html: string): string {
+    const $ = cheerio.load(html);
+
+    // Remove all scripts (safe — sandboxed iframe can't reach parent anyway)
+    $('script').remove();
+
+    // Rewrite stylesheet references to point to assets/css/ proxy
+    $('link[rel="stylesheet"]').each((_, link) => {
+      const href = $(link).attr('href') || '';
+      if (!href || href.startsWith('data:') || href.startsWith('http://') || href.startsWith('https://')) return;
+      const filename = href.split('?')[0].split('/').pop() || '';
+      if (filename) {
+        $(link).attr('href', `./assets/css/${filename}`);
+      }
+    });
+    $('link[rel="preload"]').remove();
+
+    // Remove D2L / ILC LMS navigation chrome
+    $('nav, .navbar, .navbar-default, .d2l-navigation').remove();
+    $('button.btn-app-drawer, button.btn-app-close').remove();
+    $('progress').remove();
+
+    // Rewrite asset paths to work via the /api/courses/:id/assets/ proxy
+    $('img').each((_, img) => {
+      const src = $(img).attr('src') || '';
+      if (!src || src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://')) return;
+      const filename = src.split('?')[0].split('#')[0].split('/').pop() || '';
+      if (!filename) return;
+      if (/\.svg$/i.test(filename)) {
+        $(img).attr('src', `./assets/icons/${filename}`);
+      } else if (/\.(png|jpe?g|gif|webp)$/i.test(filename)) {
+        $(img).attr('src', `./assets/img/${filename}`);
+      }
+    });
+
+    $('a').each((_, link) => {
+      const href = $(link).attr('href') || '';
+      if (!href || href.startsWith('#') || href.startsWith('data:') || href.startsWith('http://') || href.startsWith('https://')) return;
+      const filename = href.split('?')[0].split('#')[0].split('/').pop() || '';
+      if (!filename) return;
+      if (href.includes('locker_docs') || /\.(pdf|docx?|xlsx?|pptx?)$/i.test(filename)) {
+        $(link).attr('href', `./assets/locker_docs/${filename}`);
+      }
+    });
+
+    // Rewrite media elements (audio, video, source)
+    $('source, video, audio').each((_, el) => {
+      const src = $(el).attr('src') || '';
+      if (!src || src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://')) return;
+      const filename = src.split('?')[0].split('#')[0].split('/').pop() || '';
+      if (filename) {
+        $(el).attr('src', `./assets/locker_docs/${filename}`);
+      }
+    });
+
+    // Rewrite inline background-image styles to ./assets/**
+    $('[style]').each((_, el) => {
+      const style = $(el).attr('style') || '';
+      if (style.includes('url(')) {
+        const rewritten = style.replace(
+          /url\(['"]?(?:(?:\.\.\/|\.\/)*(?:course_content\/)?(?:assets\/)?(?:img|icons)?\/)?([^'")\/\\]+\.(png|jpe?g|gif|webp|svg))['"]?\)/gi,
+          (_m, file, ext) => {
+            const folder = ext.toLowerCase() === 'svg' ? 'icons' : 'img';
+            return `url('./assets/${folder}/${file}')`;
+          }
+        );
+        if (rewritten !== style) {
+          $(el).attr('style', rewritten);
+        }
+      }
+    });
+
+    // Ensure <head> exists for the base tag injected server-side at serve time
+    if (!$('head').length) $('html').prepend('<head></head>');
+
+    return $.html();
   }
 }

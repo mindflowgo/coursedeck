@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 /**
  * Course image optimizer (server-side, Bun runtime).
@@ -36,12 +38,13 @@ interface BunImageInstance {
 }
 type BunImageConstructor = new (input: Buffer | Uint8Array | ArrayBuffer | string) => BunImageInstance;
 
-function getImageCtor(): BunImageConstructor {
+export function isImageOptimizerAvailable(): boolean {
+  return typeof (globalThis as { Bun?: { Image?: BunImageConstructor } }).Bun?.Image === 'function';
+}
+
+function getImageCtor(): BunImageConstructor | null {
   const ctor = (globalThis as { Bun?: { Image?: BunImageConstructor } }).Bun?.Image;
-  if (!ctor) {
-    throw new Error('Bun.Image is unavailable (requires Bun >= 1.3.14)');
-  }
-  return ctor;
+  return ctor ?? null;
 }
 
 export interface ImageOptimizeSummary {
@@ -159,6 +162,30 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
+function optimizeCourseImagesViaBun(courseDir: string, summary: ImageOptimizeSummary): ImageOptimizeSummary {
+  try {
+    const currentFilePath = fileURLToPath(import.meta.url);
+    const script = `import(${JSON.stringify(currentFilePath)}).then(m => m.optimizeCourseImages(${JSON.stringify(courseDir)})).then(r => console.log(JSON.stringify(r))).catch(e => { console.error(e); process.exit(1); })`;
+    const res = spawnSync('bun', ['-e', script], {
+      encoding: 'utf8',
+      timeout: 120000,
+      env: process.env
+    });
+
+    if (res.error || res.status !== 0) {
+      console.warn('[ImageOptimizer] Bun fallback failed or Bun is not installed; skipping image optimization.', res.error?.message || res.stderr);
+      return summary;
+    }
+
+    const lines = res.stdout.trim().split('\n');
+    const lastLine = lines[lines.length - 1];
+    return JSON.parse(lastLine) as ImageOptimizeSummary;
+  } catch (err) {
+    console.warn('[ImageOptimizer] Bun invocation failed, continuing without optimization:', err instanceof Error ? err.message : err);
+    return summary;
+  }
+}
+
 /**
  * Optimizes all raster images in `<courseDir>/assets/img` and rewrites
  * markdown references in the course's `*.md` files to match.
@@ -177,7 +204,14 @@ export async function optimizeCourseImages(courseDir: string): Promise<ImageOpti
   const imgDir = path.join(courseDir, 'assets', 'img');
   if (!fs.existsSync(imgDir)) return summary;
 
+  if (!isImageOptimizerAvailable()) {
+    return optimizeCourseImagesViaBun(courseDir, summary);
+  }
+
   const Image = getImageCtor();
+  if (!Image) {
+    return summary;
+  }
   const files = fs.readdirSync(imgDir).filter((f) => RASTER_RE.test(f) && !f.startsWith('.'));
   summary.scanned = files.length;
 
@@ -248,7 +282,29 @@ export async function optimizeCourseImages(courseDir: string): Promise<ImageOpti
     }
   }
 
-  // Only remove originals after every markdown file was rewritten successfully
+  // Pass 2b: rewrite presentation HTML references so images match optimized formats
+  const htmlFiles = fs
+    .readdirSync(courseDir)
+    .filter((f) => f.endsWith('.lesson.html') && fs.statSync(path.join(courseDir, f)).isFile());
+
+  for (const htmlFile of htmlFiles) {
+    const htmlPath = path.join(courseDir, htmlFile);
+    let htmlText = fs.readFileSync(htmlPath, 'utf8');
+    let changed = false;
+    for (const [fromKey, toKey] of renameMap.entries()) {
+      const fromBase = path.basename(fromKey);
+      const toBase = path.basename(toKey);
+      if (fromBase !== toBase && htmlText.includes(fromBase)) {
+        htmlText = htmlText.replaceAll(fromBase, toBase);
+        changed = true;
+      }
+    }
+    if (changed) {
+      fs.writeFileSync(htmlPath, htmlText, 'utf8');
+    }
+  }
+
+  // Only remove originals after every markdown and HTML file was rewritten successfully
   for (const conv of conversions) {
     if (!conv.samePath) {
       const originalPath = path.join(courseDir, 'assets', conv.from);

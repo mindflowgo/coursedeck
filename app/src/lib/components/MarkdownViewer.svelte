@@ -8,6 +8,14 @@
   import { parseCssImageSpec, isIconImage } from '$lib/markdown/imageSpec';
   import { confirmDialog } from '$lib/dialog';
   import { onMount } from 'svelte';
+  import { getCheckpointColor } from '$lib/checkpoint';
+  import { elementTopInScroller } from '$lib/checkpoint/coordinates';
+  import {
+    closestBlock,
+    rangeRectsInScroller,
+    resolveMarkdownRange,
+    serializeMarkdownSelection
+  } from '$lib/checkpoint/selection';
   import {
     afterPaint,
     assetReport,
@@ -88,13 +96,37 @@
     onOpenDocument?: (url: string, title?: string) => void;
     /** Doc file key for free-hand markup annotations (omits the overlay). */
     markupFile?: string;
-    /** Scroll container used for finger-pan while in markup mode. */
+    /** Scroll container used for finger-pan while in markup mode and anchor math. */
     markupScroller?: HTMLElement | null;
+    /** Saved checkpoints for the rendered file; `highlight` entries are painted over the text. */
+    checkpoints?: import('$lib/checkpoint').Checkpoint[];
+    /** Called when the user finishes a text selection — provides the serialized selection + anchor. */
+    onAnnotationSelect?: (params: {
+      text: string;
+      anchor: import('$lib/checkpoint').Anchor;
+      selection: import('$lib/checkpoint').SelectionRange;
+      verticalPosition: number;
+      clientX: number;
+      clientY: number;
+    }) => void;
+    /** Called when selection is cleared or collapsed. */
+    onSelectionCleared?: () => void;
   }
 
-  let { markdown, courseId, onDeleteNote, onOpenDocument, markupFile, markupScroller }: Props = $props();
+  let {
+    markdown,
+    courseId,
+    onDeleteNote,
+    onOpenDocument,
+    markupFile,
+    markupScroller,
+    checkpoints = [],
+    onAnnotationSelect,
+    onSelectionCleared
+  }: Props = $props();
 
   let containerEl: HTMLElement | null = $state(null);
+  let wrapperEl: HTMLElement | null = $state(null);
 
   function escapeHtml(str: string): string {
     return str
@@ -665,10 +697,13 @@
         return;
       }
 
-      // External web links: open in new tab
+      // External web links: open in DocumentViewerModal overlay
       if (href.startsWith('http://') || href.startsWith('https://')) {
-        link.setAttribute('target', '_blank');
-        link.setAttribute('rel', 'noopener noreferrer');
+        e.preventDefault();
+        e.stopPropagation();
+        const linkTitle = link.textContent?.trim() || link.getAttribute('title') || 'Web Page';
+        onOpenDocument?.(href, linkTitle);
+        return;
       }
     }
   }
@@ -681,15 +716,196 @@
       return () => clearTimeout(timer);
     }
   });
+
+  /**
+   * Text selection capture for the checkpoint trigger.
+   *
+   * Captures on selectionchange (covers keyboard selection and native touch
+   * selection handles, which never fire mouseup) plus pointerup for an
+   * immediate mouse response. Serialized through $lib/checkpoint/selection so
+   * the stored range can be re-resolved after reload/reflow.
+   */
+  let hadSelection = false;
+  let selectionChangeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function isExcludedSelectionNode(node: Node | null): boolean {
+    const el =
+      node?.nodeType === Node.TEXT_NODE
+        ? node.parentElement
+        : node instanceof HTMLElement
+          ? node
+          : null;
+    if (!el) return true;
+    return Boolean(
+      el.closest(
+        'input, textarea, select, [contenteditable], button, a, .postit-container, .sketch-block, .image-toolbar, .markup-layer'
+      )
+    );
+  }
+
+  function emitSelectionCleared() {
+    if (hadSelection) {
+      hadSelection = false;
+      onSelectionCleared?.();
+    }
+  }
+
+  function captureSelection(sourceX = 0, sourceY = 0) {
+    if (!containerEl) return;
+    // Opening the action bar moves keyboard focus out of the document. That
+    // focus change must not discard the selection before an action is chosen.
+    if (document.activeElement?.closest('[data-checkpoint-controls]')) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      emitSelectionCleared();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (
+      !containerEl.contains(range.startContainer) ||
+      !containerEl.contains(range.endContainer) ||
+      isExcludedSelectionNode(range.startContainer)
+    ) {
+      emitSelectionCleared();
+      return;
+    }
+
+    const serialized = serializeMarkdownSelection(sel, containerEl);
+    if (!serialized) {
+      emitSelectionCleared();
+      return;
+    }
+
+    // Rect-based anchor position in the reader's content space; nested offset
+    // parents and reader padding cannot displace it.
+    let verticalPosition: number;
+    const scroller = markupScroller;
+    const rangeRect = range.getBoundingClientRect();
+    if (scroller && rangeRect.height > 0) {
+      verticalPosition =
+        rangeRect.top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+    } else {
+      const startBlock = closestBlock(range.startContainer);
+      verticalPosition =
+        scroller && startBlock
+          ? elementTopInScroller(startBlock, scroller)
+          : (scroller?.scrollTop ?? 0) + sourceY;
+    }
+
+    const anchor: import('$lib/checkpoint').Anchor = {
+      type: serialized.blockIndex >= 0 ? 'paragraph' : 'pixel',
+      verticalPosition: Math.max(0, Math.round(verticalPosition)),
+      ...(serialized.blockIndex >= 0 ? { paragraphIndex: serialized.blockIndex } : {})
+    };
+
+    hadSelection = true;
+    onAnnotationSelect?.({
+      text: serialized.selection.text,
+      anchor,
+      selection: serialized.selection,
+      verticalPosition: anchor.verticalPosition,
+      clientX: sourceX,
+      clientY: sourceY
+    });
+  }
+
+  function handleSelectionPointerUp(e: PointerEvent) {
+    if (!containerEl) return;
+    // Slight delay so the browser finalizes the selection before capture.
+    setTimeout(() => captureSelection(e.clientX, e.clientY), 10);
+  }
+
+  function handleDocumentSelectionChange() {
+    if (!containerEl) return;
+    clearTimeout(selectionChangeTimer);
+    // Debounced: native touch handles fire many changes while adjusting.
+    selectionChangeTimer = setTimeout(() => captureSelection(), 300);
+  }
+
+  $effect(() => {
+    const el = containerEl;
+    if (!el) return;
+    const handleKeyUp = () => captureSelection();
+    document.addEventListener('selectionchange', handleDocumentSelectionChange);
+    el.addEventListener('pointerup', handleSelectionPointerUp, { passive: true });
+    el.addEventListener('keyup', handleKeyUp, { passive: true });
+    return () => {
+      document.removeEventListener('selectionchange', handleDocumentSelectionChange);
+      el.removeEventListener('pointerup', handleSelectionPointerUp);
+      el.removeEventListener('keyup', handleKeyUp);
+      clearTimeout(selectionChangeTimer);
+    };
+  });
+
+  // ── Persistent highlight painting ─────────────────────────────────────────
+  // Resolves each saved highlight's selection to DOM rects and paints a
+  // translucent overlay layer; re-resolves after re-render, resize, and
+  // image/font load (ResizeObserver bumps the layout revision).
+
+  let layoutRevision = $state(0);
+  let highlightRects = $state<Array<{ id: string; color: string; rects: Array<{ top: number; left: number; width: number; height: number }> }>>([]);
+
+  const highlightCheckpoints = $derived(
+    checkpoints.filter((c) => c.type === 'highlight' && !c.deleted && Boolean(c.selection?.text))
+  );
+
+  $effect(() => {
+    if (!containerEl) return;
+    const ro = new ResizeObserver(() => {
+      layoutRevision++;
+    });
+    ro.observe(containerEl);
+    return () => ro.disconnect();
+  });
+
+  $effect(() => {
+    // Re-run when the document re-renders, the checkpoint set changes, or the
+    // content box reflows.
+    layoutRevision;
+    renderedHtml;
+    const highlights = highlightCheckpoints;
+    const host = wrapperEl;
+    const body = containerEl;
+    if (!host || !body) {
+      highlightRects = [];
+      return;
+    }
+    const timer = setTimeout(() => {
+      const out: typeof highlightRects = [];
+      for (const cp of highlights) {
+        const range = resolveMarkdownRange(body, cp.selection!);
+        if (!range) continue; // stale/ambiguous anchors stay unpainted; the marker still shows
+        const rects = rangeRectsInScroller(range, host);
+        if (rects.length > 0) {
+          out.push({ id: cp.id, color: cp.color || 'yellow', rects });
+        }
+      }
+      highlightRects = out;
+    }, 60);
+    return () => clearTimeout(timer);
+  });
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="relative w-full max-w-full min-w-0">
+<div bind:this={wrapperEl} class="relative w-full max-w-full min-w-0">
+  <!-- Saved highlight overlays: painted under the text, never intercepting pointer events -->
+  {#if highlightRects.length > 0}
+    <div class="absolute inset-0 z-0 pointer-events-none" aria-hidden="true">
+      {#each highlightRects as hl (hl.id)}
+        {#each hl.rects as rect, i (i)}
+          <div
+            class="checkpoint-paint"
+            style="top:{rect.top}px; left:{rect.left}px; width:{rect.width}px; height:{rect.height}px; background-color: {getCheckpointColor(hl.color).dot}3d;"
+          ></div>
+        {/each}
+      {/each}
+    </div>
+  {/if}
   <div
     bind:this={containerEl}
     onclick={handleContainerClick}
-    class="markdown-body relative prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 w-full max-w-full min-w-0 break-words [overflow-wrap:anywhere]"
+    class="markdown-body relative z-[1] prose prose-stone dark:prose-invert max-w-none prose-headings:font-semibold prose-h1:text-2xl prose-h2:text-xl prose-h2:border-b prose-h2:border-stone-200 dark:prose-h2:border-stone-800 prose-h2:pb-2 prose-h3:text-lg prose-p:leading-relaxed prose-img:rounded-lg prose-img:border prose-img:border-stone-200 dark:prose-img:border-stone-800 prose-img:my-4 prose-table:border prose-table:border-stone-200 dark:prose-table:border-stone-800 prose-th:bg-stone-50 dark:prose-th:bg-stone-900 prose-th:px-3 prose-th:py-2 prose-td:px-3 prose-td:py-2 w-full max-w-full min-w-0 break-words [overflow-wrap:anywhere]"
   >
     {@html renderedHtml}
   </div>
@@ -699,6 +915,17 @@
 </div>
 
 <style>
+  :global(.checkpoint-paint) {
+    position: absolute;
+    border-radius: 2px;
+    mix-blend-mode: multiply;
+    pointer-events: none;
+  }
+
+  :global(.dark .checkpoint-paint) {
+    mix-blend-mode: screen;
+  }
+
   :global(.postit-card summary::-webkit-details-marker),
   :global(.postit-card summary::marker) {
     display: none;

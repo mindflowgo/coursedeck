@@ -37,7 +37,7 @@ All content is stored in a transparent, flat Markdown filesystem with zero exter
 - **Frontend Framework**: **SvelteKit 5** with modern **Runes** (`$state`, `$derived`, `$props`, `$effect`) in `/app`
 - **Styling**: **Tailwind CSS** with Typography plugin for clean, minimalist, high-legibility study aesthetics
 - **Markdown & Code Editor**: **CodeMirror 6** (`@codemirror/lang-markdown`, `@codemirror/view`)
-- **Extraction Engine**: Bun + **Cheerio** (DOM parsing & asset extraction) + **Turndown** with **GFM Plugin** (semantic Markdown conversion)
+- **Extraction Engine**: Bun + **Cheerio** (DOM parsing & asset extraction) + **Turndown** with **GFM Plugin** (semantic Markdown conversion). See [`docs/ilc-import.md`](file:///Users/fil/Code/ilc-study-tool/docs/ilc-import.md) for the complete ILC and HTML import normalization specification.
 - **Data Persistence**: Flat filesystem in `/data` (Single Source of Truth, no database required)
 - **Model Context Protocol (MCP)**: Native Streamable HTTP (`/mcp` on loopback `3182`) & Stdio (`--mcp-stdio`) integration via **`mcp-lite`**. See [`docs/mcp.md`](file:///Users/fil/Code/ilc-study-tool/docs/mcp.md) for full protocol specs and client configs.
 

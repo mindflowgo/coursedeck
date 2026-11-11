@@ -4,6 +4,8 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { LibraryService } from './library';
+import { isCheckpointType, normalizeAiStatus, normalizeCheckpointRecord } from '../checkpoint';
+import { buildLessonBridgeScript } from './lessonBridge';
 import type { MarkupStroke } from '../markup/types';
 import { PromptService } from './prompts';
 import { LLMService, type LLMConfig, type LlmModelCard } from './llm';
@@ -32,6 +34,7 @@ import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import type { SchedulePreferences } from '../schedule';
 import { ScheduleParser, toggleEventDone } from '../parser/scheduleParser';
 import { optimizeCourseImages } from '../parser/imageOptimizer';
+import { unzipSync } from 'fflate';
 import { createDataBackupZip, createDataBackupZipStream, createSyncBundleZipStream, restoreDataBackupZip } from './backup';
 import { SyncService } from './services/sync/sync.service';
 import { GoogleCalendarProvider } from './services/sync/google.provider';
@@ -79,6 +82,12 @@ const MIME_TYPES: Record<string, string> = {
   '.ttf': 'font/ttf',
   '.ico': 'image/x-icon'
 };
+
+/** 1x1 transparent PNG fallback for missing image assets to prevent broken layout */
+const TRANSPARENT_1X1_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+  'base64'
+);
 
 type Tab = 'summary' | 'notes' | 'test';
 
@@ -144,6 +153,10 @@ Analyze the provided course material, syllabus, textbook chapter, or document an
    - "title": Student-friendly topic title
    - "type": "lesson" or "assignment"
    - "content": A markdown starter overview for the lesson with learning goals and key concepts
+   - "pageRange": MANDATORY. Analyze the source text's <!-- page: N --> demarcations and determine the exact book page range (e.g. "14-28" or "1-8") for EVERY lesson. Every lesson must have its corresponding book pages tracked so students can jump to them in the reader.
+   - "readingDescription": A concise 1-sentence description of the reading assignment (e.g. "Sections 2.1–2.3: Read vector definitions and worked examples 1–4").
+   - "externalRefs": Array of 1-3 high-quality external educational references (videos, interactive simulations, or articles) relevant to this lesson. Prefer YouTube (Khan Academy, CrashCourse, 3Blue1Brown, MIT OCW), PhET simulations, OpenStax, or Wikipedia:
+     [ { "label": "Khan Academy - Motion in One Dimension", "url": "https://www.youtube.com/results?search_query=khan+academy+motion+in+one+dimension", "type": "video" } ]
 
 ### Output Format:
 Respond ONLY with a valid JSON object matching the requested schema without markdown backticks.`;
@@ -180,6 +193,9 @@ function normalizeProposal(rawProposal: any): {
       title: string;
       type: 'lesson' | 'assignment';
       content?: string;
+      pageRange?: string;
+      readingDescription?: string;
+      externalRefs?: Array<{ label: string; url: string; type?: string }>;
     }>;
   }>;
 } {
@@ -201,6 +217,9 @@ function normalizeProposal(rawProposal: any): {
       title: string;
       type: 'lesson' | 'assignment';
       content?: string;
+      pageRange?: string;
+      readingDescription?: string;
+      externalRefs?: Array<{ label: string; url: string; type?: string }>;
     }>;
   }> = [];
 
@@ -214,28 +233,59 @@ function normalizeProposal(rawProposal: any): {
       title: string;
       type: 'lesson' | 'assignment';
       content?: string;
+      pageRange?: string;
+      readingDescription?: string;
+      externalRefs?: Array<{ label: string; url: string; type?: string }>;
     }> = [];
 
     for (let lIdx = 0; lIdx < rawLessons.length; lIdx++) {
       const l = rawLessons[lIdx];
       const lNum = lIdx + 1;
-      const defaultId = `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
-      const lId = typeof l.id === 'string' && l.id.trim() ? l.id.trim() : defaultId;
+      const defaultId = `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}`;
+      const rawId = typeof l.id === 'string' && l.id.trim() ? l.id.trim() : defaultId;
+      const lId = rawId.replace(/^(\d+)\.(\d+)/, '$1-$2');
       const lTitle = typeof l.title === 'string' && l.title.trim() ? l.title.trim() : `Lesson ${lNum}`;
       const lType = l.type === 'assignment' ? 'assignment' : 'lesson';
       const lContent = typeof l.content === 'string' ? l.content : undefined;
+      const lPageRange = typeof l.pageRange === 'string' && l.pageRange.trim() ? l.pageRange.trim() : undefined;
+      const lReadingDesc = typeof l.readingDescription === 'string' && l.readingDescription.trim() ? l.readingDescription.trim() : undefined;
+      const lExternalRefs = Array.isArray(l.externalRefs)
+        ? l.externalRefs
+            .map((r: any) => {
+              if (typeof r === 'string' && r.trim()) {
+                const url = r.trim().slice(0, 500);
+                return {
+                  label: url,
+                  url,
+                  type: /youtube\.com|youtu\.be|vimeo\.com/i.test(url) ? 'video' : 'article'
+                };
+              }
+              if (typeof r === 'object' && r !== null && typeof r.url === 'string') {
+                return {
+                  label: typeof r.label === 'string' && r.label.trim() ? r.label.trim().slice(0, 120) : r.url.slice(0, 120),
+                  url: String(r.url).slice(0, 500),
+                  type: ['video', 'article', 'tool', 'exercise'].includes(r.type) ? r.type : 'article'
+                };
+              }
+              return null;
+            })
+            .filter((r: any): r is { label: string; url: string; type: string } => r !== null)
+        : undefined;
 
       lessons.push({
         id: lId,
         title: lTitle,
         type: lType,
-        content: lContent
+        content: lContent,
+        pageRange: lPageRange,
+        readingDescription: lReadingDesc,
+        externalRefs: lExternalRefs && lExternalRefs.length > 0 ? lExternalRefs : undefined
       });
     }
 
     if (lessons.length === 0) {
       lessons.push({
-        id: `${String(uNum).padStart(2, '0')}.01`,
+        id: `${String(uNum).padStart(2, '0')}-01`,
         title: 'Introduction',
         type: 'lesson'
       });
@@ -732,23 +782,23 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             const existing = CourseService.getCheckpoints(courseId);
             const existingById = new Map(existing.map((c) => [c.id, c]));
 
-            for (const cp of ipadCheckpoints) {
-              if (!cp?.id) continue;
-              const desktopCp = existingById.get(cp.id);
-              const incomingDate = new Date(cp.date || 0);
-              if (cp.deleted) {
+            for (const raw of ipadCheckpoints) {
+              if (!raw?.id) continue;
+              const desktopCp = existingById.get(raw.id);
+              const incomingDate = new Date(raw.date || 0);
+              if (raw.deleted) {
                 // Tombstone: propagate a local delete when it is newer than the
                 // desktop copy; otherwise the desktop keeps its version.
                 if (desktopCp && incomingDate > new Date(desktopCp.date)) {
-                  existingById.delete(cp.id);
+                  existingById.delete(raw.id);
                   merged++;
                 }
                 continue;
               }
-              if (!cp.file || typeof cp.verticalPosition !== 'number') continue;
+              const cp = normalizeCheckpointRecord(raw);
+              if (!cp) continue;
               if (!desktopCp || incomingDate > new Date(desktopCp.date)) {
-                const { deleted: _deleted, ...clean } = cp;
-                existingById.set(cp.id, { ...clean, courseId: undefined });
+                existingById.set(cp.id, { ...cp, courseId: undefined });
                 merged++;
               }
             }
@@ -1178,7 +1228,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
             'test',
             'test_kica',
             'lesson',
-            'popquiz'
+            'popquiz',
+            'checkpoint_ask'
           ];
           if (STANDARD_BUILTINS.includes(safeId.toLowerCase())) {
             return error(403, 'Standard prompt templates cannot be deleted');
@@ -1198,6 +1249,9 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
     // ---- /api/parse (multipart upload + JSON re-parse) ----
     if (pathname === '/api/parse') {
       const contentType = req.headers.get('content-type') || '';
+      const isStream =
+        req.headers.get('accept')?.includes('text/event-stream') ||
+        url.searchParams.get('stream') === 'true';
 
       if (contentType.includes('multipart/form-data')) {
         const formData = await req.formData();
@@ -1223,6 +1277,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
         }
         const overwriteExisting = formData.get('overwriteExisting') === 'true';
+        const useMarkdownAsLesson = formData.get('useMarkdownAsLesson') === 'true';
 
         if (!files.length) {
           return error(400, 'No files provided');
@@ -1242,19 +1297,74 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           }
         }
 
+        if (isStream) {
+          const stream = new ReadableStream({
+            async start(controller) {
+              const encoder = new TextEncoder();
+              const sendEvent = (data: unknown) => {
+                try {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+                } catch {}
+              };
+
+              sendEvent({
+                step: 'scan',
+                message: `Uploaded ${uploadedFilenames.length} file(s) for [${courseId}]. Initializing parser...`
+              });
+
+              try {
+                const ingester = new CourseIngest();
+                const manifest = await ingester.ingestCourse(courseDir, {
+                  overwriteExisting: overwriteExisting || (mode === 'replace' && !targetLessonId),
+                  overwriteLessonIds: targetLessonId ? [targetLessonId] : undefined,
+                  overwriteFiles: mode === 'replace' ? uploadedFilenames : undefined,
+                  useMarkdownAsLesson,
+                  onProgress: (ev) => sendEvent(ev)
+                });
+
+                sendEvent({
+                  step: 'complete',
+                  message: `Course [${courseId}] ready with ${manifest.units?.reduce((acc, u) => acc + u.lessons.length, 0) || 0} lessons!`,
+                  manifest
+                });
+                controller.close();
+              } catch (err: any) {
+                console.error(`[CourseIngest] Ingest error for [${courseId}]:`, err);
+                sendEvent({
+                  step: 'error',
+                  message: err?.message || 'Ingestion failed.'
+                });
+                controller.close();
+              }
+            }
+          });
+
+          return new Response(stream, {
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              'Connection': 'keep-alive'
+            }
+          });
+        }
+
+        const steps: any[] = [];
         const ingester = new CourseIngest();
         const manifest = await ingester.ingestCourse(courseDir, {
           overwriteExisting: overwriteExisting || (mode === 'replace' && !targetLessonId),
           overwriteLessonIds: targetLessonId ? [targetLessonId] : undefined,
-          overwriteFiles: mode === 'replace' ? uploadedFilenames : undefined
+          overwriteFiles: mode === 'replace' ? uploadedFilenames : undefined,
+          useMarkdownAsLesson,
+          onProgress: (ev) => steps.push(ev)
         });
-        return json({ success: true, manifest });
+        return json({ success: true, manifest, steps });
       }
 
       // JSON re-parse of existing courses
       const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
       const courseId = body.courseId as string | undefined;
       const overwriteExisting = Boolean(body.overwriteExisting);
+      const useMarkdownAsLesson = body.useMarkdownAsLesson !== undefined ? Boolean(body.useMarkdownAsLesson) : undefined;
       const lessonId = body.lessonId ? String(body.lessonId).trim() : undefined;
 
       const coursesDir = getCoursesDir();
@@ -1273,11 +1383,50 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         if (!fs.existsSync(coursePath)) {
           return error(404, `Course ${courseId} not found`);
         }
+
+        if (isStream) {
+          const stream = new ReadableStream({
+            async start(controller) {
+              const encoder = new TextEncoder();
+              const sendEvent = (data: unknown) => {
+                try {
+                  controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+                } catch {}
+              };
+
+              try {
+                const manifest = await ingester.ingestCourse(coursePath, {
+                  overwriteExisting,
+                  overwriteLessonIds: lessonId ? [lessonId] : undefined,
+                  useMarkdownAsLesson,
+                  onProgress: (ev) => sendEvent(ev)
+                });
+                sendEvent({ step: 'complete', message: `Re-parse complete for [${courseId}]`, manifest });
+                controller.close();
+              } catch (err: any) {
+                sendEvent({ step: 'error', message: err?.message || 'Re-parse failed.' });
+                controller.close();
+              }
+            }
+          });
+
+          return new Response(stream, {
+            headers: {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              'Connection': 'keep-alive'
+            }
+          });
+        }
+
+        const steps: any[] = [];
         const manifest = await ingester.ingestCourse(coursePath, {
           overwriteExisting,
-          overwriteLessonIds: lessonId ? [lessonId] : undefined
+          overwriteLessonIds: lessonId ? [lessonId] : undefined,
+          useMarkdownAsLesson,
+          onProgress: (ev) => steps.push(ev)
         });
-        return json({ success: true, manifest });
+        return json({ success: true, manifest, steps });
       } else {
         const dirs = fs
           .readdirSync(coursesDir, { withFileTypes: true })
@@ -2103,7 +2252,8 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
               for (let idx = 0; idx < unit.lessons.length; idx++) {
                 const l = unit.lessons[idx];
                 const lNum = idx + 1;
-                const lId = l.id || `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
+                const rawId = l.id || `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}`;
+                const lId = String(rawId).replace(/^(\d+)\.(\d+)/, '$1-$2');
                 lessonsToInject.push({
                   id: lId,
                   title: l.title || `Lesson ${lNum}`,
@@ -2180,35 +2330,48 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       if (contentType.includes('multipart/form-data')) {
         const formData = await req.formData();
         const file = formData.get('file') as File | null;
+        const companionMarkdown = ((formData.get('companionMarkdown') as string) || '').trim();
         instructions = ((formData.get('instructions') as string) || '').trim();
         customPrompt = ((formData.get('customPrompt') as string) || '').trim();
         targetUnits = parseInt((formData.get('targetUnits') as string) || '0', 10);
 
-        if (!file) {
+        if (companionMarkdown) {
+          extractedText = companionMarkdown;
+          filename = ((formData.get('filename') as string) || 'document.pdf').trim();
+        } else if (!file) {
           return error(400, 'No file uploaded.');
-        }
-        filename = file.name;
-        const ext = path.extname(filename).toLowerCase();
-        const buffer = Buffer.from(await file.arrayBuffer());
-
-        if (ext === '.pdf') {
-          try {
-            extractedText = await extractTextFromPdf(buffer);
-          } catch (pdfErr: any) {
-            return error(400, `Failed to parse PDF: ${pdfErr?.message || String(pdfErr)}`);
-          }
-        } else if (ext === '.html' || ext === '.htm') {
-          try {
-            const cheerio = await import('cheerio');
-            const html = buffer.toString('utf8');
-            const $ = cheerio.load(html);
-            $('script, style, nav, footer, noscript').remove();
-            extractedText = $('body').text().trim() || $.text().trim();
-          } catch (htmlErr: any) {
-            return error(400, `Failed to parse HTML: ${htmlErr?.message || String(htmlErr)}`);
-          }
         } else {
-          extractedText = buffer.toString('utf8').trim();
+          filename = file.name;
+          const ext = path.extname(filename).toLowerCase();
+          const buffer = Buffer.from(await file.arrayBuffer());
+
+          if (ext === '.pdf') {
+            try {
+              extractedText = await extractTextFromPdf(buffer);
+            } catch (pdfErr: any) {
+              return error(400, `Failed to parse PDF: ${pdfErr?.message || String(pdfErr)}`);
+            }
+          } else if (ext === '.epub') {
+            try {
+              const { extractTextFromEpub } = await import('./epubText');
+              const epubRes = extractTextFromEpub(buffer);
+              extractedText = epubRes.markdown;
+            } catch (epubErr: any) {
+              return error(400, `Failed to parse EPUB: ${epubErr?.message || String(epubErr)}`);
+            }
+          } else if (ext === '.html' || ext === '.htm') {
+            try {
+              const cheerio = await import('cheerio');
+              const html = buffer.toString('utf8');
+              const $ = cheerio.load(html);
+              $('script, style, nav, footer, noscript').remove();
+              extractedText = $('body').text().trim() || $.text().trim();
+            } catch (htmlErr: any) {
+              return error(400, `Failed to parse HTML: ${htmlErr?.message || String(htmlErr)}`);
+            }
+          } else {
+            extractedText = buffer.toString('utf8').trim();
+          }
         }
       } else {
         const body = ((await req.json().catch(() => ({}))) || {}) as Record<string, unknown>;
@@ -2238,6 +2401,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       if (targetUnits > 0) {
         userPrompt += `\n\nTarget number of units: exactly ${targetUnits} units.`;
       }
+      userPrompt += `\n\n=== Critical Page Tracking Requirement ===\nAnalyze the document text, which contains '<!-- page: N -->' demarcations. For EVERY lesson, determine the precise page range in the source document and populate 'pageRange' (e.g. '14-28') and 'readingDescription' (e.g. 'Chapter 1: Vectors & Motion'). This is required so each lesson tracks its corresponding book pages.`;
 
       const config = LLMService.loadStoredConfig();
       if (!config || !config.baseUrl) {
@@ -2411,6 +2575,17 @@ Grade/Level: ${grade || 'High School'}`;
       return fileResponse(fullPath, { 'Cache-Control': 'public, max-age=86400' });
     }
 
+    // GET /api/library/companion/:id
+    const libCompanionMatch = pathname.match(/^\/api\/library\/companion\/(.+)$/);
+    if (libCompanionMatch && method === 'GET') {
+      const idOrFilename = decodeURIComponent(libCompanionMatch[1]);
+      const companion = LibraryService.getCompanionMarkdown(idOrFilename);
+      if (!companion) {
+        return error(404, `Companion markdown not found for ${idOrFilename}`);
+      }
+      return json({ success: true, companion });
+    }
+
     // Annotations for library
     if (pathname === '/api/library/annotations' && method === 'GET') {
       const strokes = LibraryService.getAnnotations();
@@ -2437,12 +2612,30 @@ Grade/Level: ${grade || 'High School'}`;
       const file = typeof body.file === 'string' ? body.file.trim() : '';
       const verticalPosition = typeof body.verticalPosition === 'number' ? body.verticalPosition : 0;
       if (!file) return error(400, 'file is required');
+      if (body.type !== undefined && !isCheckpointType(body.type)) {
+        return error(400, `Unsupported checkpoint type: ${String(body.type)}`);
+      }
+      if (body.aiStatus !== undefined && normalizeAiStatus(body.aiStatus) === undefined) {
+        return error(400, `Unsupported aiStatus: ${String(body.aiStatus)}`);
+      }
       const note = LibraryService.addOrUpdateNoteCheckpoint({
         id: typeof body.id === 'string' ? body.id : undefined,
         file,
         verticalPosition,
         color: typeof body.color === 'string' ? body.color : undefined,
-        noteText: typeof body.noteText === 'string' ? body.noteText : undefined
+        noteText: typeof body.noteText === 'string' ? body.noteText : undefined,
+        type: typeof body.type === 'string' ? body.type : undefined,
+        anchor:
+          body.anchor && typeof body.anchor === 'object' && !Array.isArray(body.anchor)
+            ? (body.anchor as Record<string, unknown>)
+            : undefined,
+        selection:
+          body.selection && typeof body.selection === 'object' && !Array.isArray(body.selection)
+            ? (body.selection as Record<string, unknown>)
+            : undefined,
+        aiQuestion: typeof body.aiQuestion === 'string' ? body.aiQuestion : undefined,
+        aiAnswer: typeof body.aiAnswer === 'string' ? body.aiAnswer : undefined,
+        aiStatus: typeof body.aiStatus === 'string' ? body.aiStatus : undefined
       });
       return json({ success: true, checkpoint: note });
     }
@@ -3008,6 +3201,13 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         if (!course) return error(404, `Course '${courseId}' not found`);
 
         if (method === 'GET') {
+          if (url.searchParams.get('companion') === 'true') {
+            const filename = url.searchParams.get('file');
+            if (!filename) return error(400, 'file query parameter required');
+            const companion = CourseService.getLockerDocCompanion(courseId, filename);
+            if (!companion) return error(404, `Companion markdown not found for ${filename}`);
+            return json({ success: true, courseId, filename, companion });
+          }
           const files = CourseService.listLockerDocs(courseId);
           return json({ success: true, courseId, files });
         }
@@ -3374,14 +3574,25 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         }
       }
 
-      // GET|HEAD /api/courses/:course_id/assets/**
-      const assetsMatch = subpath.match(/^assets\/(.+)$/);
+      // GET|HEAD /api/courses/:course_id/assets/** or /dependencies/**
+      const assetsMatch = subpath.match(/^(?:assets\/)+(.+)$/) || subpath.match(/^(?:dependencies\/)+(.+)$/);
       if (assetsMatch && (method === 'GET' || method === 'HEAD')) {
         // Already decoded once at the top of handleApiRequest — decoding here
         // again would corrupt asset names containing a literal '%'.
         const assetRelativePath = assetsMatch[1];
         const fullPath = CourseService.resolveAssetPath(courseId, assetRelativePath);
         if (!fullPath || !fs.existsSync(fullPath)) {
+          // If the broken request is for an image, serve a transparent 1x1 pixel so the UI doesn't break
+          if (/\.(png|jpe?g|gif|webp|svg|ico)$/i.test(assetRelativePath)) {
+            return new Response(TRANSPARENT_1X1_PNG, {
+              status: 200,
+              headers: {
+                'Content-Type': 'image/png',
+                'Cache-Control': 'no-cache',
+                'X-Asset-Fallback': 'transparent-pixel'
+              }
+            });
+          }
           return error(404, 'Asset not found');
         }
         return fileResponse(fullPath, { 'Cache-Control': 'public, max-age=86400' });
@@ -3418,14 +3629,51 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         if (!file) {
           return error(400, 'file is required');
         }
+        if (body.type !== undefined && !isCheckpointType(body.type)) {
+          return error(400, `Unsupported checkpoint type: ${String(body.type)}`);
+        }
+        if (body.aiStatus !== undefined && normalizeAiStatus(body.aiStatus) === undefined) {
+          return error(400, `Unsupported aiStatus: ${String(body.aiStatus)}`);
+        }
+        const anchor =
+          body.anchor && typeof body.anchor === 'object' && !Array.isArray(body.anchor)
+            ? (body.anchor as Record<string, unknown>)
+            : undefined;
+        const selection =
+          body.selection && typeof body.selection === 'object' && !Array.isArray(body.selection)
+            ? (body.selection as Record<string, unknown>)
+            : undefined;
         const note = CourseService.addOrUpdateNoteCheckpoint(courseId, {
           id: typeof body.id === 'string' ? body.id : undefined,
           file,
           verticalPosition,
+          type: typeof body.type === 'string' ? body.type : undefined,
           color: typeof body.color === 'string' ? body.color : undefined,
-          noteText: typeof body.noteText === 'string' ? body.noteText : undefined
+          noteText: typeof body.noteText === 'string' ? body.noteText : undefined,
+          anchor,
+          selection,
+          aiQuestion: typeof body.aiQuestion === 'string' ? body.aiQuestion : undefined,
+          aiAnswer: typeof body.aiAnswer === 'string' ? body.aiAnswer : undefined,
+          aiStatus: typeof body.aiStatus === 'string' ? body.aiStatus : undefined
         });
         return json({ success: true, checkpoint: note });
+      }
+
+      // PATCH /api/courses/:course_id/checkpoints/:id  (async AI answer update)
+      const patchCpMatch = subpath.match(/^checkpoints\/([^/]+)$/);
+      if (patchCpMatch && method === 'PATCH') {
+        const checkpointId = patchCpMatch[1];
+        const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+        if (body.aiStatus !== undefined && normalizeAiStatus(body.aiStatus) === undefined) {
+          return error(400, `Unsupported aiStatus: ${String(body.aiStatus)}`);
+        }
+        const patch: { aiAnswer?: string; aiStatus?: string; noteText?: string } = {};
+        if (typeof body.aiAnswer === 'string') patch.aiAnswer = body.aiAnswer;
+        if (typeof body.aiStatus === 'string') patch.aiStatus = body.aiStatus;
+        if (typeof body.noteText === 'string') patch.noteText = body.noteText;
+        const updated = CourseService.patchCheckpoint(courseId, checkpointId, patch);
+        if (!updated) return error(404, 'Checkpoint not found');
+        return json({ success: true, checkpoint: updated });
       }
 
       // POST /api/courses/:course_id/checkpoints/position (debounced position recording)
@@ -3446,6 +3694,103 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
         const checkpointId = deleteCpMatch[1];
         const success = CourseService.deleteCheckpoint(courseId, checkpointId);
         return json({ success });
+      }
+
+      // GET /api/courses/:course_id/:lesson_id/content
+      // Serves the original HTML or PDF file for sandboxed in-app viewing.
+      const contentMatch = subpath.match(/^([^/]+)\/content$/);
+      if (contentMatch && method === 'GET') {
+        const lessonId = contentMatch[1];
+        try {
+          assertLessonId(lessonId);
+        } catch {
+          return error(400, 'Invalid lesson identifier');
+        }
+
+        const bundle = CourseService.getLessonContent(courseId, lessonId);
+        if (!bundle) return error(404, 'Lesson not found');
+
+        const courseDir = safeJoin(getCoursesDir(), courseId);
+
+        if (bundle.format === 'html') {
+          const htmlPath = safeJoin(courseDir, `${lessonId}.lesson.html`);
+          if (!fs.existsSync(htmlPath)) return error(404, 'HTML source not found');
+
+          let html = fs.readFileSync(htmlPath, 'utf8');
+
+          // Inject <base href> so relative asset paths (./assets/...) resolve through our proxy
+          const baseTag = `<base href="/api/courses/${courseId}/">`;
+
+          // Discover or self-heal any stylesheets in assets/css/
+          const cssDir = safeJoin(courseDir, 'assets', 'css');
+          let cssFiles: string[] = [];
+          if (fs.existsSync(cssDir)) {
+            try {
+              cssFiles = fs.readdirSync(cssDir).filter((f) => f.endsWith('.css'));
+            } catch {}
+          }
+          if (cssFiles.length === 0) {
+            // Self-heal: extract any .css found in _backup/ archives
+            const backupDir = safeJoin(courseDir, '_backup');
+            if (fs.existsSync(backupDir)) {
+              try {
+                if (!fs.existsSync(cssDir)) fs.mkdirSync(cssDir, { recursive: true });
+                const zips = fs.readdirSync(backupDir).filter((f) => f.endsWith('.zip'));
+                for (const zipName of zips) {
+                  const zipPath = safeJoin(backupDir, zipName);
+                  for (const [entryName, data] of Object.entries(unzipSync(new Uint8Array(fs.readFileSync(zipPath))))) {
+                    if (entryName.endsWith('.css') && !entryName.startsWith('__MACOSX')) {
+                      const outName = path.basename(entryName);
+                      const outPath = safeJoin(cssDir, outName);
+                      if (!fs.existsSync(outPath)) {
+                        fs.writeFileSync(outPath, Buffer.from(data));
+                        cssFiles.push(outName);
+                      }
+                    }
+                  }
+                  if (cssFiles.length > 0) break;
+                }
+              } catch {}
+            }
+          }
+
+          let cssTags = '';
+          for (const cssFile of cssFiles) {
+            if (!html.includes(cssFile)) {
+              cssTags += `<link rel="stylesheet" href="./assets/css/${cssFile}">`;
+            }
+          }
+
+          // Iframe bridge: auto-resize height, Bootstrap accordions, locker docs, internal lessons, and external links
+          const bridgeScript = buildLessonBridgeScript(courseId);
+
+          html = /<head>/i.test(html)
+            ? html.replace(/<head>/i, `<head>${baseTag}${cssTags}${bridgeScript}`)
+            : `<html><head>${baseTag}${cssTags}${bridgeScript}</head><body>${html}</body></html>`;
+
+          return new Response(html, {
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Content-Security-Policy':
+                "frame-ancestors 'self' tauri://* http://tauri.localhost http://localhost:* http://127.0.0.1:*; default-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:;"
+            }
+          });
+        }
+
+        if (bundle.format === 'pdf') {
+          const pdfPath = safeJoin(courseDir, `${lessonId}.lesson.pdf`);
+          if (!fs.existsSync(pdfPath)) return error(404, 'PDF source not found');
+          const data = fs.readFileSync(pdfPath);
+          return new Response(data, {
+            headers: {
+              'Content-Type': 'application/pdf',
+              'Content-Disposition': 'inline',
+              'Content-Length': String(data.byteLength)
+            }
+          });
+        }
+
+        return error(404, 'No binary source for this lesson (format: markdown)');
       }
 
       // GET|PUT /api/courses/:course_id/:lesson_id

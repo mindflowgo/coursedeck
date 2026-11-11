@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { unzipSync } from 'fflate';
 import type { CourseDocType, CourseManifest } from '../parser/courseIngest';
-import { derivePdfMarkupCheckpoints, type Checkpoint } from '../checkpoint';
+import { derivePdfMarkupCheckpoints, isCheckpointType, normalizeAiStatus, normalizeCheckpointRecord, type Anchor, type Checkpoint, type CheckpointType, type SelectionRange } from '../checkpoint';
 import { isMarkupStroke, type MarkupStroke } from '../markup/types';
 import { tabFileName, courseDocFileName, parseDocFileName, parseUnitNumber, isUnitScopeId } from '../tabs';
 import { parseFrontmatter } from '../parser/frontmatter';
@@ -42,9 +43,13 @@ import { extractTextFromPdf } from './pdfText';
 export interface LessonContentBundle {
   courseId: string;
   lessonId: string;
+  /** Companion markdown content. For 'html'/'pdf' formats, sourced from .lesson.companion.md.
+   *  For 'markdown' format, sourced from .lesson.md. */
   lesson: string;
   /** Every tab file on disk for this lesson, keyed by tab slug (summary, test, assignment, …). */
   tabs: Record<string, string>;
+  format: 'markdown' | 'html' | 'pdf' | 'video';
+  hasCompanion: boolean;
 }
 
 export interface LockerDocItem {
@@ -230,6 +235,28 @@ export class CourseService {
     const courseDir = this.courseDir(courseId);
     if (!fs.existsSync(courseDir)) return null;
 
+    // 1. Detect primary format (HTML > PDF > markdown)
+    const htmlPath = safeJoin(courseDir, `${lesson}.lesson.html`);
+    const pdfPath = safeJoin(courseDir, `${lesson}.lesson.pdf`);
+    const mdPath = safeJoin(courseDir, `${lesson}.lesson.md`);
+    const companionPath = safeJoin(courseDir, `${lesson}.lesson.companion.md`);
+
+    const format: 'markdown' | 'html' | 'pdf' | 'video' =
+      fs.existsSync(htmlPath) ? 'html' :
+      fs.existsSync(pdfPath)  ? 'pdf'  : 'markdown';
+
+    // 2. Load companion or lesson markdown
+    const readSafe = (p: string): string =>
+      fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+
+    const lessonContent = format !== 'markdown' ? readSafe(companionPath) : readSafe(mdPath);
+    const hasCompanion = format !== 'markdown' &&
+      fs.existsSync(companionPath) &&
+      readSafe(companionPath).trim().length > 0;
+
+    // 3. Collect other tab files
+    // tabFileRegex: matches `${lesson}.${slug}.md`.
+    // Does NOT match `${lesson}.lesson.companion.md` (dot in middle segment) → companion excluded naturally
     const escaped = lesson.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const tabFileRegex = new RegExp(`^${escaped}\\.([a-z0-9_]+)\\.md$`, 'i');
 
@@ -242,16 +269,13 @@ export class CourseService {
       tabs[slug] = fs.readFileSync(safeJoin(courseDir, f), 'utf8');
     }
 
-    const readSafe = (filename: string): string => {
-      const filePath = safeJoin(courseDir, filename);
-      return fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-    };
-
     return {
       courseId,
       lessonId: lesson,
-      lesson: readSafe(tabFileName(lesson, 'lesson')),
-      tabs
+      lesson: lessonContent,
+      tabs,
+      format,
+      hasCompanion
     };
   }
 
@@ -280,6 +304,30 @@ export class CourseService {
     if (!fs.existsSync(courseDir)) return false;
 
     const effectiveTab = tab === 'studysheet' ? 'notes' : tab;
+
+    if (effectiveTab === 'lesson') {
+      const htmlPath = safeJoin(courseDir, `${lessonId}.lesson.html`);
+      const pdfPath = safeJoin(courseDir, `${lessonId}.lesson.pdf`);
+      const compPath = safeJoin(courseDir, `${lessonId}.lesson.companion.md`);
+      const mdPath = safeJoin(courseDir, `${lessonId}.lesson.md`);
+      if (fs.existsSync(htmlPath) || fs.existsSync(pdfPath)) {
+        if (fs.existsSync(compPath)) {
+          try {
+            const content = fs.readFileSync(compPath, 'utf8');
+            return content.length > 50;
+          } catch {}
+        }
+        return true;
+      }
+      if (fs.existsSync(mdPath)) {
+        try {
+          const content = fs.readFileSync(mdPath, 'utf8');
+          return content.length > 50;
+        } catch {}
+      }
+      return false;
+    }
+
     const filePath = safeJoin(courseDir, tabFileName(lessonId, effectiveTab));
     if (!fs.existsSync(filePath)) return false;
     try {
@@ -300,7 +348,17 @@ export class CourseService {
       return { success: false, filename: '' };
     }
 
-    const filename = tabFileName(lessonId, tab);
+    let filename: string;
+    if (tab === 'lesson') {
+      const htmlPath = safeJoin(courseDir, `${lessonId}.lesson.html`);
+      const pdfPath = safeJoin(courseDir, `${lessonId}.lesson.pdf`);
+      filename = (fs.existsSync(htmlPath) || fs.existsSync(pdfPath))
+        ? `${lessonId}.lesson.companion.md`
+        : tabFileName(lessonId, tab);
+    } else {
+      filename = tabFileName(lessonId, tab);
+    }
+
     const filePath = safeJoin(courseDir, filename);
 
     try {
@@ -327,9 +385,85 @@ export class CourseService {
   }
 
   static resolveAssetPath(courseId: string, subPath: string): string | null {
-    const fullPath = trySafeJoin(resolveCoursesDir(), normalizeCourseId(courseId), 'assets', subPath);
-    if (!fullPath || !fs.existsSync(fullPath)) return null;
-    return fs.statSync(fullPath).isFile() ? fullPath : null;
+    const coursesDir = resolveCoursesDir();
+    const courseDir = safeJoin(coursesDir, normalizeCourseId(courseId));
+    if (!fs.existsSync(courseDir)) return null;
+
+    // 1. Direct match: courses/:id/assets/:subPath
+    let fullPath = trySafeJoin(courseDir, 'assets', subPath);
+    if (fullPath && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+      return fullPath;
+    }
+
+    // 2. Direct match under courseDir root (e.g. dependencies/:file)
+    fullPath = trySafeJoin(courseDir, subPath);
+    if (fullPath && fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
+      return fullPath;
+    }
+
+    const filename = path.basename(subPath);
+
+    // 3. Category search under assets/ (css, img, icons, locker_docs, fonts, dependencies)
+    const candidateDirs = ['css', 'img', 'icons', 'locker_docs', 'fonts', 'dependencies'];
+    for (const cat of candidateDirs) {
+      const candidate = trySafeJoin(courseDir, 'assets', cat, filename);
+      if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        return candidate;
+      }
+    }
+
+    // 4. Fallback search directly in assets/
+    const inAssets = trySafeJoin(courseDir, 'assets', filename);
+    if (inAssets && fs.existsSync(inAssets) && fs.statSync(inAssets).isFile()) {
+      return inAssets;
+    }
+
+    // 5. Alternate image extensions (e.g. .png requested but optimized to .jpg, or vice-versa)
+    const ext = path.extname(filename).toLowerCase();
+    const stem = path.basename(filename, ext);
+    const RASTER_EXTS = ['.png', '.jpg', '.jpeg', '.webp'];
+    if (RASTER_EXTS.includes(ext)) {
+      for (const altExt of RASTER_EXTS) {
+        if (altExt === ext) continue;
+        const altFile = `${stem}${altExt}`;
+        for (const cat of candidateDirs) {
+          const candidate = trySafeJoin(courseDir, 'assets', cat, altFile);
+          if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+            return candidate;
+          }
+        }
+        const inAssetsAlt = trySafeJoin(courseDir, 'assets', altFile);
+        if (inAssetsAlt && fs.existsSync(inAssetsAlt) && fs.statSync(inAssetsAlt).isFile()) {
+          return inAssetsAlt;
+        }
+      }
+    }
+
+    // 6. Self-heal from _backup/*.zip if the asset was packaged inside the archive
+    const backupDir = safeJoin(courseDir, '_backup');
+    if (fs.existsSync(backupDir)) {
+      try {
+        const zips = fs.readdirSync(backupDir).filter((f) => f.endsWith('.zip'));
+        for (const zipName of zips) {
+          const zipPath = safeJoin(backupDir, zipName);
+          const entries = unzipSync(new Uint8Array(fs.readFileSync(zipPath)));
+          for (const [entryName, data] of Object.entries(entries)) {
+            if (path.basename(entryName).toLowerCase() === filename.toLowerCase()) {
+              const isLocker = entryName.toLowerCase().includes('locker_docs');
+              const targetDir = isLocker
+                ? safeJoin(courseDir, 'assets', 'locker_docs')
+                : safeJoin(courseDir, 'assets', 'img');
+              if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+              const extractedPath = safeJoin(targetDir, filename);
+              fs.writeFileSync(extractedPath, Buffer.from(data));
+              return extractedPath;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    return null;
   }
 
   static listLockerDocs(courseId: string): LockerDocItem[] {
@@ -340,7 +474,7 @@ export class CourseService {
     try {
       const files = fs.readdirSync(lockerDir);
       return files
-        .filter((f) => !f.startsWith('.'))
+        .filter((f) => !f.startsWith('.') && !f.endsWith('.companion.md'))
         .map((f) => {
           const filePath = safeJoin(lockerDir, f);
           const stat = fs.statSync(filePath);
@@ -360,6 +494,18 @@ export class CourseService {
     }
   }
 
+  static getLockerDocCompanion(courseId: string, filename: string): string | null {
+    const courseDir = this.courseDir(courseId);
+    const safeName = path.basename(filename);
+    const companionPath = safeJoin(courseDir, 'assets', 'locker_docs', `${safeName}.companion.md`);
+    if (fs.existsSync(companionPath)) {
+      try {
+        return fs.readFileSync(companionPath, 'utf8');
+      } catch {}
+    }
+    return null;
+  }
+
   static saveLockerDoc(courseId: string, filename: string, buffer: Buffer): LockerDocItem {
     const courseDir = this.courseDir(courseId);
     const lockerDir = safeJoin(courseDir, 'assets', 'locker_docs');
@@ -374,6 +520,20 @@ export class CourseService {
         this.updateCourseMeta(courseId, { coursePDF: true });
       } catch (err) {
         console.warn(`Failed to update coursePDF in .manifest.json for ${courseId}:`, err);
+      }
+    }
+    if (safeName.toLowerCase().endsWith('.pdf')) {
+      const companionPath = `${dest}.companion.md`;
+      if (!fs.existsSync(companionPath)) {
+        extractTextFromPdf(buffer)
+          .then((md) => {
+            if (md) {
+              fs.writeFileSync(companionPath, md, 'utf-8');
+            }
+          })
+          .catch((err) => {
+            console.warn(`Failed to generate companion markdown for locker doc ${safeName}:`, err);
+          });
       }
     }
     const ext = path.extname(safeName).replace(/^\./, '').toLowerCase();
@@ -394,6 +554,12 @@ export class CourseService {
     if (fs.existsSync(dest)) {
       try {
         fs.unlinkSync(dest);
+        const companionPath = `${dest}.companion.md`;
+        if (fs.existsSync(companionPath)) {
+          try {
+            fs.unlinkSync(companionPath);
+          } catch {}
+        }
         if (safeName.toLowerCase() === 'course.pdf') {
           try {
             this.updateCourseMeta(courseId, { coursePDF: false });
@@ -540,10 +706,12 @@ export class CourseService {
       const raw = fs.readFileSync(filePath, 'utf8');
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
-      return parsed.filter(
-        (item): item is Checkpoint =>
-          Boolean(item && typeof item === 'object' && item.id && item.file && typeof item.verticalPosition === 'number' && item.type)
-      );
+      const normalized: Checkpoint[] = [];
+      for (const item of parsed) {
+        const cp = normalizeCheckpointRecord(item);
+        if (cp) normalized.push(cp);
+      }
+      return normalized;
     } catch (e) {
       console.warn(`Failed to read checkpoints from ${filePath}:`, e);
       return [];
@@ -657,14 +825,24 @@ export class CourseService {
       id?: string;
       file: string;
       verticalPosition: number;
+      type?: string;
       color?: string;
       noteText?: string;
+      anchor?: Record<string, unknown>;
+      selection?: Record<string, unknown>;
+      aiQuestion?: string;
+      aiAnswer?: string;
+      aiStatus?: string;
     }
   ): Checkpoint {
     const checkpoints = this.getCheckpoints(courseId);
     const now = new Date().toISOString();
     const pos = Math.max(0, Math.floor(note.verticalPosition));
     const cleanFile = note.file.trim();
+    const type: CheckpointType = isCheckpointType(note.type) ? note.type : 'note';
+    const aiStatus = normalizeAiStatus(note.aiStatus);
+    const anchor = note.anchor !== undefined ? (note.anchor as unknown as Anchor) : undefined;
+    const selection = note.selection !== undefined ? (note.selection as unknown as SelectionRange) : undefined;
 
     if (note.id) {
       const idx = checkpoints.findIndex((c) => c.id === note.id);
@@ -673,9 +851,15 @@ export class CourseService {
           ...checkpoints[idx],
           file: cleanFile,
           verticalPosition: pos,
+          type: note.type === undefined ? checkpoints[idx].type : type,
           color: note.color || checkpoints[idx].color || 'yellow',
           noteText: note.noteText ?? checkpoints[idx].noteText ?? '',
-          date: now
+          date: now,
+          ...(anchor !== undefined && { anchor }),
+          ...(selection !== undefined && { selection }),
+          ...(note.aiQuestion !== undefined && { aiQuestion: note.aiQuestion }),
+          ...(note.aiAnswer !== undefined && { aiAnswer: note.aiAnswer }),
+          ...(aiStatus !== undefined && { aiStatus })
         };
         this.saveCheckpoints(courseId, checkpoints);
         return checkpoints[idx];
@@ -686,14 +870,39 @@ export class CourseService {
       id: note.id || `cp_note_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       file: cleanFile,
       verticalPosition: pos,
-      type: 'note',
+      type,
       color: note.color || 'yellow',
       noteText: note.noteText || '',
-      date: now
+      date: now,
+      ...(anchor !== undefined && { anchor }),
+      ...(selection !== undefined && { selection }),
+      ...(note.aiQuestion !== undefined && { aiQuestion: note.aiQuestion }),
+      ...(note.aiAnswer !== undefined && { aiAnswer: note.aiAnswer }),
+      ...(aiStatus !== undefined && { aiStatus })
     };
     checkpoints.push(newCp);
     this.saveCheckpoints(courseId, checkpoints);
     return newCp;
+  }
+
+  static patchCheckpoint(
+    courseId: string,
+    id: string,
+    patch: { aiAnswer?: string; aiStatus?: string; noteText?: string }
+  ): Checkpoint | null {
+    const checkpoints = this.getCheckpoints(courseId);
+    const idx = checkpoints.findIndex((c) => c.id === id);
+    if (idx === -1) return null;
+    const { aiStatus, ...rest } = patch;
+    const normalizedStatus = normalizeAiStatus(aiStatus);
+    checkpoints[idx] = {
+      ...checkpoints[idx],
+      ...rest,
+      ...(normalizedStatus !== undefined && { aiStatus: normalizedStatus }),
+      date: new Date().toISOString()
+    };
+    this.saveCheckpoints(courseId, checkpoints);
+    return checkpoints[idx];
   }
 
   static deleteCheckpoint(courseId: string, checkpointId: string): boolean {
@@ -713,7 +922,7 @@ export class CourseService {
     for (const course of courses) {
       const cps = this.getCheckpoints(course.id);
       for (const cp of cps) {
-        if (cp.type === 'note') {
+        if (cp.type === 'note' || cp.type === 'highlight' || cp.type === 'ai') {
           allNotes.push({
             ...cp,
             courseId: course.id,
@@ -733,7 +942,7 @@ export class CourseService {
     for (const course of courses) {
       const cps = this.getCheckpoints(course.id);
       for (const cp of cps) {
-        if (cp.type === 'note') {
+        if (cp.type === 'note' || cp.type === 'highlight' || cp.type === 'ai') {
           all.push({
             ...cp,
             courseId: course.id,
@@ -1167,11 +1376,19 @@ export class CourseService {
 
     // First pass: per-lesson word counts for the statistics header.
     const allLessons = course.units.flatMap((u) => u.lessons);
+    const readLessonText = (lessonId: string): string => {
+      const companionFile = safeJoin(courseDir, `${lessonId}.lesson.companion.md`);
+      if (fs.existsSync(companionFile)) return fs.readFileSync(companionFile, 'utf8');
+      const mdFile = safeJoin(courseDir, tabFileName(lessonId, 'lesson'));
+      if (fs.existsSync(mdFile)) return fs.readFileSync(mdFile, 'utf8');
+      return '';
+    };
+
     let totalWords = 0;
     for (const lesson of allLessons) {
-      const lessonFile = safeJoin(courseDir, tabFileName(lesson.id, 'lesson'));
-      if (fs.existsSync(lessonFile)) {
-        totalWords += countWords(fs.readFileSync(lessonFile, 'utf8'));
+      const text = readLessonText(lesson.id);
+      if (text) {
+        totalWords += countWords(text);
       }
     }
     const contentLessons = allLessons.filter((l) => l.type === 'lesson').length;
@@ -1206,10 +1423,8 @@ export class CourseService {
         lines.push(`### Lesson ${lesson.id}${kind}: ${lesson.title}\n\n`);
 
         // Effort signals: raw content size + summary information density.
-        const lessonFile = safeJoin(courseDir, tabFileName(lesson.id, 'lesson'));
-        const lessonWords = fs.existsSync(lessonFile)
-          ? countWords(fs.readFileSync(lessonFile, 'utf8'))
-          : 0;
+        const lessonText = readLessonText(lesson.id);
+        const lessonWords = lessonText ? countWords(lessonText) : 0;
         const summaryBody =
           this.readCuratedContent(courseDir, lesson.id, 'summary') ??
           this.readCuratedContent(courseDir, lesson.id, 'notes');
@@ -1279,12 +1494,18 @@ export class CourseService {
     if (!fs.existsSync(courseDir)) return [];
     const efforts: LessonEffort[] = [];
 
+    const readLessonText = (lessonId: string): string => {
+      const companionFile = safeJoin(courseDir, `${lessonId}.lesson.companion.md`);
+      if (fs.existsSync(companionFile)) return fs.readFileSync(companionFile, 'utf8');
+      const mdFile = safeJoin(courseDir, tabFileName(lessonId, 'lesson'));
+      if (fs.existsSync(mdFile)) return fs.readFileSync(mdFile, 'utf8');
+      return '';
+    };
+
     for (const unit of course.units) {
       for (const lesson of unit.lessons) {
-        const lessonFile = safeJoin(courseDir, tabFileName(lesson.id, 'lesson'));
-        const wordCount = fs.existsSync(lessonFile)
-          ? countWords(fs.readFileSync(lessonFile, 'utf8'))
-          : 0;
+        const lessonText = readLessonText(lesson.id);
+        const wordCount = lessonText ? countWords(lessonText) : 0;
 
         const summaryBody =
           this.readCuratedContent(courseDir, lesson.id, 'summary') ??

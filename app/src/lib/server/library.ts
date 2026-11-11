@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getLibraryDir, safeJoin } from './paths';
 import { isMarkupStroke, type MarkupStroke } from '../markup/types';
-import { type Checkpoint } from '../checkpoint';
+import { isCheckpointType, normalizeAiStatus, normalizeCheckpointRecord, type Anchor, type Checkpoint, type SelectionRange } from '../checkpoint';
+import { extractTextFromPdf } from './pdfText';
 
 export type LibraryDocumentFormat = 'pdf' | 'epub' | 'mobi';
 
@@ -162,6 +163,14 @@ export class LibraryService {
             const extracted = await extractPdfPageCountAndTitle(buf);
             pages = extracted.pages;
             titleFromPdf = extracted.title;
+            const companionPath = `${fullPath}.companion.md`;
+            if (!fs.existsSync(companionPath)) {
+              extractTextFromPdf(buf)
+                .then((md) => {
+                  if (md) fs.writeFileSync(companionPath, md, 'utf-8');
+                })
+                .catch(() => {});
+            }
           } catch {}
         }
 
@@ -256,6 +265,16 @@ export class LibraryService {
       const extracted = await extractPdfPageCountAndTitle(buffer);
       pages = extracted.pages;
       extractedTitle = extracted.title;
+      const companionPath = `${fullPath}.companion.md`;
+      if (!fs.existsSync(companionPath)) {
+        extractTextFromPdf(buffer)
+          .then((md) => {
+            if (md) fs.writeFileSync(companionPath, md, 'utf-8');
+          })
+          .catch((err) => {
+            console.warn(`[Library] Failed to generate companion for ${cleanName}:`, err);
+          });
+      }
     }
 
     const manifest = this.loadManifest();
@@ -349,6 +368,18 @@ export class LibraryService {
     return reordered;
   }
 
+  static getCompanionMarkdown(idOrFilename: string): string | null {
+    const doc = this.getDocument(idOrFilename);
+    const filename = doc ? doc.filename : path.basename(idOrFilename);
+    const companionPath = safeJoin(this.getDir(), `${filename}.companion.md`);
+    if (fs.existsSync(companionPath)) {
+      try {
+        return fs.readFileSync(companionPath, 'utf8');
+      } catch {}
+    }
+    return null;
+  }
+
   static deleteDocument(id: string): boolean {
     const manifest = this.loadManifest();
     const cleanId = id.trim().toLowerCase();
@@ -362,6 +393,12 @@ export class LibraryService {
     try {
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
+      }
+      const companionPath = `${filePath}.companion.md`;
+      if (fs.existsSync(companionPath)) {
+        try {
+          fs.unlinkSync(companionPath);
+        } catch {}
       }
     } catch (e) {
       console.warn(`[Library] Failed to delete file ${filePath}:`, e);
@@ -440,7 +477,13 @@ export class LibraryService {
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      const normalized: Checkpoint[] = [];
+      for (const item of parsed) {
+        const cp = normalizeCheckpointRecord(item);
+        if (cp) normalized.push(cp);
+      }
+      return normalized;
     } catch (e) {
       console.warn(`[Library] Failed to read checkpoints from ${filePath}:`, e);
       return [];
@@ -503,9 +546,18 @@ export class LibraryService {
     verticalPosition: number;
     color?: string;
     noteText?: string;
+    type?: string;
+    anchor?: Record<string, unknown>;
+    selection?: Record<string, unknown>;
+    aiQuestion?: string;
+    aiAnswer?: string;
+    aiStatus?: string;
   }): Checkpoint {
     const checkpoints = this.getCheckpoints();
     const now = new Date().toISOString();
+    const aiStatus = normalizeAiStatus(note.aiStatus);
+    const anchor = note.anchor !== undefined ? (note.anchor as unknown as Anchor) : undefined;
+    const selection = note.selection !== undefined ? (note.selection as unknown as SelectionRange) : undefined;
 
     if (note.id) {
       const idx = checkpoints.findIndex((c) => c.id === note.id);
@@ -516,7 +568,12 @@ export class LibraryService {
           verticalPosition: note.verticalPosition,
           color: note.color || checkpoints[idx].color || 'yellow',
           noteText: note.noteText ?? checkpoints[idx].noteText ?? '',
-          date: now
+          date: now,
+          ...(anchor !== undefined && { anchor }),
+          ...(selection !== undefined && { selection }),
+          ...(note.aiQuestion !== undefined && { aiQuestion: note.aiQuestion }),
+          ...(note.aiAnswer !== undefined && { aiAnswer: note.aiAnswer }),
+          ...(aiStatus !== undefined && { aiStatus })
         };
         this.saveCheckpoints(checkpoints);
         return checkpoints[idx];
@@ -528,10 +585,15 @@ export class LibraryService {
       courseId: 'library',
       file: note.file,
       verticalPosition: note.verticalPosition,
-      type: 'note',
+      type: isCheckpointType(note.type) ? note.type : 'note',
       color: note.color || 'yellow',
       noteText: note.noteText || '',
-      date: now
+      date: now,
+      ...(anchor !== undefined && { anchor }),
+      ...(selection !== undefined && { selection }),
+      ...(note.aiQuestion !== undefined && { aiQuestion: note.aiQuestion }),
+      ...(note.aiAnswer !== undefined && { aiAnswer: note.aiAnswer }),
+      ...(aiStatus !== undefined && { aiStatus })
     };
 
     checkpoints.push(newCp);

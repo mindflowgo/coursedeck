@@ -31,12 +31,21 @@
     ArrowRight,
     Pencil,
     MoreVertical,
-    RotateCcw
+    RotateCcw,
+    ExternalLink
   } from 'lucide-svelte';
   import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
   import GroupSelector from '$lib/components/groups/GroupSelector.svelte';
+  import { isTauriEnvironment } from '$lib/pdfClient';
+  import { extractCompanionFromBytes, type CompanionProgress } from '$lib/tauri/pdfCompanion';
 
   // --- Types ---
+  interface ExternalRef {
+    label?: string;
+    url: string;
+    type?: string;
+  }
+
   interface BuilderLesson {
     id: string;
     title: string;
@@ -44,6 +53,7 @@
     content: string;
     pageRange?: string;
     readingDescription?: string;
+    externalRefs?: ExternalRef[];
     expanded?: boolean;
     preview?: boolean;
     generatingContent?: boolean;
@@ -136,9 +146,24 @@
     }
   }
 
+  let previousSyncedBookFile = $state<File | null>(null);
+
   $effect(() => {
-    if (!hasCourseBook && bookFile) {
-      bookFile = null;
+    if (hasCourseBook && bookFile) {
+      // Default to the course book from Step 1 if aiFile is not set or was previously synced from bookFile
+      if (!aiFile || aiFile === previousSyncedBookFile) {
+        aiFile = bookFile;
+        previousSyncedBookFile = bookFile;
+        aiInputType = 'file';
+      }
+    } else if (!hasCourseBook) {
+      if (aiFile && aiFile === previousSyncedBookFile) {
+        aiFile = null;
+      }
+      previousSyncedBookFile = null;
+      if (bookFile) {
+        bookFile = null;
+      }
     }
   });
 
@@ -166,20 +191,32 @@
   let archiveFiles = $state<File[]>([]);
   let isDraggingArchive = $state(false);
   let isUploadingArchive = $state(false);
+  let useMarkdownAsLesson = $state(false);
+  let archiveProgressPercent = $state(0);
+  let archiveProgressCurrent = $state(0);
+  let archiveProgressTotal = $state(0);
+  let archiveCurrentStep = $state('');
+
+  // --- Visual / AI Creation Progress State ---
+  let isCreatingCourse = $state(false);
+  let creationCurrentStep = $state('');
 
   // --- Mode B (AI Proposer) State ---
   type AiInputType = 'file' | 'text';
   let aiInputType = $state<AiInputType>('file');
   let aiFile = $state<File | null>(null);
+  let isDraggingAiFile = $state(false);
   let aiText = $state('');
   let aiInstructions = $state('');
   let aiTargetUnits = $state(0);
   let isAnalyzingAi = $state(false);
   let aiAnalysisStep = $state('');
+  let aiProgressCurrent = $state(0);
+  let aiProgressTotal = $state(0);
+  let aiProgressIsOcr = $state(false);
   let aiProposalSuccess = $state(false);
 
   // --- AI Architect Prompt Customization ---
-  let isAiMenuOpen = $state(false);
   let isCustomPromptOpen = $state(false);
   let defaultBuilderPrompt = $state('');
   let customSystemPrompt = $state('');
@@ -201,9 +238,11 @@ Analyze the provided course material, syllabus, textbook, or document and propos
    - "description": Ontario syllabus course description aligned with Ministry curriculum expectations.
 2. Structure into 4 to 5 core sequential Units.
 3. Under each unit, include instructional Lessons followed by a Culminating Unit Assignment ("type": "assignment").
-   - "id": Two-digit dot numbering ("01.01", "01.02", etc.)
+   - "id": Two-digit dash numbering ("01-01", "01-02", etc.)
    - "title": Curriculum topic title
    - "type": "lesson" or "assignment"
+   - "pageRange": MANDATORY. Book page range for this lesson (e.g. "14-28") correlated from <!-- page: N --> markers.
+   - "readingDescription": Reading guide description for this lesson.
    - "content": Starter markdown outline with Specific Expectations, Learning Goals, and Key Concepts.
 
 ### Output Format:
@@ -223,9 +262,11 @@ Analyze the provided textbook chapter, manual, or lecture notes and convert them
    - "description": Comprehensive textbook syllabus description.
 2. Map each major section or chapter into a dedicated Unit (3 to 6 units).
 3. Map individual sub-topics, theorems, or sections into individual Lessons:
-   - "id": Dot-numbered ("01.01", "01.02", etc.)
+   - "id": Dash-numbered ("01-01", "01-02", etc.)
    - "title": Topic title matching textbook section
    - "type": "lesson" (or "assignment" for chapter problem sets / review labs)
+   - "pageRange": MANDATORY. Book page range for this lesson (e.g. "14-28") correlated from <!-- page: N --> markers.
+   - "readingDescription": Reading guide description for this lesson.
    - "content": Starter notes summarizing the key formulas, definitions, and worked examples.
 
 ### Output Format:
@@ -245,9 +286,11 @@ Analyze the provided technical document, API documentation, framework guide, or 
    - "description": Developer syllabus with prerequisites and technical outcomes.
 2. Structure into 3 to 5 Units progressing from architecture/prerequisites to production capstone.
 3. Under each unit, pair conceptual lessons with practical coding exercises or lab assignments:
-   - "id": Dot-numbered ("01.01", "01.02", etc.)
+   - "id": Dash-numbered ("01-01", "01-02", etc.)
    - "title": Specific technical topic or hands-on lab
    - "type": "lesson" for conceptual lectures; "assignment" for coding challenges/labs
+   - "pageRange": Book page range for this lesson (e.g. "14-28") correlated from <!-- page: N --> markers.
+   - "readingDescription": Reading guide description for this lesson.
    - "content": Starter markdown with code snippets, architecture diagrams, and coding objectives.
 
 ### Output Format:
@@ -267,9 +310,11 @@ Analyze the provided course material and construct a fast-paced, high-yield cras
    - "description": High-yield revision syllabus focusing on high-probability exam concepts.
 2. Structure into 3 to 4 dense, high-impact Units covering the core foundational domains.
 3. Every unit should feature concise core topic lessons and finish with a diagnostic practice test or review assignment:
-   - "id": Dot-numbered ("01.01", "01.02", etc.)
+   - "id": Dash-numbered ("01-01", "01-02", etc.)
    - "title": High-yield concept title
    - "type": "lesson" or "assignment"
+   - "pageRange": Book page range for this lesson (e.g. "14-28") correlated from <!-- page: N --> markers.
+   - "readingDescription": Reading guide description for this lesson.
    - "content": Core definitions, essential formulas, and common exam pitfalls.
 
 ### Output Format:
@@ -316,7 +361,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
       collapsed: false,
       lessons: [
         {
-          id: '01.01',
+          id: '01-01',
           title: 'Introduction & Core Concepts',
           type: 'lesson',
           content: '# Introduction & Core Concepts\n\n### Learning Goals\n- Understand the fundamentals\n- Identify key concepts\n\n### Overview\nWelcome to Lesson 1.',
@@ -332,7 +377,6 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
   let batchLessonsText = $state('');
 
   // --- Form & Status State ---
-  let isCreatingCourse = $state(false);
   let errorMessage = $state('');
   let successMessage = $state('');
 
@@ -427,7 +471,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         collapsed: false,
         lessons: [
           {
-            id: `${String(nextNum).padStart(2, '0')}.01`,
+            id: `${String(nextNum).padStart(2, '0')}-01`,
             title: 'Lesson 1',
             type: 'lesson',
             content: '',
@@ -468,7 +512,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
     const unit = units[unitIndex];
     const uNum = unit.number;
     const lNum = unit.lessons.length + 1;
-    const defaultId = `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
+    const defaultId = `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}`;
 
     unit.lessons.push({
       id: defaultId,
@@ -513,7 +557,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
     const uNum = unit.number;
     unit.lessons.forEach((lesson, lIdx) => {
       const lNum = lIdx + 1;
-      lesson.id = `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
+      lesson.id = `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}`;
     });
   }
 
@@ -566,7 +610,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
 
       const uNum = unit.number;
       const lNum = unit.lessons.length + 1;
-      const defaultId = `${String(uNum).padStart(2, '0')}.${String(lNum).padStart(2, '0')}`;
+      const defaultId = `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}`;
 
       unit.lessons.push({
         id: defaultId,
@@ -599,7 +643,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           collapsed: false,
           lessons: [
             {
-              id: '01.01',
+              id: '01-01',
               title: 'Introduction',
               type: 'lesson',
               content: '# Introduction\n\n### Learning Goals\n- Understand core concepts',
@@ -615,10 +659,10 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           title: 'Unit 1: Foundations and Core Principles',
           collapsed: false,
           lessons: [
-            { id: '01.01', title: 'Course Orientation & Fundamentals', type: 'lesson', content: '' },
-            { id: '01.02', title: 'Exploration & Analysis', type: 'lesson', content: '' },
-            { id: '01.03', title: 'Applied Problem Solving', type: 'lesson', content: '' },
-            { id: '01.04', title: 'Unit 1 Culminating Assignment', type: 'assignment', content: '' }
+            { id: '01-01', title: 'Course Orientation & Fundamentals', type: 'lesson', content: '' },
+            { id: '01-02', title: 'Exploration & Analysis', type: 'lesson', content: '' },
+            { id: '01-03', title: 'Applied Problem Solving', type: 'lesson', content: '' },
+            { id: '01-04', title: 'Unit 1 Culminating Assignment', type: 'assignment', content: '' }
           ]
         },
         {
@@ -626,9 +670,9 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           title: 'Unit 2: Intermediate Systems & Theories',
           collapsed: false,
           lessons: [
-            { id: '02.01', title: 'Theoretical Models', type: 'lesson', content: '' },
-            { id: '02.02', title: 'Case Studies & Practical Work', type: 'lesson', content: '' },
-            { id: '02.03', title: 'Unit 2 Assessment Task', type: 'assignment', content: '' }
+            { id: '02-01', title: 'Theoretical Models', type: 'lesson', content: '' },
+            { id: '02-02', title: 'Case Studies & Practical Work', type: 'lesson', content: '' },
+            { id: '02-03', title: 'Unit 2 Assessment Task', type: 'assignment', content: '' }
           ]
         },
         {
@@ -636,9 +680,9 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           title: 'Unit 3: Advanced Applications & Synthesis',
           collapsed: false,
           lessons: [
-            { id: '03.01', title: 'Specialized Topics', type: 'lesson', content: '' },
-            { id: '03.02', title: 'Critical Evaluation & Methods', type: 'lesson', content: '' },
-            { id: '03.03', title: 'Unit 3 Project', type: 'assignment', content: '' }
+            { id: '03-01', title: 'Specialized Topics', type: 'lesson', content: '' },
+            { id: '03-02', title: 'Critical Evaluation & Methods', type: 'lesson', content: '' },
+            { id: '03-03', title: 'Unit 3 Project', type: 'assignment', content: '' }
           ]
         },
         {
@@ -646,8 +690,8 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           title: 'Unit 4: Capstone & Culminating Review',
           collapsed: false,
           lessons: [
-            { id: '04.01', title: 'Course Review & Synthesis', type: 'lesson', content: '' },
-            { id: '04.02', title: 'Final Culminating Assignment', type: 'assignment', content: '' }
+            { id: '04-01', title: 'Course Review & Synthesis', type: 'lesson', content: '' },
+            { id: '04-02', title: 'Final Culminating Assignment', type: 'assignment', content: '' }
           ]
         }
       ];
@@ -660,9 +704,9 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           title: `Week ${uNum}: Topic ${uNum}`,
           collapsed: false,
           lessons: [
-            { id: `${String(uNum).padStart(2, '0')}.01`, title: 'Lecture & Concepts', type: 'lesson', content: '' },
-            { id: `${String(uNum).padStart(2, '0')}.02`, title: 'Workshop & Discussion', type: 'lesson', content: '' },
-            { id: `${String(uNum).padStart(2, '0')}.03`, title: `Week ${uNum} Lab / Quiz`, type: 'assignment', content: '' }
+            { id: `${String(uNum).padStart(2, '0')}-01`, title: 'Lecture & Concepts', type: 'lesson', content: '' },
+            { id: `${String(uNum).padStart(2, '0')}-02`, title: 'Workshop & Discussion', type: 'lesson', content: '' },
+            { id: `${String(uNum).padStart(2, '0')}-03`, title: `Week ${uNum} Lab / Quiz`, type: 'assignment', content: '' }
           ]
         });
       }
@@ -743,8 +787,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
       let res: Response;
       const isCustomizedPrompt = Boolean(
         customSystemPrompt.trim() &&
-        defaultBuilderPrompt.trim() &&
-        customSystemPrompt.trim() !== defaultBuilderPrompt.trim()
+        (!defaultBuilderPrompt.trim() || customSystemPrompt.trim() !== defaultBuilderPrompt.trim())
       );
 
       if (aiInputType === 'file' && aiFile) {
@@ -755,6 +798,40 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         if (aiTargetUnits > 0) formData.append('targetUnits', String(aiTargetUnits));
         if (isCustomizedPrompt) formData.append('customPrompt', customSystemPrompt.trim());
 
+        // In Tauri desktop/mobile environment, if the file is a PDF, extract high-fidelity companion markdown
+        if (isTauriEnvironment() && /\.pdf$/i.test(aiFile.name)) {
+          try {
+            aiAnalysisStep = 'Analyzing PDF layout & pages...';
+            const buffer = await aiFile.arrayBuffer();
+            const companionRes = await extractCompanionFromBytes(
+              new Uint8Array(buffer),
+              undefined,
+              (progress: CompanionProgress) => {
+                aiProgressCurrent = progress.current_page;
+                aiProgressTotal = progress.total_pages;
+                aiProgressIsOcr = progress.is_ocr;
+                if (progress.stage === 'ocr' || progress.is_ocr) {
+                  aiAnalysisStep = `Processing page ${progress.current_page}/${progress.total_pages} (OCR)...`;
+                } else if (progress.stage === 'extracting') {
+                  aiAnalysisStep = `Extracting page ${progress.current_page}/${progress.total_pages}...`;
+                } else if (progress.stage === 'inspecting') {
+                  aiAnalysisStep = 'Inspecting document layout...';
+                } else if (progress.stage === 'done') {
+                  aiAnalysisStep = `Extracted ${progress.total_pages} pages`;
+                } else {
+                  aiAnalysisStep = progress.message || 'Extracting document...';
+                }
+              }
+            );
+            if (companionRes?.markdown) {
+              formData.append('companionMarkdown', companionRes.markdown);
+            }
+          } catch (tErr) {
+            console.warn('[Builder] Tauri companion extraction fallback:', tErr);
+          }
+        }
+
+        aiAnalysisStep = 'Synthesizing curriculum blueprint with AI architect...';
         res = await apiFetch('/api/builder/propose', {
           method: 'POST',
           body: formData
@@ -799,12 +876,19 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           title: u.title || `Unit ${uIdx + 1}`,
           collapsed: false,
           lessons: (Array.isArray(u.lessons) ? u.lessons : []).map((l: any, lIdx: number) => ({
-            id: l.id || `${String(uIdx + 1).padStart(2, '0')}.${String(lIdx + 1).padStart(2, '0')}`,
+            id: String(l.id || `${String(uIdx + 1).padStart(2, '0')}-${String(lIdx + 1).padStart(2, '0')}`).replace(/^(\d+)\.(\d+)/, '$1-$2'),
             title: l.title || `Lesson ${lIdx + 1}`,
             type: l.type === 'assignment' ? 'assignment' : 'lesson',
             content: l.content || '',
             pageRange: l.pageRange || '',
             readingDescription: l.readingDescription || '',
+            externalRefs: Array.isArray(l.externalRefs)
+              ? l.externalRefs.map((r: any) =>
+                  typeof r === 'string'
+                    ? { label: r, url: r, type: 'article' }
+                    : { label: r.label || r.url, url: r.url, type: r.type || 'article' }
+                )
+              : [],
             expanded: false
           }))
         }));
@@ -818,12 +902,19 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
     } finally {
       isAnalyzingAi = false;
       aiAnalysisStep = '';
+      aiProgressCurrent = 0;
+      aiProgressTotal = 0;
+      aiProgressIsOcr = false;
     }
   }
 
   // --- Submit Course Creation (Mode A) ---
   async function submitArchiveCourse() {
     errorMessage = '';
+    archiveProgressPercent = 0;
+    archiveProgressCurrent = 0;
+    archiveProgressTotal = 0;
+    archiveCurrentStep = 'Uploading course archive...';
     const finalCourseId = courseId.trim().toLowerCase();
     if (!finalCourseId) {
       errorMessage = 'Please provide a valid Course ID (e.g. "sph4u", "eng3u").';
@@ -839,16 +930,21 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
     }
 
     isUploadingArchive = true;
+
     try {
       const formData = new FormData();
       formData.append('courseId', finalCourseId);
       formData.append('mode', 'add');
+      formData.append('useMarkdownAsLesson', String(useMarkdownAsLesson));
       for (const f of archiveFiles) {
         formData.append('files', f);
       }
 
-      const res = await apiFetch('/api/parse', {
+      const res = await apiFetch('/api/parse?stream=true', {
         method: 'POST',
+        headers: {
+          Accept: 'text/event-stream'
+        },
         body: formData
       });
 
@@ -857,7 +953,44 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         throw new Error(text || 'Failed to ingest course archive.');
       }
 
+      if (res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith('data:')) continue;
+            const jsonStr = line.slice(5).trim();
+            try {
+              const ev = JSON.parse(jsonStr);
+              if (ev.step === 'error') {
+                throw new Error(ev.message || 'Ingestion failed');
+              }
+              archiveCurrentStep = ev.message || '';
+              if (typeof ev.total === 'number' && ev.total > 0 && typeof ev.current === 'number') {
+                archiveProgressPercent = Math.min(100, Math.round((ev.current / ev.total) * 100));
+                archiveProgressCurrent = ev.current;
+                archiveProgressTotal = ev.total;
+              }
+            } catch (jsonErr: any) {
+              if (jsonErr.message && !jsonErr.message.includes('JSON')) {
+                throw jsonErr;
+              }
+            }
+          }
+        }
+      }
+
       if (courseTitle.trim() || selectedGroup) {
+        archiveCurrentStep = 'Saving course metadata...';
         await apiFetch(`/api/courses/${finalCourseId}/meta`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -870,6 +1003,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
       }
 
       if (hasCourseBook && bookFile) {
+        archiveCurrentStep = 'Uploading course book PDF...';
         try {
           const form = new FormData();
           form.append('file', new File([bookFile], 'course.pdf', { type: 'application/pdf' }));
@@ -888,6 +1022,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
       }
 
       if (queueStudyMaterials) {
+        archiveCurrentStep = 'Enqueueing AI study materials...';
         await apiFetch('/api/queue', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -899,7 +1034,11 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         }).catch(() => {});
       }
 
-      goto(`/courses/${finalCourseId}`);
+      archiveCurrentStep = 'Complete! Opening course...';
+
+      setTimeout(() => {
+        goto(`/courses/${finalCourseId}`);
+      }, 350);
     } catch (err: any) {
       errorMessage = err.message || 'Failed to ingest course archive.';
     } finally {
@@ -911,6 +1050,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
   async function submitVisualCourse() {
     errorMessage = '';
     successMessage = '';
+    creationCurrentStep = 'Validating curriculum structure...';
 
     const finalTitle = courseTitle.trim();
     if (!finalTitle) {
@@ -937,6 +1077,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
     isCreatingCourse = true;
 
     try {
+      creationCurrentStep = 'Sending curriculum payload to server...';
       const payload = {
         id: finalCourseId,
         title: finalTitle,
@@ -949,11 +1090,12 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
           number: u.number,
           title: u.title,
           lessons: u.lessons.map((l) => ({
-            id: l.id,
+            id: l.id.replace(/^(\d+)\.(\d+)/, '$1-$2'),
             title: l.title,
             type: l.type,
             pageRange: l.pageRange?.trim() || undefined,
             readingDescription: l.readingDescription?.trim() || undefined,
+            externalRefs: Array.isArray(l.externalRefs) && l.externalRefs.length > 0 ? l.externalRefs : undefined,
             content: l.content.trim() ? l.content : `# ${l.title}\n\n### Learning Goals\n- Understand key topics\n\n### Overview\nLesson content.`
           }))
         })),
@@ -972,6 +1114,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
       }
 
       if (hasCourseBook && bookFile) {
+        creationCurrentStep = 'Uploading course book PDF...';
         try {
           const form = new FormData();
           form.append('file', new File([bookFile], 'course.pdf', { type: 'application/pdf' }));
@@ -989,6 +1132,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         }
       }
 
+      creationCurrentStep = 'Saving course locally...';
       try {
         const freshRes = await apiFetch(`/api/courses/${finalCourseId}`);
         if (freshRes.ok) {
@@ -1002,7 +1146,11 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         console.warn('Could not cache course locally:', e);
       }
 
-      goto(`/courses/${finalCourseId}`);
+      creationCurrentStep = 'Course ready! Opening course...';
+
+      setTimeout(() => {
+        goto(`/courses/${finalCourseId}`);
+      }, 350);
     } catch (err: any) {
       console.error('Failed to create course:', err);
       errorMessage = err.message || 'Failed to create course.';
@@ -1493,11 +1641,23 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
         <!-- Mode A: Archive Upload Panel -->
         {#if activeMode === 'archive'}
           <div class="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-2xl p-6 shadow-xs space-y-6">
-            <div>
-              <h3 class="text-base font-semibold">Upload Course Archive</h3>
-              <p class="text-xs text-stone-500 mt-0.5">
-                Accepts packaged ILC courses (.zip), offline archives (.mhtml), or standalone lesson HTML documents.
-              </p>
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 class="text-base font-semibold">Upload Course Archive</h3>
+                <p class="text-xs text-stone-500 mt-0.5">
+                  Accepts packaged ILC courses (.zip), offline archives (.mhtml), or standalone lesson HTML documents.
+                </p>
+              </div>
+
+              <!-- Option: Use Markdown as Lesson -->
+              <label class="inline-flex items-center space-x-2 text-xs font-medium text-stone-700 dark:text-stone-300 cursor-pointer select-none bg-stone-100 dark:bg-stone-800/80 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 px-3 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 transition shrink-0" title="When unchecked (default), keeps original HTML/PDF as lesson, generating a companion markdown file for AI tools">
+                <input
+                  type="checkbox"
+                  bind:checked={useMarkdownAsLesson}
+                  class="w-3.5 h-3.5 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
+                />
+                <span>Use Markdown as Lesson</span>
+              </label>
             </div>
 
             <!-- Dropzone -->
@@ -1580,19 +1740,37 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
               </div>
             {/if}
 
-            <!-- Submit Button -->
+            <!-- Submit Button with Integrated Progress Bar -->
             <button
               type="button"
               disabled={isUploadingArchive || archiveFiles.length === 0}
               onclick={submitArchiveCourse}
-              class="w-full py-2.5 px-4 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium text-sm flex items-center justify-center space-x-2 hover:bg-stone-800 dark:hover:bg-white transition disabled:opacity-50 cursor-pointer shadow-xs"
+              class="relative w-full py-3 px-4 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-medium text-sm overflow-hidden flex items-center justify-center transition disabled:opacity-75 cursor-pointer shadow-xs select-none"
             >
               {#if isUploadingArchive}
-                <Loader2 class="w-4 h-4 animate-spin" />
-                <span>Ingesting Archive & Extracting Lessons...</span>
+                <!-- Background progress fill -->
+                <div
+                  class="absolute inset-y-0 left-0 bg-amber-600/40 dark:bg-amber-400/40 transition-all duration-200 pointer-events-none"
+                  style="width: {archiveProgressPercent}%"
+                ></div>
+                <div class="relative z-10 flex items-center justify-between w-full px-1">
+                  <div class="flex items-center space-x-2 truncate pr-2">
+                    <Loader2 class="w-4 h-4 animate-spin text-amber-400 dark:text-amber-600 shrink-0" />
+                    <span class="truncate text-xs font-semibold">{archiveCurrentStep || 'Ingesting Archive…'}</span>
+                  </div>
+                  <div class="shrink-0 font-mono text-xs font-bold text-amber-300 dark:text-amber-700">
+                    {#if archiveProgressTotal > 0}
+                      {archiveProgressCurrent}/{archiveProgressTotal} ({archiveProgressPercent}%)
+                    {:else if archiveProgressPercent > 0}
+                      {archiveProgressPercent}%
+                    {/if}
+                  </div>
+                </div>
               {:else}
-                <Upload class="w-4 h-4" />
-                <span>Ingest Archive & Open Course</span>
+                <div class="flex items-center space-x-2">
+                  <Upload class="w-4 h-4" />
+                  <span>Ingest Archive & Open Course</span>
+                </div>
               {/if}
             </button>
           </div>
@@ -1635,63 +1813,59 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                   </button>
                 </div>
 
-                <!-- Vertical triple ellipsis for Prompt selection/editing -->
-                <div class="relative inline-flex items-center">
-                  <button
-                    type="button"
-                    onclick={() => (isAiMenuOpen = !isAiMenuOpen)}
-                    class="relative flex items-center justify-center p-2 rounded-lg border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 transition cursor-pointer shadow-2xs {isAiMenuOpen ? 'bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-stone-100' : ''}"
-                    title="Curriculum Architect Prompt Settings"
-                    aria-haspopup="menu"
-                    aria-expanded={isAiMenuOpen}
-                  >
-                    <MoreVertical class="w-4 h-4" />
-                    {#if isCustomPromptOpen || hasCustomPromptEdited}
-                      <span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500 border-2 border-white dark:border-stone-900" title="Custom prompt active"></span>
-                    {/if}
-                  </button>
-
-                  {#if isAiMenuOpen}
-                    <!-- Click outside backdrop -->
-                    <div
-                      class="fixed inset-0 z-40"
-                      onclick={() => (isAiMenuOpen = false)}
-                      aria-hidden="true"
-                    ></div>
-
-                    <div
-                      role="menu"
-                      tabindex="-1"
-                      class="absolute right-0 top-full mt-1.5 w-52 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 py-1 text-xs divide-y divide-stone-100 dark:divide-stone-800 animate-in fade-in zoom-in-95 duration-100"
-                    >
-                      <div class="py-1">
-                        <button
-                          type="button"
-                          role="menuitem"
-                          onclick={() => {
-                            isAiMenuOpen = false;
-                            isCustomPromptOpen = !isCustomPromptOpen;
-                          }}
-                          class="flex w-full items-center justify-between px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left font-medium {isCustomPromptOpen ? 'text-amber-600 dark:text-amber-400 font-semibold' : ''}"
-                        >
-                          <div class="flex items-center space-x-2">
-                            <Sparkles class="w-3.5 h-3.5 {isCustomPromptOpen ? 'text-amber-600 dark:text-amber-400' : 'text-stone-400'} shrink-0" />
-                            <span>Curriculum Prompt</span>
-                          </div>
-                          {#if isCustomPromptOpen}
-                            <span class="text-2xs text-amber-600 dark:text-amber-400 font-semibold">Open</span>
-                          {:else if hasCustomPromptEdited}
-                            <span class="text-2xs text-amber-600 dark:text-amber-400 font-semibold">Custom</span>
-                          {/if}
-                        </button>
-                      </div>
-                    </div>
+                <!-- Direct AI Prompt Toggle Button -->
+                <button
+                  type="button"
+                  onclick={() => (isCustomPromptOpen = !isCustomPromptOpen)}
+                  class="relative inline-flex items-center space-x-1.5 px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer border shadow-2xs {isCustomPromptOpen ? 'bg-amber-500/15 border-amber-500/40 text-amber-700 dark:text-amber-300 font-semibold' : 'border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-700 dark:text-stone-300 hover:bg-stone-50 dark:hover:bg-stone-800'}"
+                  title="View and tweak the AI curriculum architect prompt"
+                >
+                  <Sparkles class="w-3.5 h-3.5 text-amber-500" />
+                  <span>AI Prompt & Presets</span>
+                  {#if hasCustomPromptEdited}
+                    <span class="w-1.5 h-1.5 rounded-full bg-amber-500" title="Custom prompt edited"></span>
                   {/if}
-                </div>
+                  <ChevronDown class="w-3 h-3 text-stone-400 transition-transform duration-200 {isCustomPromptOpen ? 'rotate-180' : ''}" />
+                </button>
               </div>
             </div>
 
-            <!-- Collapsible Prompt Editor Card (revealed from MoreVertical menu) -->
+            <!-- Prompt Preview Bar (shown when collapsed) -->
+            {#if !isCustomPromptOpen}
+              <div class="flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-stone-50 dark:bg-stone-950/60 border border-stone-200/80 dark:border-stone-800/80 text-2xs text-stone-600 dark:text-stone-400">
+                <div class="flex items-center space-x-2 truncate">
+                  <Sparkles class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span class="truncate">
+                    Active AI Prompt: <strong class="text-stone-800 dark:text-stone-200">
+                      {selectedPromptPreset === 'default'
+                        ? 'Standard Curriculum'
+                        : selectedPromptPreset === 'ontario'
+                          ? 'Ontario Secondary (KICA & Tasks)'
+                          : selectedPromptPreset === 'textbook'
+                            ? 'Textbook Chapter Ingestion'
+                            : selectedPromptPreset === 'technical'
+                              ? 'Coding & Technical Labs'
+                              : selectedPromptPreset === 'crash'
+                                ? 'High-Yield Crash Course'
+                                : selectedPromptPreset}
+                    </strong>
+                    {#if hasCustomPromptEdited}
+                      <span class="text-amber-600 dark:text-amber-400 font-semibold ml-1.5 px-1.5 py-0.5 rounded bg-amber-500/10">Customized</span>
+                    {/if}
+                    <span class="text-stone-400 dark:text-stone-500 ml-1">• Page range & video tracking active</span>
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onclick={() => (isCustomPromptOpen = true)}
+                  class="text-amber-600 dark:text-amber-400 hover:underline font-semibold shrink-0 ml-3 cursor-pointer"
+                >
+                  View / Tweak Prompt
+                </button>
+              </div>
+            {/if}
+
+            <!-- Collapsible Prompt Editor Card -->
             {#if isCustomPromptOpen}
               <div class="p-4 rounded-xl bg-stone-50 dark:bg-stone-950/80 border border-stone-200 dark:border-stone-800 space-y-3 animate-in fade-in zoom-in-95 duration-100">
                 <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-stone-200/60 dark:border-stone-800/60 pb-3">
@@ -1749,7 +1923,7 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                     placeholder="Enter custom curriculum architect prompt..."
                   ></textarea>
                   <div class="flex items-center justify-between text-2xs text-stone-500">
-                    <span>The AI model follows this instruction when structuring units, lessons, and starter content from your uploaded document.</span>
+                    <span>The AI model follows this instruction when structuring units, lessons, page ranges, and starter content.</span>
                     <span>{customSystemPrompt.length} chars</span>
                   </div>
                 </div>
@@ -1757,12 +1931,60 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
             {/if}
 
             {#if aiInputType === 'file'}
+              <!-- Step 1 Course Book Card (Default Source Notification) -->
+              {#if hasCourseBook && bookFile}
+                <div class="p-3.5 rounded-xl border transition flex items-center justify-between gap-3 {aiFile === bookFile ? 'bg-amber-500/10 border-amber-500/30' : 'bg-stone-50 dark:bg-stone-850 border-stone-200 dark:border-stone-800'}">
+                  <div class="flex items-center space-x-3 min-w-0">
+                    <div class="p-2 rounded-lg {aiFile === bookFile ? 'bg-amber-500/20 text-amber-600 dark:text-amber-400' : 'bg-stone-200 dark:bg-stone-700 text-stone-500'} shrink-0">
+                      <BookOpen class="w-4 h-4" />
+                    </div>
+                    <div class="min-w-0">
+                      <div class="flex items-center space-x-2">
+                        <span class="text-xs font-semibold truncate text-stone-900 dark:text-stone-100">{bookFile.name}</span>
+                        <span class="text-3xs uppercase tracking-wider px-1.5 py-0.5 rounded font-mono font-medium {aiFile === bookFile ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300' : 'bg-stone-200 dark:bg-stone-700 text-stone-600 dark:text-stone-300'}">
+                          Course Book (Step 1)
+                        </span>
+                      </div>
+                      <div class="text-2xs text-stone-500 dark:text-stone-400 truncate mt-0.5">
+                        {(bookFile.size / 1024 / 1024).toFixed(2)} MB • {aiFile === bookFile ? 'Active default source: the AI will analyze this textbook and map lesson page ranges.' : 'Attached as course book. You have selected a different file below.'}
+                      </div>
+                    </div>
+                  </div>
+                  <div class="shrink-0 flex items-center space-x-2">
+                    {#if aiFile === bookFile}
+                      <span class="inline-flex items-center text-xs font-semibold text-amber-600 dark:text-amber-400 bg-amber-500/15 px-2.5 py-1 rounded-md">
+                        <Check class="w-3.5 h-3.5 mr-1" /> Active Source
+                      </span>
+                    {:else}
+                      <button
+                        type="button"
+                        onclick={() => { aiFile = bookFile; previousSyncedBookFile = bookFile; }}
+                        class="inline-flex items-center text-xs font-medium text-stone-700 dark:text-stone-200 hover:text-amber-600 dark:hover:text-amber-400 border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-2.5 py-1 rounded-md shadow-2xs transition cursor-pointer"
+                      >
+                        Use Course Book
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
+
               <!-- File dropzone -->
-              <div>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                ondragover={(e) => { e.preventDefault(); isDraggingAiFile = true; }}
+                ondragleave={() => (isDraggingAiFile = false)}
+                ondrop={(e) => {
+                  e.preventDefault();
+                  isDraggingAiFile = false;
+                  if (e.dataTransfer?.files?.[0]) {
+                    aiFile = e.dataTransfer.files[0];
+                  }
+                }}
+              >
                 <input
                   type="file"
                   id="ai-file-input"
-                  accept=".pdf,.html,.htm,.txt,.md"
+                  accept=".pdf,.epub,.html,.htm,.txt,.md"
                   onchange={(e) => {
                     const target = e.target as HTMLInputElement;
                     if (target.files?.[0]) aiFile = target.files[0];
@@ -1772,20 +1994,35 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                 <label
                   for="ai-file-input"
                   class={`border-2 border-dashed rounded-xl p-8 text-center transition flex flex-col items-center justify-center cursor-pointer ${
-                    aiFile
-                      ? 'border-amber-500/50 bg-amber-50/20 dark:bg-amber-950/20'
-                      : 'border-stone-200 dark:border-stone-800 hover:border-stone-300 dark:hover:border-stone-700'
+                    isDraggingAiFile
+                      ? 'border-amber-500 bg-amber-50/50 dark:bg-amber-950/30'
+                      : aiFile
+                        ? 'border-amber-500/50 bg-amber-50/20 dark:bg-amber-950/20'
+                        : 'border-stone-200 dark:border-stone-800 hover:border-stone-300 dark:hover:border-stone-700'
                   }`}
                 >
                   <div class="p-3 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 mb-2">
-                    <Upload class="w-6 h-6" />
+                    {#if aiFile === bookFile}
+                      <BookOpen class="w-6 h-6" />
+                    {:else}
+                      <Upload class="w-6 h-6" />
+                    {/if}
                   </div>
                   {#if aiFile}
-                    <div class="text-sm font-semibold text-stone-900 dark:text-stone-100">{aiFile.name}</div>
-                    <div class="text-xs text-stone-500 mt-1">{(aiFile.size / 1024 / 1024).toFixed(2)} MB • Click to replace file</div>
+                    <div class="text-sm font-semibold text-stone-900 dark:text-stone-100 flex items-center justify-center space-x-1.5">
+                      <span>{aiFile.name}</span>
+                      {#if aiFile === bookFile}
+                        <span class="text-3xs uppercase tracking-wider px-1.5 py-0.5 rounded font-mono font-medium bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                          Course Book
+                        </span>
+                      {/if}
+                    </div>
+                    <div class="text-xs text-stone-500 mt-1">
+                      {(aiFile.size / 1024 / 1024).toFixed(2)} MB • {aiFile === bookFile ? 'Default source from Step 1 • Click or drop to use a different syllabus/document' : 'Click to replace file or drop another document'}
+                    </div>
                   {:else}
-                    <div class="text-sm font-medium">Select a syllabus or textbook PDF / Text file</div>
-                    <div class="text-xs text-stone-500 mt-1">Accepts .pdf, .txt, .md, .html (max ~50 MB)</div>
+                    <div class="text-sm font-medium">Select a syllabus or textbook PDF / EPUB / Text file</div>
+                    <div class="text-xs text-stone-500 mt-1">Accepts .pdf, .epub, .txt, .md, .html (max ~50 MB)</div>
                   {/if}
                 </label>
               </div>
@@ -1851,13 +2088,38 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
               class="w-full py-2.5 px-4 rounded-xl bg-amber-600 dark:bg-amber-500 text-white dark:text-stone-950 font-semibold text-sm flex items-center justify-center space-x-2 hover:bg-amber-700 dark:hover:bg-amber-400 transition disabled:opacity-50 cursor-pointer shadow-xs"
             >
               {#if isAnalyzingAi}
-                <Loader2 class="w-4 h-4 animate-spin" />
-                <span>{aiAnalysisStep || 'Analyzing Document & Synthesizing Curriculum...'}</span>
+                <Loader2 class="w-4 h-4 animate-spin shrink-0" />
+                <span class="truncate">{aiAnalysisStep || 'Analyzing Document & Synthesizing Curriculum...'}</span>
               {:else}
-                <Sparkles class="w-4 h-4" />
+                <Sparkles class="w-4 h-4 shrink-0" />
                 <span>Analyze Material & Propose Curriculum</span>
               {/if}
             </button>
+
+            <!-- Extraction & OCR Progress Bar -->
+            {#if isAnalyzingAi && aiProgressTotal > 0}
+              <div class="p-3 bg-stone-50 dark:bg-stone-950/60 rounded-xl border border-stone-200 dark:border-stone-800/80 space-y-2">
+                <div class="flex items-center justify-between text-2xs font-mono text-stone-600 dark:text-stone-400">
+                  <div class="flex items-center space-x-2">
+                    {#if aiProgressIsOcr}
+                      <span class="px-1.5 py-0.5 rounded text-3xs font-semibold bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                        OCR Active
+                      </span>
+                    {/if}
+                    <span>Processing Page {aiProgressCurrent} of {aiProgressTotal}</span>
+                  </div>
+                  <span class="font-semibold text-stone-700 dark:text-stone-300">
+                    {Math.round((aiProgressCurrent / aiProgressTotal) * 100)}%
+                  </span>
+                </div>
+                <div class="w-full h-1.5 rounded-full bg-stone-200 dark:bg-stone-800 overflow-hidden">
+                  <div
+                    class="h-full bg-amber-500 transition-all duration-200 rounded-full"
+                    style={`width: ${Math.min(100, Math.max(0, (aiProgressCurrent / aiProgressTotal) * 100))}%`}
+                  ></div>
+                </div>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -2230,6 +2492,29 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
                               class="w-full px-3 py-1.5 text-xs rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 focus:outline-hidden focus:ring-1 focus:ring-amber-500 placeholder:text-stone-400/50"
                             />
                           </div>
+
+                          <!-- External References / Video Links -->
+                          {#if Array.isArray(lesson.externalRefs) && lesson.externalRefs.length > 0}
+                            <div class="space-y-1 pt-1 border-t border-stone-200/60 dark:border-stone-800/60">
+                              <span class="block text-2xs font-semibold text-stone-600 dark:text-stone-400 flex items-center space-x-1.5">
+                                <ExternalLink class="w-3 h-3 text-sky-500" />
+                                <span>Suggested External References & Videos</span>
+                              </span>
+                              <div class="flex flex-wrap gap-1.5">
+                                {#each lesson.externalRefs as ref}
+                                  <a
+                                    href={ref.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    class="inline-flex items-center space-x-1 text-2xs font-mono px-2 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 text-sky-600 dark:text-sky-400 hover:underline max-w-full truncate"
+                                  >
+                                    <ExternalLink class="w-2.5 h-2.5 shrink-0" />
+                                    <span class="truncate">{ref.label || ref.url}</span>
+                                  </a>
+                                {/each}
+                              </div>
+                            </div>
+                          {/if}
                         </div>
                       {/if}
                     </div>
@@ -2286,11 +2571,11 @@ Respond ONLY with a valid JSON object matching the standard schema without markd
             type="button"
             disabled={isCreatingCourse}
             onclick={submitVisualCourse}
-            class="px-6 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold text-sm hover:bg-stone-800 dark:hover:bg-white transition flex items-center space-x-2 shadow-xs cursor-pointer disabled:opacity-50"
+            class="px-6 py-2.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-semibold text-sm hover:bg-stone-800 dark:hover:bg-white transition flex items-center space-x-2 shadow-xs cursor-pointer disabled:opacity-75"
           >
             {#if isCreatingCourse}
-              <Loader2 class="w-4 h-4 animate-spin" />
-              <span>Creating Course & Injecting Lessons...</span>
+              <Loader2 class="w-4 h-4 animate-spin shrink-0 text-amber-400 dark:text-amber-600" />
+              <span class="truncate">{creationCurrentStep || 'Building course…'}</span>
             {:else}
               <Check class="w-4 h-4" />
               <span>Create Course</span>

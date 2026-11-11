@@ -22,6 +22,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 jpeg-encoder = { version = "0.7", features = ["simd"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-http = "2"
+pdf-inspector = { version = "1.25.2", default-features = false }
 
 # Desktop: devtools, shell integration, deep links, window state.
 [target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
@@ -36,3 +37,13 @@ tauri = { version = "2", features = ["custom-protocol"] }
 tauri-plugin-barcode-scanner = "2"
 tauri-plugin-pencilkit = { path = "../../tauri-plugin-pencilkit" }
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+
+# macOS Desktop OCR (Apple Vision via official objc2 bindings)
+[target.'cfg(all(target_os = "macos", not(target_os = "ios")))'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-vision = "0.3"
+
+# Windows Desktop OCR
+[target.'cfg(target_os = "windows")'.dependencies]
+win_ocr = "0.1"

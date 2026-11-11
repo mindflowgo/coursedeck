@@ -31,7 +31,7 @@ fs.writeFileSync(
           title: 'Unit 1 Fundamentals',
           lessons: [
             {
-              id: '01.01',
+              id: '01-01',
               code: 'tst01_u1l1',
               title: 'Lesson 1 Introduction',
               unitNumber: 1,
@@ -53,7 +53,7 @@ fs.writeFileSync(
   'utf8'
 );
 fs.writeFileSync(
-  path.join(testCourseDir, '01.01.lesson.md'),
+  path.join(testCourseDir, '01-01.lesson.md'),
   '# Lesson 1 Introduction\n\nThis is a sample test lesson content for searching and testing.',
   'utf8'
 );
@@ -232,7 +232,7 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     const lessons = JSON.parse(lessonsRes.result.content[0].text);
     expect(Array.isArray(lessons)).toBe(true);
     expect(lessons.length).toBe(1);
-    expect(lessons[0].id).toBe('01.01');
+    expect(lessons[0].id).toBe('01-01');
   });
 
   it('executes get_lesson_doc tool', async () => {
@@ -240,7 +240,7 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
       name: 'get_lesson_doc',
       arguments: {
         courseId: 'tst01',
-        lessonId: '01.01',
+        lessonId: '01-01',
         tab: 'lesson'
       }
     });
@@ -457,7 +457,7 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
         courseId: 'tst01',
         lessons: [
           {
-            id: '01.02',
+            id: '01-02',
             title: 'Lesson 2 Practice',
             unitNumber: 1,
             lessonNumber: 2,
@@ -473,23 +473,23 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
 
     expect(res.result).toBeDefined();
     expect(res.result.content[0].text).toContain('✓ Successfully injected 1 lesson(s)');
-    expect(res.result.content[0].text).toContain('[01.02]');
+    expect(res.result.content[0].text).toContain('[01-02]');
 
     // Verify files were written
-    expect(fs.existsSync(path.join(testCourseDir, '01.02.lesson.md'))).toBe(true);
-    expect(fs.existsSync(path.join(testCourseDir, '01.02.summary.md'))).toBe(true);
-    expect(fs.existsSync(path.join(testCourseDir, '01.02.cheatsheet.md'))).toBe(true);
+    expect(fs.existsSync(path.join(testCourseDir, '01-02.lesson.md'))).toBe(true);
+    expect(fs.existsSync(path.join(testCourseDir, '01-02.summary.md'))).toBe(true);
+    expect(fs.existsSync(path.join(testCourseDir, '01-02.cheatsheet.md'))).toBe(true);
 
     // Verify .manifest.json updated
     const meta = JSON.parse(fs.readFileSync(path.join(testCourseDir, '.manifest.json'), 'utf8'));
-    const lesson = meta.units[0].lessons.find((l: any) => l.id === '01.02');
+    const lesson = meta.units[0].lessons.find((l: any) => l.id === '01-02');
     expect(lesson).toBeDefined();
     expect(lesson.title).toBe('Lesson 2 Practice');
     expect(lesson.hasFull).toBe(true);
     expect(lesson.hasSummary).toBe(true);
   });
 
-  it('verifies search_course properly parses lessonId and tab for 01.01.lesson.md', async () => {
+  it('verifies search_course properly parses lessonId and tab for 01-01.lesson.md', async () => {
     const res = await callMcp('tools/call', {
       name: 'search_course',
       arguments: {
@@ -502,9 +502,9 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     expect(res.result).toBeDefined();
     const data = JSON.parse(res.result.content[0].text);
     expect(data.totalMatches).toBeGreaterThan(0);
-    const match = data.results.find((r: any) => r.lessonId === '01.01');
+    const match = data.results.find((r: any) => r.lessonId === '01-01');
     expect(match).toBeDefined();
-    expect(match.lessonId).toBe('01.01');
+    expect(match.lessonId).toBe('01-01');
     expect(match.tab).toBe('lesson');
     expect(match.lessonTitle).toBe('Lesson 1 Introduction');
   });
@@ -592,7 +592,7 @@ describe('MCP Server Integration Tests (mcp-lite)', () => {
     });
     expect(lessonsRes.result).toBeDefined();
     expect(lessonsRes.result.content[0].text).toContain('| Unit | ID | Title |');
-    expect(lessonsRes.result.content[0].text).toContain('01.01');
+    expect(lessonsRes.result.content[0].text).toContain('01-01');
   });
 
   it('supports lightweight get_course with includeLessons=false and json format', async () => {

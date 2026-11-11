@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { apiFetch } from '$lib/api';
+  import { apiFetch, getApiBaseUrl } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import { getActiveLlmCard } from '$lib/llmClient';
   import { queueStatus } from '$lib/queueStatus.svelte';
@@ -8,6 +8,8 @@
   import Header from '$lib/components/Header.svelte';
   import LessonSelector from '$lib/components/LessonSelector.svelte';
   import MarkdownViewer from '$lib/components/MarkdownViewer.svelte';
+  import HtmlViewer from '$lib/components/HtmlViewer.svelte';
+  import { getLessonViewMode, setLessonViewMode } from '$lib/preferences';
   import CodeMirrorEditor from '$lib/components/CodeMirrorEditor.svelte';
   import QuizRunner from '$lib/components/QuizRunner.svelte';
   import UploadModal from '$lib/components/UploadModal.svelte';
@@ -17,7 +19,6 @@
   import type { SchedulePreferences } from '$lib/schedule';
   import ScheduleViewer from '$lib/components/ScheduleViewer.svelte';
   import SyncScheduleModal from '$lib/components/SyncScheduleModal.svelte';
-  import SelectionToolbar from '$lib/components/SelectionToolbar.svelte';
   import DocumentViewerModal from '$lib/components/DocumentViewerModal.svelte';
   import PDFViewer from '$lib/components/pdf/PDFViewer.svelte';
   import { pdfCloseDocument, prewarmCourseBook, recordCourseBookOpened } from '$lib/pdfClient';
@@ -34,7 +35,7 @@
   import { stripLessonMedia } from '$lib/markdown/stripMedia';
   import { validateScheduleMarkdown } from '$lib/parser/scheduleValidation';
   import { ScheduleParser } from '$lib/parser/scheduleParser';
-  import { formatUserNote, insertAnnotationAfterText, removeAnnotation } from '$lib/parser/annotationInserter';
+  import { removeAnnotation } from '$lib/parser/annotationInserter';
   import type { CourseManifest, CourseManifestLesson } from '$lib/parser/courseIngest';
   import type { LessonContentBundle } from '$lib/server/courses';
   import {
@@ -50,7 +51,8 @@
     validateTabName,
     slugifyTabName,
     starterPromptForTab,
-    docFileName
+    docFileName,
+    parseDocFileName
   } from '$lib/tabs';
   import { onMount, onDestroy, untrack, tick } from 'svelte';
   import {
@@ -89,9 +91,12 @@
   import { exportDocumentToPdf } from '$lib/pdf/exportPdf';
   import { schedulePdfPrewarm } from '$lib/pdf/pdfClient';
   import { afterPaint, installPerfObservers, perf } from '$lib/perf';
-  import type { Checkpoint } from '$lib/checkpoint';
+  import type { Checkpoint, Anchor } from '$lib/checkpoint';
+  import { resolveMarkdownAnchorPixel } from '$lib/checkpoint';
+  import { buildCheckpointAskUserPrompt, DEFAULT_CHECKPOINT_ASK_PROMPT } from '$lib/checkpoint/askPrompt';
   import FloatingCheckpointTrigger from '$lib/components/FloatingCheckpointTrigger.svelte';
   import CheckpointMarker from '$lib/components/CheckpointMarker.svelte';
+  import AskAiComposer from '$lib/components/AskAiComposer.svelte';
   import CheckpointModal from '$lib/components/CheckpointModal.svelte';
   import { getResumeLastPosition, resolveLastAccessedCourseRoute, setCourseLastLocation } from '$lib/preferences';
 
@@ -103,6 +108,7 @@
   type PageTab = string;
   let activeTab: PageTab = $state('lesson');
   let isEditing: boolean = $state(false);
+  let lessonViewMode: 'original' | 'markdown' = $state('original');
   let isUploadModalOpen: boolean = $state(false);
   let uploadModalMode: 'add' | 'replace' = $state('add');
   let isLessonActionsOpen: boolean = $state(false);
@@ -110,7 +116,6 @@
   let isLLMModalOpen: boolean = $state(false);
   let isScheduleModalOpen: boolean = $state(false);
   let isSyncModalOpen: boolean = $state(false);
-  let isGeneratingAI: boolean = $state(false);
 
   // Complete course scope states
   let isCourseScope: boolean = $state(false);
@@ -188,6 +193,17 @@
     return currentCourse.units.flatMap((u) => u.lessons || []);
   });
 
+  let bookmarkedLessons = $derived.by(() => {
+    return allCourseLessons
+      .filter((l) => Boolean(l.pageRange && l.pageRange.trim()))
+      .map((l) => ({
+        id: l.id,
+        title: l.title,
+        pageRange: l.pageRange!.trim(),
+        readingDescription: l.readingDescription?.trim()
+      }));
+  });
+
   let currentLessonIndex = $derived(
     allCourseLessons.findIndex((l) => l.id.toLowerCase() === (selectedLessonId || '').toLowerCase())
   );
@@ -227,6 +243,17 @@
   // Lesson bundle and generic prompt templates
   let lessonBundle: LessonContentBundle | null = $state(null);
   let genericPrompts: Record<string, string> = $state({});
+
+  /**
+   * Effective format for the current lesson — resolved from the loaded bundle when
+   * available, otherwise falling back to the manifest entry so the view-mode toggle
+   * and reader branch are correct even before the async fetch completes.
+   */
+  let effectiveFormat = $derived.by((): 'markdown' | 'html' | 'pdf' | 'video' => {
+    const fmt = (lessonBundle as LessonContentBundle | null)?.format ?? currentLessonItem?.format;
+    if (fmt === 'html' || fmt === 'pdf' || fmt === 'video') return fmt;
+    return 'markdown';
+  });
 
   // Custom tabs discovered from this lesson's tab files on disk (excluding summary, which has dedicated position)
   let customTabs = $derived.by(() => {
@@ -347,8 +374,34 @@
     docFileName(isCourseScope ? 'course' : selectedLessonId, activeTab, isCourseScope)
   );
   let currentFileNotes = $derived(
-    checkpoints.filter((c) => c.type === 'note' && c.file === currentFile)
+    checkpoints.filter(
+      (c) => (c.type === 'note' || c.type === 'highlight' || c.type === 'ai') && c.file === currentFile
+    )
   );
+
+  let activeSelection = $state<{
+    text: string;
+    anchor?: Anchor;
+    selection?: import('$lib/checkpoint').SelectionRange;
+    verticalPosition: number;
+  } | null>(null);
+
+  let externalCursorPosition = $state<{ cursorY: number; scrollTop: number } | null>(null);
+  let htmlAnchorPositions = $state<Record<string, number>>({});
+
+  // Selections and anchor lookups belong to one document. Clear them whenever
+  // the rendered document changes so nothing carries over to another
+  // tab/lesson/rendering mode.
+  let lastSelectionScope = '';
+  $effect(() => {
+    const scope = `${courseId}|${currentFile}|${lessonViewMode}`;
+    if (scope === lastSelectionScope) return;
+    lastSelectionScope = scope;
+    activeSelection = null;
+    externalCursorPosition = null;
+    htmlAnchorPositions = {};
+    openNoteIds = new Set();
+  });
 
   async function loadCheckpoints() {
     if (!courseId) return;
@@ -467,14 +520,341 @@
     showScrollTop = contentScroller.scrollTop > SCROLL_TOP_BUTTON_AFTER;
   });
 
-  function handleTriggerAddCheckpoint(verticalPosition: number) {
+  let checkpointErrorMessage = $state('');
+  let checkpointErrorTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function showCheckpointError(message: string) {
+    checkpointErrorMessage = message;
+    clearTimeout(checkpointErrorTimer);
+    checkpointErrorTimer = setTimeout(() => {
+      checkpointErrorMessage = '';
+    }, 6000);
+  }
+
+  /**
+   * Saves a highlight checkpoint. All identity (course, file, anchor,
+   * selection) is snapshotted up front so navigation while the request is in
+   * flight cannot land the highlight on another document.
+   */
+  async function handleTriggerHighlight(verticalPosition: number) {
+    if (!courseId) return;
+    const snapshot = {
+      courseId,
+      file: currentFile,
+      verticalPosition: activeSelection?.verticalPosition ?? verticalPosition,
+      anchor: activeSelection?.anchor ?? ({ type: 'pixel', verticalPosition } as Anchor),
+      selection:
+        activeSelection?.selection ??
+        (activeSelection?.text ? ({ text: activeSelection.text } as import('$lib/checkpoint').SelectionRange) : undefined)
+    };
+
+    try {
+      const res = await apiFetch(`/api/courses/${snapshot.courseId}/checkpoints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file: snapshot.file,
+          verticalPosition: snapshot.verticalPosition,
+          type: 'highlight',
+          color: 'yellow',
+          noteText: '',
+          anchor: snapshot.anchor,
+          ...(snapshot.selection ? { selection: snapshot.selection } : {})
+        })
+      });
+      if (res.ok) {
+        const body = await res.json();
+        const saved: Checkpoint = body.checkpoint;
+        checkpoints = [...checkpoints, saved];
+        const next = new Set(openNoteIds);
+        next.add(saved.id);
+        openNoteIds = next;
+        activeSelection = null;
+      } else {
+        showCheckpointError('Could not save the highlight — please try again.');
+      }
+    } catch (err) {
+      console.error('Failed to save highlight checkpoint:', err);
+      showCheckpointError('Could not save the highlight — check your connection and try again.');
+    }
+  }
+
+  function handleTriggerNote(verticalPosition: number) {
+    const targetVp = activeSelection?.verticalPosition ?? verticalPosition;
+    const targetSelection =
+      activeSelection?.selection ??
+      (activeSelection?.text ? ({ text: activeSelection.text } as import('$lib/checkpoint').SelectionRange) : undefined);
+
     activeCheckpoint = {
       file: currentFile,
-      verticalPosition,
+      verticalPosition: targetVp,
+      anchor: activeSelection?.anchor ?? { type: 'pixel', verticalPosition: targetVp },
+      selection: targetSelection,
       color: 'yellow',
       noteText: ''
     };
     isCheckpointModalOpen = true;
+  }
+
+  // ── Ask AI composer flow ───────────────────────────────────────────────────
+  // Ask AI opens a composer with the captured quotation and a separate
+  // question field; nothing is generated until the student submits.
+
+  let aiComposer = $state<{
+    courseId: string;
+    file: string;
+    verticalPosition: number;
+    anchor: Anchor;
+    selection?: import('$lib/checkpoint').SelectionRange;
+    quote: string;
+    courseTitle: string;
+    lessonTitle: string;
+    sourceTab: string;
+    referenceText: string;
+  } | null>(null);
+
+  function handleTriggerAskAI(verticalPosition: number) {
+    if (!courseId) return;
+    const targetVp = activeSelection?.verticalPosition ?? verticalPosition;
+    aiComposer = {
+      courseId,
+      file: currentFile,
+      verticalPosition: targetVp,
+      anchor: activeSelection?.anchor ?? { type: 'pixel', verticalPosition: targetVp },
+      selection:
+        activeSelection?.selection ??
+        (activeSelection?.text ? ({ text: activeSelection.text } as import('$lib/checkpoint').SelectionRange) : undefined),
+      quote: activeSelection?.text ?? '',
+      courseTitle: course?.title || courseId.toUpperCase(),
+      lessonTitle: currentLessonTitle || selectedLessonId,
+      sourceTab: activeTab,
+      referenceText: stripLessonMedia(currentReferenceMarkdown())
+    };
+  }
+
+  /**
+   * Reference material for an Ask-AI request: the FULL lesson for lesson-scope
+   * files regardless of which tab the quote came from (a Summary quote still
+   * sends the complete lesson); the document itself for course/unit docs.
+   */
+  function currentReferenceMarkdown(): string {
+    if (isCourseScope || isUnitScope) {
+      return parsedActiveTab.body || tabContents[activeTab] || '';
+    }
+    return tabContents.lesson || parsedActiveTab.body || tabContents[activeTab] || '';
+  }
+
+  async function handleAskAiSubmit(question: string): Promise<void | false> {
+    const snap = aiComposer;
+    if (!snap) return false;
+
+    const activeModel = await getActiveLlmCard();
+    if (!activeModel?.baseUrl) {
+      // Keep the composer (and the typed question) intact; the settings modal
+      // opens on top and the student can press Ask again afterwards.
+      isLLMModalOpen = true;
+      return false;
+    }
+
+    try {
+      const res = await apiFetch(`/api/courses/${snap.courseId}/checkpoints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file: snap.file,
+          verticalPosition: snap.verticalPosition,
+          type: 'ai',
+          color: 'lavender',
+          noteText: '',
+          anchor: snap.anchor,
+          ...(snap.selection ? { selection: snap.selection } : {}),
+          aiQuestion: question,
+          aiStatus: 'pending'
+        })
+      });
+      if (!res.ok) {
+        showCheckpointError('Could not save the AI question — please try again.');
+        return false;
+      }
+      const body = await res.json();
+      const cp: Checkpoint = body.checkpoint;
+      aiComposer = null;
+      // The in-page list only tracks the visible document.
+      if (snap.courseId === courseId && snap.file === currentFile) {
+        checkpoints = [...checkpoints, cp];
+        const next = new Set(openNoteIds);
+        next.add(cp.id);
+        openNoteIds = next;
+        activeSelection = null;
+      }
+
+      runCheckpointAi({
+        checkpointId: cp.id,
+        courseId: snap.courseId,
+        question,
+        quote: snap.quote,
+        courseTitle: snap.courseTitle,
+        lessonTitle: snap.lessonTitle,
+        sourceTab: snap.sourceTab,
+        referenceText: snap.referenceText
+      });
+    } catch (err) {
+      console.error('Failed to create AI checkpoint:', err);
+      showCheckpointError('Could not save the AI question — check your connection and try again.');
+      return false;
+    }
+  }
+
+  /**
+   * Runs one AI generation for an existing checkpoint. Every await routes
+   * back to the snapshot; the live route state is never consulted after the
+   * request starts.
+   */
+  async function runCheckpointAi(snap: {
+    checkpointId: string;
+    courseId: string;
+    question: string;
+    quote: string;
+    courseTitle: string;
+    lessonTitle: string;
+    sourceTab: string;
+    referenceText: string;
+  }) {
+    const persist = async (patch: { aiAnswer?: string; aiStatus: 'done' | 'error' }) => {
+      checkpoints = checkpoints.map((c) => (c.id === snap.checkpointId ? { ...c, ...patch } : c));
+      try {
+        const res = await apiFetch(`/api/courses/${snap.courseId}/checkpoints/${snap.checkpointId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch)
+        });
+        if (!res.ok) {
+          console.warn(`Checkpoint AI save failed (${res.status}) for ${snap.checkpointId}`);
+          showCheckpointError('The AI answer was generated but could not be saved — it may not survive a reload.');
+        }
+      } catch (err) {
+        console.warn('Checkpoint AI save error:', err);
+        showCheckpointError('The AI answer was generated but could not be saved — it may not survive a reload.');
+      }
+    };
+
+    try {
+      const activeModel = await getActiveLlmCard();
+      if (!activeModel?.baseUrl) {
+        await persist({
+          aiAnswer: 'No AI model configured. Add a model in Settings → AI Models, then retry.',
+          aiStatus: 'error'
+        });
+        return;
+      }
+
+      // Editable template from the Prompts system (seeded on load, never
+      // overwritten). Falls back to the built-in default if unavailable.
+      const systemPrompt = (genericPrompts['checkpoint_ask'] || DEFAULT_CHECKPOINT_ASK_PROMPT).trim();
+      const userPrompt = buildCheckpointAskUserPrompt({
+        courseTitle: snap.courseTitle,
+        lessonTitle: snap.lessonTitle,
+        sourceTab: snap.sourceTab,
+        quote: snap.quote,
+        question: snap.question,
+        // Complete reference — never sliced; context-limit failures must be
+        // visible errors, not silent truncation.
+        referenceText: snap.referenceText
+      });
+
+      const res = await apiFetch('/api/llm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'generate',
+          sessionId: `${snap.courseId}-note`,
+          systemPrompt,
+          userPrompt
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const aiAnswer = data.completion || 'No answer generated.';
+        await persist({ aiAnswer, aiStatus: 'done' });
+      } else {
+        const errText = (await res.text().catch(() => '')).slice(0, 300);
+        console.error('AI Checkpoint generation failed:', res.status, errText);
+        await persist({
+          aiAnswer: `Failed to generate an AI answer (${res.status}). ${errText || 'Tap retry.'}`,
+          aiStatus: 'error'
+        });
+      }
+    } catch (err: any) {
+      console.error('AI Checkpoint generation error:', err);
+      await persist({ aiAnswer: 'AI generation error — tap retry.', aiStatus: 'error' });
+    }
+  }
+
+  /**
+   * Retry a failed AI checkpoint. Rebuilds the reference text from the
+   * checkpoint's own file: the loaded lesson when still available, otherwise
+   * a fresh fetch of that lesson's bundle.
+   */
+  async function handleRetryCheckpointAi(cp: Checkpoint) {
+    if (cp.aiStatus !== 'error' || !cp.aiQuestion || !courseId) return;
+    const retryCourseId = courseId;
+    const retryCourseTitle = course?.title || retryCourseId.toUpperCase();
+    const parsed = parseDocFileName(cp.file);
+    if (!parsed) return;
+
+    let referenceText = '';
+    let lessonTitle = currentLessonTitle || '';
+    let sourceTab = parsed.tab;
+
+    if (parsed.isCourseScope || parsed.isUnitScope) {
+      if (cp.file === currentFile) {
+        referenceText = parsedActiveTab.body || tabContents[activeTab] || '';
+        sourceTab = activeTab;
+      } else {
+        showCheckpointError('Reopen this document, then retry the AI question from there.');
+        return;
+      }
+    } else {
+      // Lesson scope: always the full lesson, independent of the quote's tab.
+      if (parsed.lessonId === selectedLessonId && tabContents.lesson) {
+        referenceText = tabContents.lesson;
+        sourceTab = cp.file === currentFile ? activeTab : parsed.tab;
+      } else {
+        try {
+          const res = await apiFetch(`/api/courses/${retryCourseId}/${encodeURIComponent(parsed.lessonId)}`);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          const bundle = data.bundle || data;
+          referenceText = bundle.lesson || bundle.tabs?.lesson || '';
+          lessonTitle = bundle.title || lessonTitle;
+        } catch (err) {
+          console.warn('Retry could not load lesson context:', err);
+          showCheckpointError('Could not load the lesson for this question — check your connection and retry.');
+          return;
+        }
+      }
+    }
+
+    if (courseId === retryCourseId) {
+      checkpoints = checkpoints.map((c) => (c.id === cp.id ? { ...c, aiStatus: 'pending' } : c));
+    }
+    apiFetch(`/api/courses/${retryCourseId}/checkpoints/${cp.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiStatus: 'pending' })
+    }).catch(() => {});
+
+    await runCheckpointAi({
+      checkpointId: cp.id,
+      courseId: retryCourseId,
+      question: cp.aiQuestion,
+      quote: cp.selection?.text || '',
+      courseTitle: retryCourseTitle,
+      lessonTitle,
+      sourceTab,
+      referenceText: stripLessonMedia(referenceText)
+    });
   }
 
   function handleToggleCheckpoint(cp: Checkpoint) {
@@ -509,7 +889,9 @@
           file: activeCheckpoint.file || currentFile,
           verticalPosition: activeCheckpoint.verticalPosition ?? contentScroller?.scrollTop ?? 0,
           color: data.color,
-          noteText: data.noteText
+          noteText: data.noteText,
+          ...(activeCheckpoint.anchor ? { anchor: activeCheckpoint.anchor } : {}),
+          ...(activeCheckpoint.selection ? { selection: activeCheckpoint.selection } : {})
         })
       });
       if (res.ok) {
@@ -615,6 +997,16 @@
         const map: Record<string, string> = {};
         for (const p of data.prompts || []) {
           map[p.id] = p.content;
+        }
+        // Seed the Ask-AI template only when the Prompts system does not have
+        // it yet; a saved copy is the user's customization and wins.
+        if (!map['checkpoint_ask']) {
+          map['checkpoint_ask'] = DEFAULT_CHECKPOINT_ASK_PROMPT;
+          apiFetch('/api/prompts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: 'checkpoint_ask', content: DEFAULT_CHECKPOINT_ASK_PROMPT })
+          }).catch((e) => console.warn('Failed to seed checkpoint_ask prompt:', e));
         }
         genericPrompts = map;
       }
@@ -1024,12 +1416,12 @@
   /** Monotonic token for loadLesson calls — the newest invocation wins. */
   let lessonLoadSeq = 0;
 
-  /** Loose lesson-ref equality tolerating zero-padding ("1.2" ≡ "01.02"). */
+  /** Loose lesson-ref equality tolerating zero-padding ("1-2" ≡ "01-02"). */
   function sameLessonRef(a: string | undefined, b: string): boolean {
     if (!a) return false;
     const norm = (s: string) => {
-      const m = s.toLowerCase().match(/^(\d+)\.(\d+)(.*)$/);
-      return m ? `${m[1].padStart(2, '0')}.${m[2].padStart(2, '0')}${m[3]}` : s.toLowerCase();
+      const m = s.toLowerCase().match(/^(\d+)[.-](\d+)(.*)$/);
+      return m ? `${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}${m[3]}` : s.toLowerCase();
     };
     return norm(a) === norm(b);
   }
@@ -1079,6 +1471,9 @@
           tabContents.schedule = courseScheduleMarkdown;
         }
         originalContents = { ...tabContents };
+        if (courseId) {
+          lessonViewMode = getLessonViewMode(courseId);
+        }
         quizRunnerKey++;
         console.log(`[NAV] loadLesson "${lessonId}" ✓ lessonLen=${(data.lesson || '').length}, tabs=[${Object.keys(data.tabs || {}).join(', ') || 'none'}], activeTab="${activeTab}", activeTabLen=${(tabContents[activeTab] || '').length}`);
       } else {
@@ -1088,6 +1483,14 @@
       console.error('Failed to load lesson:', e);
     } finally {
       isLoadingLesson = false;
+    }
+  }
+
+  function toggleLessonViewMode() {
+    const next = lessonViewMode === 'original' ? 'markdown' : 'original';
+    lessonViewMode = next;
+    if (courseId) {
+      setLessonViewMode(courseId, next);
     }
   }
 
@@ -1710,87 +2113,6 @@
     }
   }
 
-  let pendingAnnotationQuery: { selectedText: string; query: string } | null = $state(null);
-
-  async function handleAnnotationSubmit(selectedText: string, query: string) {
-    const activeModel = await getActiveLlmCard();
-    if (!activeModel?.baseUrl) {
-      pendingAnnotationQuery = { selectedText, query };
-      isLLMModalOpen = true;
-      return;
-    }
-
-    isGeneratingAI = true;
-
-    try {
-      const sessionId = `${courseId}-note`;
-      const noteSystemPrompt =
-        'You are an expert Ontario secondary school tutor. A student studying course material has highlighted a specific passage and asked a question. Provide a concise, clear, and insightful answer directly addressing the question in the context of the Ontario curriculum and lesson material. Emphasize key terms, legal doctrines, or definitions in bold. Keep the answer focused (1 to 3 short paragraphs or bullet points). Do not repeat the student query or include conversational filler.';
-
-      const lessonContext = tabContents.lesson || tabContents[activeTab] || '';
-      const cleanContext = stripLessonMedia(lessonContext);
-      const userPrompt = `Course: ${course?.title || courseId}\nLesson: ${currentLessonTitle}\n\nSelected Passage to Explain:\n"${selectedText}"\n\nStudent's Question:\n"${query}"\n\nFull Reference Context:\n${cleanContext}`;
-
-      console.log(`[ILC AI Note Request]`);
-      console.log(`- Session ID: ${sessionId}`);
-      console.log(`- Selected Excerpt: "${selectedText.slice(0, 100)}..."`);
-      console.log(`- User Query: "${query}"`);
-      console.log(`- User Prompt Length: ${userPrompt.length} characters`);
-
-      const res = await apiFetch('/api/llm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'generate',
-          sessionId,
-          systemPrompt: noteSystemPrompt,
-          userPrompt
-        })
-      });
-
-      if (!res.ok) {
-        const errText = await res.text();
-        console.error(`[ILC AI Note Error] Status: ${res.status}`, errText);
-        throw new Error(errText || 'AI Note generation failed');
-      }
-
-      const data = await res.json();
-      const aiAnswer = data.completion;
-      const tokensUsed = data.usage?.total_tokens;
-      const tokenBreakdown = data.usage?.prompt_tokens !== undefined
-        ? ` (prompt: ${data.usage.prompt_tokens.toLocaleString()}, completion: ${data.usage.completion_tokens?.toLocaleString() ?? '?'})`
-        : '';
-      const usageInfo = tokensUsed !== undefined
-        ? ` | Total tokens used: ${tokensUsed.toLocaleString()}${tokenBreakdown}`
-        : '';
-      console.log(`[ILC AI Note Received] ${aiAnswer.length.toLocaleString()} characters${usageInfo}`);
-
-      const formattedNote = formatUserNote(query, selectedText, aiAnswer);
-      const currentContent = tabContents[activeTab] || '';
-      const { updatedMarkdown, success } = insertAnnotationAfterText(
-        currentContent,
-        selectedText,
-        formattedNote
-      );
-
-      if (success) {
-        tabContents[activeTab] = updatedMarkdown;
-        await saveCurrentTab();
-        saveSuccessMessage = '✨ AI Note added!';
-        setTimeout(() => {
-          saveSuccessMessage = '';
-        }, 3000);
-      } else {
-        alert('Could not locate the selected text in the document.');
-      }
-    } catch (err: any) {
-      alert('AI Note Error: ' + (err?.message || 'Check your LLM configuration.'));
-    } finally {
-      isGeneratingAI = false;
-      pendingAnnotationQuery = null;
-    }
-  }
-
   function handleDeleteNote(targetText: string, query: string) {
     const current = tabContents[activeTab] || '';
     const { updatedMarkdown, removed } = removeAnnotation(current, targetText || query);
@@ -1805,11 +2127,10 @@
   }
 
   function handleLLMConfigured() {
-    if (pendingAnnotationQuery) {
-      const q = pendingAnnotationQuery;
-      pendingAnnotationQuery = null;
-      handleAnnotationSubmit(q.selectedText, q.query);
-    } else if (isCourseScope && activeTab === 'schedule') {
+    // Configuring the model from Ask AI must not regenerate the open tab.
+    // The composer retains the question so the student can submit it again.
+    if (aiComposer) return;
+    if (isCourseScope && activeTab === 'schedule') {
       // Schedule generation always starts from the preferences questionnaire.
       isScheduleModalOpen = true;
     } else if (isCourseScope && activeTab !== 'lesson') {
@@ -1940,6 +2261,54 @@
     }
   }
 
+  function handleNavigateFromLesson(rawTarget: string, isAssignment?: boolean) {
+    if (!course || !course.units) return;
+    const allLessons = course.units.flatMap((u) => u.lessons);
+    let match = findLesson(allLessons, rawTarget);
+    if (!match && isAssignment) {
+      match = findLesson(allLessons, `${rawTarget}_assign1`);
+    }
+    if (!match) {
+      // Strip course prefix (e.g. mhf4u_01.02 -> 01.02, mhf4u_u4la9 -> u4la9)
+      const stripped = rawTarget.replace(/^[a-z0-9]+[_-]/i, '');
+      if (stripped !== rawTarget) {
+        match = findLesson(allLessons, stripped);
+        if (!match && isAssignment) {
+          match = findLesson(allLessons, `${stripped}_assign1`);
+        }
+      }
+    }
+    if (!match) {
+      // Try fuzzy matching pattern like u4la9 or mhf4u_u4la9_assign_1
+      const ula = rawTarget.match(/u(\d+)la(\d+)(?:_assign_?(\d+))?/i);
+      if (ula) {
+        const uNum = parseInt(ula[1], 10);
+        const lNum = parseInt(ula[2], 10);
+        const assignNum = ula[3] || (isAssignment ? '1' : '');
+        const candId = assignNum
+          ? `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}_assign${assignNum}`
+          : `${String(uNum).padStart(2, '0')}-${String(lNum).padStart(2, '0')}`;
+        match =
+          allLessons.find((l) => l.id.toLowerCase() === candId.toLowerCase()) ||
+          allLessons.find((l) => l.unitNumber === uNum && l.lessonNumber === lNum);
+      }
+    }
+    if (!match) {
+      // Match by unit and lesson numbers extracted from string (e.g. mhf4u_01.02 or 01.01.03)
+      const subDot = rawTarget.match(/(\d{1,2})[.-](\d{1,2})/);
+      if (subDot) {
+        const uNum = parseInt(subDot[1], 10);
+        const lNum = parseInt(subDot[2], 10);
+        match = allLessons.find((l) => l.unitNumber === uNum && l.lessonNumber === lNum);
+      }
+    }
+    if (match) {
+      goto(`/courses/${course.id}/${match.id}/lesson`);
+    } else {
+      console.warn(`[LessonNavigation] Could not find lesson matching target: ${rawTarget}`);
+    }
+  }
+
   let isRouteSyncing = false;
 
   function parseTabName(t?: string | null): PageTab | null {
@@ -1962,10 +2331,10 @@
     const exact = lessons.find((l) => l.id.toLowerCase() === clean);
     if (exact) return exact;
 
-    // 2. Normalized zero-padded ID (e.g. "1.2" -> "01.02", "1.02" -> "01.02")
-    const normParts = clean.split('.');
-    if (normParts.length === 2 && !isNaN(Number(normParts[0])) && !isNaN(Number(normParts[1]))) {
-      const padded = `${normParts[0].padStart(2, '0')}.${normParts[1].padStart(2, '0')}`;
+    // 2. Normalized zero-padded ID (e.g. "1-2" -> "01-02", "1-02" -> "01-02")
+    const normIdMatch = clean.match(/^(\d+)[.-](\d+)(.*)$/);
+    if (normIdMatch) {
+      const padded = `${normIdMatch[1].padStart(2, '0')}-${normIdMatch[2].padStart(2, '0')}${normIdMatch[3]}`;
       const normMatch = lessons.find((l) => l.id.toLowerCase() === padded);
       if (normMatch) return normMatch;
     }
@@ -2919,6 +3288,7 @@
             lessonTitle={isCourseScope ? 'Course Overview' : (currentLessonItem?.title || '')}
             pageRange={isCourseScope ? '' : (currentLessonItem?.pageRange || '')}
             readingDescription={isCourseScope ? 'Accompanying course textbook' : (currentLessonItem?.readingDescription || '')}
+            {bookmarkedLessons}
             initialPage={queryTargetPdfPage}
           />
         </div>
@@ -2932,8 +3302,12 @@
         <div class="pointer-events-none absolute inset-x-0 top-0 bottom-0 max-w-5xl mx-auto w-full z-30">
           <FloatingCheckpointTrigger
             containerEl={contentScroller}
-            disabled={activeTab === 'schedule' || isEditing}
-            onTrigger={handleTriggerAddCheckpoint}
+            disabled={isEditing || activeTab === 'book' || !!activeDocument || isCheckpointModalOpen || aiComposer !== null}
+            hasSelection={!!activeSelection}
+            externalPosition={externalCursorPosition}
+            onTriggerHighlight={handleTriggerHighlight}
+            onTriggerNote={handleTriggerNote}
+            onTriggerAskAI={handleTriggerAskAI}
           />
         </div>
 
@@ -2943,16 +3317,29 @@
         onscroll={handleContentScroll}
       >
         <!-- In-page Checkpoint Markers for this file -->
-        {#if !isEditing && activeTab !== 'schedule'}
+        {#if !isEditing}
           {#each currentFileNotes as note (note.id)}
             <CheckpointMarker
               checkpoint={note}
+              resolvedTop={(() => {
+                if (note.anchor?.type === 'element-id' && note.anchor.elementId && htmlAnchorPositions[note.anchor.elementId] !== undefined) {
+                  return htmlAnchorPositions[note.anchor.elementId];
+                }
+                if (note.anchor?.type === 'paragraph' && note.anchor.paragraphIndex !== undefined) {
+                  const container = contentScroller?.querySelector('.markdown-body');
+                  if (container instanceof HTMLElement) {
+                    return resolveMarkdownAnchorPixel(note, container, contentScroller);
+                  }
+                }
+                return undefined;
+              })()}
               isOpen={openNoteIds.has(note.id)}
               isActive={activeCheckpoint?.id === note.id && isCheckpointModalOpen}
               onToggle={handleToggleCheckpoint}
               onClose={handleCloseCheckpoint}
               onEdit={handleEditCheckpoint}
               onDelete={handleDeleteCheckpoint}
+              onRetryAi={handleRetryCheckpointAi}
             />
           {/each}
         {/if}
@@ -3096,6 +3483,28 @@
                         <span>Edit</span>
                       </button>
 
+                      <!-- View Mode Toggle (for non-markdown lesson tabs) -->
+                      {#if activeTab === 'lesson' && !isCourseScope && !isUnitScope && effectiveFormat !== 'markdown'}
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onclick={() => {
+                            isActionMenuOpen = false;
+                            toggleLessonViewMode();
+                          }}
+                          class="flex w-full items-center space-x-2 px-3 py-2 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer text-left font-medium"
+                          title="Toggle between original presentation and markdown"
+                        >
+                          {#if lessonViewMode === 'original'}
+                            <FileText class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                            <span>View as Markdown</span>
+                          {:else}
+                            <Eye class="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
+                            <span>View Original {effectiveFormat === 'html' ? 'HTML' : 'PDF'}</span>
+                          {/if}
+                        </button>
+                      {/if}
+
                       <!-- Prompt -->
                       {#if activeTab !== 'lesson' && activeTab !== 'schedule' && activeTab !== 'logs'}
                         <button
@@ -3237,34 +3646,85 @@
               {/if}
             </div>
           {:else}
-            <!-- Markdown Reader View -->
-            <article class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-hidden">
-              <MarkdownViewer
-                markdown={parsedActiveTab.body}
-                courseId={course.id}
-                onDeleteNote={handleDeleteNote}
-                onOpenDocument={handleOpenDocument}
-                markupFile={currentFile}
-                markupScroller={contentScroller}
-              />
-              {#if markupUi.mode}
-                <div class="relative z-10 flex justify-center pt-2 pb-1">
-                  <button
-                    bind:this={extendBtnEl}
-                    type="button"
-                    onpointerdown={(e) => e.stopPropagation()}
-                    onclick={handleExtendPage}
-                    disabled={isExtendingPage}
-                    class="group inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-white/95 dark:bg-stone-800/95 backdrop-blur-xs text-stone-700 dark:text-stone-200 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-50 dark:hover:bg-stone-700/80 shadow-xs hover:shadow-sm transition cursor-pointer select-none active:scale-95 disabled:opacity-50"
-                    title="Add Sketch"
-                    aria-label="Add Sketch"
-                  >
-                    <StickyNotePlus class="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                    <span class="text-xs font-medium">Add Sketch</span>
-                  </button>
-                </div>
-              {/if}
-            </article>
+            <!-- Reader View -->
+            {#if activeTab === 'lesson' && !isCourseScope && !isUnitScope && effectiveFormat !== 'markdown' && lessonViewMode === 'original'}
+              <article class="px-[6px] py-4 sm:p-6 w-full max-w-full min-w-0 overflow-hidden">
+                {#if effectiveFormat === 'html'}
+                  <HtmlViewer
+                    courseId={course.id}
+                    lessonId={selectedLessonId}
+                    title={currentLessonItem?.title || 'Lesson'}
+                    scrollerEl={contentScroller}
+                    checkpoints={currentFileNotes}
+                    onOpenDocument={handleOpenDocument}
+                    onNavigateLesson={handleNavigateFromLesson}
+                    onMouseMove={(coords) => {
+                      externalCursorPosition = coords;
+                    }}
+                    onMouseLeave={() => {
+                      externalCursorPosition = null;
+                    }}
+                    onTextSelected={(sel) => {
+                      activeSelection = sel;
+                    }}
+                    onSelectionCleared={() => {
+                      activeSelection = null;
+                    }}
+                    onResolveAnchors={(positions) => {
+                      htmlAnchorPositions = { ...htmlAnchorPositions, ...positions };
+                    }}
+                  />
+                {:else if effectiveFormat === 'pdf'}
+                  <iframe
+                    src="{getApiBaseUrl()}/api/courses/{encodeURIComponent(course.id)}/{encodeURIComponent(selectedLessonId)}/content"
+                    title={currentLessonItem?.title ?? 'PDF Lesson'}
+                    class="w-full rounded-xl border border-stone-200 dark:border-stone-800 bg-white"
+                    style="height: 80vh;"
+                  ></iframe>
+                {/if}
+              </article>
+            {:else}
+              <!-- Markdown Reader View -->
+              <article class="px-[6px] py-4 sm:p-10 w-full max-w-full min-w-0 overflow-hidden">
+                <MarkdownViewer
+                  markdown={parsedActiveTab.body}
+                  courseId={course.id}
+                  onDeleteNote={handleDeleteNote}
+                  onOpenDocument={handleOpenDocument}
+                  markupFile={currentFile}
+                  markupScroller={contentScroller}
+                  checkpoints={currentFileNotes}
+                  onAnnotationSelect={(params) => {
+                    activeSelection = {
+                      text: params.text,
+                      anchor: params.anchor,
+                      selection: params.selection,
+                      verticalPosition: params.verticalPosition ?? params.anchor.verticalPosition
+                    };
+                  }}
+                  onSelectionCleared={() => {
+                    activeSelection = null;
+                  }}
+                />
+                {#if markupUi.mode}
+                  <div class="relative z-10 flex justify-center pt-2 pb-1">
+                    <button
+                      bind:this={extendBtnEl}
+                      type="button"
+                      onpointerdown={(e) => e.stopPropagation()}
+                      onclick={handleExtendPage}
+                      disabled={isExtendingPage}
+                      class="group inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-white/95 dark:bg-stone-800/95 backdrop-blur-xs text-stone-700 dark:text-stone-200 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-50 dark:hover:bg-stone-700/80 shadow-xs hover:shadow-sm transition cursor-pointer select-none active:scale-95 disabled:opacity-50"
+                      title="Add Sketch"
+                      aria-label="Add Sketch"
+                    >
+                      <StickyNotePlus class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      <span class="text-xs font-medium">Add Sketch</span>
+                    </button>
+                  </div>
+                {/if}
+              </article>
+            {/if}
           {/if}
         </div>
       {/if}
@@ -3284,14 +3744,6 @@
     >
       <ArrowUp class="w-4 h-4" />
     </button>
-  {/if}
-
-  {#if !isEditing && !isCourseScope}
-    <SelectionToolbar
-      containerSelector=".markdown-body"
-      isGenerating={isGeneratingAI}
-      onSubmitQuery={handleAnnotationSubmit}
-    />
   {/if}
 
   {#if activeDocument}
@@ -3422,6 +3874,33 @@
       isCheckpointModalOpen = false;
     }}
   />
+
+  <AskAiComposer
+    isOpen={aiComposer !== null}
+    quote={aiComposer?.quote || ''}
+    contextLabel={currentLessonTitle || selectedLessonId || ''}
+    onSubmit={handleAskAiSubmit}
+    onClose={() => {
+      aiComposer = null;
+    }}
+  />
+
+  {#if checkpointErrorMessage}
+    <div
+      class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-md px-4 py-2.5 rounded-xl bg-red-600/95 text-white text-xs font-medium shadow-lg flex items-center gap-2"
+      role="alert"
+    >
+      <span>{checkpointErrorMessage}</span>
+      <button
+        type="button"
+        class="ml-1 p-1 rounded-lg hover:bg-red-500 transition cursor-pointer"
+        onclick={() => (checkpointErrorMessage = '')}
+        aria-label="Dismiss"
+      >
+        <X class="w-3.5 h-3.5" />
+      </button>
+    </div>
+  {/if}
 
   <SyncScheduleModal
     isOpen={isSyncModalOpen}

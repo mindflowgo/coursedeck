@@ -86,16 +86,18 @@ try {
   check('ingest via /api/parse', parseRes.status === 200 && parseBody.success === true, JSON.stringify(parseBody).slice(0, 120));
 
   const courseDir = path.join(SCRATCH, 'courses', 'gtest1');
-  const lessonMd = path.join(courseDir, '01.01.lesson.md');
-  check('lesson markdown written', fs.existsSync(lessonMd));
-  const mdText = fs.existsSync(lessonMd) ? fs.readFileSync(lessonMd, 'utf8') : '';
+  const lessonHtml = path.join(courseDir, '01-01.lesson.html');
+  const lessonCompanion = path.join(courseDir, '01-01.lesson.companion.md');
+  check('lesson presentation HTML written', fs.existsSync(lessonHtml));
+  check('lesson companion markdown written', fs.existsSync(lessonCompanion));
+  const mdText = fs.existsSync(lessonCompanion) ? fs.readFileSync(lessonCompanion, 'utf8') : '';
   const fmMatch = mdText.match(/^---\s*\n([\s\S]*?)\n---/);
   const fm = fmMatch ? (globalThis as any).Bun.YAML.parse(fmMatch[1]) : null;
   check('frontmatter parses (Bun.YAML round-trip)', fm !== null && typeof fm === 'object' && 'title' in fm, mdText.slice(0, 80));
   check('asset extracted from zip', fs.existsSync(path.join(courseDir, 'assets', 'img', 'pic.png')));
 
   // Lesson save (one file per lesson+tab; versioning was removed from the app)
-  const putRes = await fetch(`${BASE}/api/courses/gtest1/01.01`, {
+  const putRes = await fetch(`${BASE}/api/courses/gtest1/01-01`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tab: 'summary', content: '# S\n\ncontent v1' })
@@ -103,7 +105,7 @@ try {
   const putBody: any = await putRes.json();
   check('lesson PUT save → {success, filename}', putRes.status === 200 && putBody.success === true && typeof putBody.filename === 'string', JSON.stringify(putBody));
 
-  const putRes2 = await fetch(`${BASE}/api/courses/gtest1/01.01`, {
+  const putRes2 = await fetch(`${BASE}/api/courses/gtest1/01-01`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tab: 'summary', content: '# S\n\ncontent v2' })

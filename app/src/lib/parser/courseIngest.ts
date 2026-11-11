@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { unzipSync } from 'fflate';
 import { ArchiveExtractor } from './extractor';
 import { DomCleaner } from './domCleaner';
 import { TurndownConverter } from './turndownConverter';
@@ -7,8 +8,26 @@ import { QuestionParser } from './questionParser';
 import { serializeWithFrontmatter } from './frontmatter';
 import { optimizeCourseImages } from './imageOptimizer';
 
+export interface IngestProgressEvent {
+  step: 'scan' | 'unpack' | 'extract' | 'optimize' | 'manifest' | 'complete' | 'error';
+  message: string;
+  current?: number;
+  total?: number;
+  details?: string;
+}
+
+export type IngestProgressCallback = (event: IngestProgressEvent) => void;
+
+export interface IngestOptions {
+  overwriteExisting?: boolean;
+  overwriteLessonIds?: string[];
+  overwriteFiles?: string[];
+  useMarkdownAsLesson?: boolean;
+  onProgress?: IngestProgressCallback;
+}
+
 export interface CourseManifestLesson {
-  id: string; // e.g. "01.02" or "01.06_assign1"
+  id: string; // e.g. "01-02" or "01-06_assign1"
   code: string; // e.g. "clu3m_u1la2"
   title: string;
   unitNumber: number;
@@ -20,6 +39,8 @@ export interface CourseManifestLesson {
   hasTest: boolean;
   pageRange?: string;
   readingDescription?: string;
+  format?: 'markdown' | 'html' | 'pdf' | 'video';
+  hasCompanion?: boolean;
 }
 
 export interface CourseManifestUnit {
@@ -58,12 +79,6 @@ export interface CourseDocsFlags {
   [key: string]: boolean | undefined;
 }
 
-export interface IngestOptions {
-  overwriteExisting?: boolean;
-  overwriteLessonIds?: string[];
-  overwriteFiles?: string[];
-}
-
 export interface IngestResult {
   manifest: CourseManifest;
   newLessonsAdded: string[];
@@ -75,6 +90,84 @@ export class CourseIngest {
 
   constructor() {
     this.turndownConverter = new TurndownConverter();
+  }
+
+  /**
+   * Scans backupDir for container archives (such as an uploaded Archive.zip containing
+   * multiple individual lesson packages) and unpacks the contained packages into backupDir.
+   */
+  private unpackContainerArchives(backupDir: string, onProgress?: IngestProgressCallback): void {
+    if (!fs.existsSync(backupDir)) return;
+    const files = fs
+      .readdirSync(backupDir)
+      .filter((f) => f.toLowerCase().endsWith('.zip') && !f.startsWith('.'));
+
+    for (const f of files) {
+      const fullPath = path.join(backupDir, f);
+      try {
+        const data = fs.readFileSync(fullPath);
+        const unzipped = unzipSync(new Uint8Array(data));
+        const entries = Object.keys(unzipped).filter(
+          (k) => !k.startsWith('__MACOSX') && !path.basename(k).startsWith('._')
+        );
+
+        // Check if this zip is a container containing lesson packages (.zip, .mhtml, .mht, .html)
+        const nestedPackages = entries.filter((k) => /\.(zip|mhtml|mht|html|htm)$/i.test(k));
+        const hasNestedZips = entries.some((k) => /\.(zip|mhtml|mht)$/i.test(k));
+        const hasMultipleHtml = entries.filter((k) => /\.(html|htm)$/i.test(k)).length > 1;
+
+        if (hasNestedZips || hasMultipleHtml) {
+          onProgress?.({
+            step: 'unpack',
+            message: `Unpacking container archive "${f}" (${nestedPackages.length} package(s) inside)...`,
+            current: 0,
+            total: nestedPackages.length,
+            details: f
+          });
+          console.log(`[CourseIngest] Unpacking container archive "${f}" with ${nestedPackages.length} package(s)...`);
+
+          let extractedCount = 0;
+          for (let i = 0; i < nestedPackages.length; i++) {
+            const entryName = nestedPackages[i];
+            const entryData = unzipped[entryName];
+            if (!entryData || entryData.length === 0) continue;
+            const destFilename = path.basename(entryName);
+            const destPath = path.join(backupDir, destFilename);
+            if (!fs.existsSync(destPath)) {
+              fs.writeFileSync(destPath, Buffer.from(entryData));
+              extractedCount++;
+            }
+            onProgress?.({
+              step: 'unpack',
+              message: `[${i + 1}/${nestedPackages.length}] Unpacking ${destFilename}...`,
+              current: i + 1,
+              total: nestedPackages.length,
+              details: destFilename
+            });
+          }
+
+          console.log(`[CourseIngest] Unpacked ${extractedCount} package(s) from "${f}".`);
+          onProgress?.({
+            step: 'unpack',
+            message: `Unpacked ${extractedCount} lesson package(s) from "${f}".`,
+            current: nestedPackages.length,
+            total: nestedPackages.length,
+            details: `${extractedCount} packages extracted`
+          });
+
+          // Rename container archive so it is not re-processed as a single lesson
+          const renamed = path.join(backupDir, `.${f}.unpacked`);
+          try {
+            if (fs.existsSync(renamed)) fs.unlinkSync(renamed);
+            fs.renameSync(fullPath, renamed);
+          } catch {
+            // Ignore rename errors
+          }
+        }
+      } catch (err) {
+        console.warn(`[CourseIngest] Could not inspect "${f}" as container archive:`, err);
+      }
+    }
   }
 
   private loadGenericPrompt(type: 'summary' | 'notes' | 'test'): string {
@@ -96,11 +189,16 @@ export class CourseIngest {
    * Ingest a course directory, incrementally adding newly added zip packages
    */
   async ingestCourse(courseDir: string, options: IngestOptions = {}): Promise<CourseManifest> {
-    const { overwriteExisting = false } = options;
+    const { overwriteExisting = false, onProgress } = options;
     const courseId = path.basename(courseDir).toLowerCase();
     const backupDir = path.join(courseDir, '_backup');
     const assetsDir = path.join(courseDir, 'assets');
     const manifestPath = path.join(courseDir, '.manifest.json');
+
+    onProgress?.({
+      step: 'scan',
+      message: `Scanning course archive for [${courseId}]...`
+    });
 
     fs.mkdirSync(assetsDir, { recursive: true });
     fs.mkdirSync(backupDir, { recursive: true });
@@ -120,6 +218,9 @@ export class CourseIngest {
       }
     }
 
+    // Unpack any container zip bundles (e.g. Archive.zip containing lesson packages)
+    this.unpackContainerArchives(backupDir, onProgress);
+
     // Load existing manifest if present to preserve custom course titles & descriptions
     let existingManifest: Partial<CourseManifest> | null = null;
     if (fs.existsSync(manifestPath)) {
@@ -135,6 +236,14 @@ export class CourseIngest {
       .filter((f) => /\.(zip|mhtml|mht|html|htm)$/i.test(f) && !f.startsWith('.'))
       .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
+    onProgress?.({
+      step: 'scan',
+      message: `Found ${packageFiles.length} lesson package(s) to process`,
+      current: 0,
+      total: packageFiles.length
+    });
+    console.log(`[CourseIngest] Processing ${packageFiles.length} lesson package(s) for [${courseId}]...`);
+
     const lessonsMap: Map<string, CourseManifestLesson> = new Map();
     const newLessonsAdded: string[] = [];
 
@@ -149,36 +258,65 @@ export class CourseIngest {
       }
     }
 
+    let pkgIndex = 0;
     for (const pkgFile of packageFiles) {
+      pkgIndex++;
       const pkgPath = path.join(backupDir, pkgFile);
+
+      onProgress?.({
+        step: 'extract',
+        message: `[${pkgIndex}/${packageFiles.length}] Extracting ${pkgFile}...`,
+        current: pkgIndex,
+        total: packageFiles.length,
+        details: pkgFile
+      });
 
       // Extract using universal ArchiveExtractor (.zip, .mhtml, .html)
       const extracted = ArchiveExtractor.extract(pkgPath, assetsDir);
-      if (!extracted) continue;
+      if (!extracted) {
+        console.warn(`[CourseIngest] Package "${pkgFile}" did not produce valid lesson content, skipping.`);
+        onProgress?.({
+          step: 'extract',
+          message: `[${pkgIndex}/${packageFiles.length}] Skipped ${pkgFile} (no valid lesson HTML found)`,
+          current: pkgIndex,
+          total: packageFiles.length,
+          details: `Skipped: ${pkgFile}`
+        });
+        continue;
+      }
 
       const { unitNumber, lessonNumber, isAssignment, activityCode } = extracted;
       const unitNumStr = String(unitNumber).padStart(2, '0');
       const lessonNumStr = String(lessonNumber).padStart(2, '0');
       const lessonId = isAssignment
-        ? `${unitNumStr}.${lessonNumStr}_assign1`
-        : `${unitNumStr}.${lessonNumStr}`;
+        ? `${unitNumStr}-${lessonNumStr}_assign1`
+        : `${unitNumStr}-${lessonNumStr}`;
 
-      const lessonFilename = `${lessonId}.lesson.md`;
-      const lessonFilePath = path.join(courseDir, lessonFilename);
-      const isExistingLesson = fs.existsSync(lessonFilePath);
+      const mdPath = path.join(courseDir, `${lessonId}.lesson.md`);
+      const htmlPath = path.join(courseDir, `${lessonId}.lesson.html`);
+      const pdfPath = path.join(courseDir, `${lessonId}.lesson.pdf`);
+
+      const preferMarkdown = Boolean(options.useMarkdownAsLesson);
+      const targetPrimaryPath = preferMarkdown ? mdPath : htmlPath;
+      const isExistingLesson = fs.existsSync(targetPrimaryPath);
       const shouldOverwrite =
         overwriteExisting ||
         Boolean(options.overwriteLessonIds && options.overwriteLessonIds.includes(lessonId)) ||
         Boolean(options.overwriteFiles && options.overwriteFiles.includes(pkgFile));
 
-      // If lesson already exists and overwrite is false, preserve existing files and register
+      // If lesson already exists in requested format and overwrite is false, preserve existing files and register
       if (isExistingLesson && !shouldOverwrite) {
         let lessonTitle = extracted.title || `${isAssignment ? 'Assignment' : 'Lesson'} ${unitNumber}.${lessonNumber}`;
+        const existingFilePath = fs.existsSync(targetPrimaryPath) ? targetPrimaryPath : (fs.existsSync(htmlPath) ? htmlPath : mdPath);
         try {
-          const content = fs.readFileSync(lessonFilePath, 'utf8');
+          const content = fs.readFileSync(existingFilePath, 'utf8');
           const titleMatch = content.match(/^title:\s*['"]?(.*?)['"]?$/m);
           if (titleMatch) lessonTitle = titleMatch[1].trim();
         } catch {}
+
+        const detectedFormat: 'markdown' | 'html' | 'pdf' | 'video' = preferMarkdown
+          ? 'markdown'
+          : (fs.existsSync(htmlPath) ? 'html' : fs.existsSync(pdfPath) ? 'pdf' : 'markdown');
 
         lessonsMap.set(lessonId, {
           id: lessonId,
@@ -187,10 +325,24 @@ export class CourseIngest {
           unitNumber,
           lessonNumber,
           type: isAssignment ? 'assignment' : 'lesson',
-          hasFull: fs.existsSync(path.join(courseDir, `${lessonId}.lesson.md`)),
+          hasFull: (
+            fs.existsSync(htmlPath) ||
+            fs.existsSync(pdfPath) ||
+            fs.existsSync(mdPath)
+          ),
           hasSummary: fs.existsSync(path.join(courseDir, `${lessonId}.summary.md`)),
           hasNotes: fs.existsSync(path.join(courseDir, `${lessonId}.notes.md`)),
-          hasTest: fs.existsSync(path.join(courseDir, `${lessonId}.test.md`))
+          hasTest: fs.existsSync(path.join(courseDir, `${lessonId}.test.md`)),
+          format: detectedFormat,
+          hasCompanion: detectedFormat !== 'markdown' && fs.existsSync(path.join(courseDir, `${lessonId}.lesson.companion.md`))
+        });
+
+        onProgress?.({
+          step: 'extract',
+          message: `[${pkgIndex}/${packageFiles.length}] ✓ Unit ${unitNumber} Lesson ${lessonNumber}: ${lessonTitle} (already up to date)`,
+          current: pkgIndex,
+          total: packageFiles.length,
+          details: lessonTitle
         });
         continue;
       }
@@ -198,7 +350,7 @@ export class CourseIngest {
       const cleaned = DomCleaner.clean(extracted.htmlContent);
       const unitTitle = unitTitles[extracted.unitNumber] || `Unit ${extracted.unitNumber}`;
 
-      // 1. Write Full Lesson Markdown
+      // Build lesson markdown outline
       const fullLessonMd = this.turndownConverter.convertToMarkdown(cleaned.cleanedHtml, {
         title: extracted.title,
         activityCode: extracted.activityCode,
@@ -210,7 +362,32 @@ export class CourseIngest {
         savedAt: new Date().toISOString().split('T')[0]
       });
 
-      fs.writeFileSync(lessonFilePath, fullLessonMd, 'utf8');
+      if (preferMarkdown) {
+        // Authoritative Markdown Lesson
+        fs.writeFileSync(mdPath, fullLessonMd, 'utf8');
+
+        // Clean up obsolete presentation HTML/companion if converting to markdown
+        if (fs.existsSync(htmlPath)) {
+          try { fs.unlinkSync(htmlPath); } catch {}
+        }
+        const companionPath = path.join(courseDir, `${lessonId}.lesson.companion.md`);
+        if (fs.existsSync(companionPath)) {
+          try { fs.unlinkSync(companionPath); } catch {}
+        }
+      } else {
+        // Authoritative Presentation HTML (sandboxed iframe source — immutable after ingest)
+        const presentationHtml = DomCleaner.preparePresentationHtml(extracted.htmlContent);
+        fs.writeFileSync(htmlPath, presentationHtml, 'utf8');
+
+        // Companion Markdown (AI context & editor target)
+        const companionPath = path.join(courseDir, `${lessonId}.lesson.companion.md`);
+        fs.writeFileSync(companionPath, fullLessonMd, 'utf8');
+
+        // Clean up any standalone .lesson.md so primary format remains cleanly HTML
+        if (fs.existsSync(mdPath)) {
+          try { fs.unlinkSync(mdPath); } catch {}
+        }
+      }
 
       // 2. Generate Initial Summary with YAML frontmatter
       const summaryFilename = `${lessonId}.summary.md`;
@@ -296,10 +473,21 @@ export class CourseIngest {
         hasFull: true,
         hasSummary: true,
         hasNotes: true,
-        hasTest: true
+        hasTest: true,
+        format: preferMarkdown ? 'markdown' : 'html',
+        hasCompanion: !preferMarkdown
       });
 
       newLessonsAdded.push(lessonId);
+
+      onProgress?.({
+        step: 'extract',
+        message: `[${pkgIndex}/${packageFiles.length}] ✓ Unit ${extracted.unitNumber} Lesson ${extracted.lessonNumber}: ${extracted.title}`,
+        current: pkgIndex,
+        total: packageFiles.length,
+        details: extracted.title
+      });
+      console.log(`[CourseIngest] ✓ [${pkgIndex}/${packageFiles.length}] Extracted ${lessonId}: "${extracted.title}"`);
     }
 
     // Group lessons by units
@@ -334,6 +522,11 @@ export class CourseIngest {
       archived: existingManifest?.archived
     };
 
+    onProgress?.({
+      step: 'manifest',
+      message: `Compiling manifest: ${units.length} unit(s), ${lessonsMap.size} lesson(s)...`
+    });
+
     fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
 
     if (newLessonsAdded.length > 0) {
@@ -341,6 +534,12 @@ export class CourseIngest {
     }
 
     // Compress oversized images (>512px) and normalize markdown size specs
+    onProgress?.({
+      step: 'optimize',
+      message: 'Optimizing and compressing course images...',
+      current: packageFiles.length,
+      total: packageFiles.length
+    });
     try {
       const imageStats = await optimizeCourseImages(courseDir);
       if (imageStats.converted > 0) {
@@ -349,10 +548,23 @@ export class CourseIngest {
             `(${(imageStats.bytesBefore / 1048576).toFixed(1)}MB → ${(imageStats.bytesAfter / 1048576).toFixed(1)}MB), ` +
             `${imageStats.markdownRefsUpdated} markdown ref(s) updated`
         );
+        onProgress?.({
+          step: 'optimize',
+          message: `Compressed ${imageStats.converted} image(s), updated ${imageStats.markdownRefsUpdated} markdown ref(s)`,
+          details: `${(imageStats.bytesBefore / 1048576).toFixed(1)}MB → ${(imageStats.bytesAfter / 1048576).toFixed(1)}MB`
+        });
       }
     } catch (err) {
       console.warn(`[ImageOptimizer] Failed for ${courseId}, continuing:`, err);
     }
+
+    onProgress?.({
+      step: 'complete',
+      message: `Course ingestion complete! ${lessonsMap.size} lesson(s) ready across ${units.length} unit(s).`,
+      current: packageFiles.length,
+      total: packageFiles.length
+    });
+    console.log(`[CourseIngest] ✅ Successfully ingested [${courseId}]: ${lessonsMap.size} lessons across ${units.length} units.`);
 
     return manifest;
   }
@@ -395,7 +607,7 @@ export class CourseIngest {
     title: string,
     isAssignment: boolean
   ): string {
-    const courseCode = `${courseId.toUpperCase()}.${String(unit).padStart(2, '0')}.${String(lesson).padStart(2, '0')}`;
+    const courseCode = `${courseId.toUpperCase()}.${String(unit).padStart(2, '0')}-${String(lesson).padStart(2, '0')}`;
 
     return `course: ${courseCode}
 

@@ -94,6 +94,70 @@ describe('CourseService checkpoint persistence', () => {
     expect(notes[0].courseTitle).toBe('Test Course Checkpoints');
   });
 
+  it('preserves anchor, selection, and AI fields through create, update, and patch', () => {
+    const created = CourseService.addOrUpdateNoteCheckpoint(courseId, {
+      file: '02.03.lesson.md',
+      verticalPosition: 610,
+      type: 'ai',
+      color: 'lavender',
+      noteText: '',
+      anchor: { type: 'paragraph', verticalPosition: 610, paragraphIndex: 7 },
+      selection: { text: 'the selected passage', blockIndex: 7, charStart: 3, charEnd: 24, prefix: 'ctx ', suffix: ' end' },
+      aiQuestion: 'What does this passage mean?',
+      aiStatus: 'pending'
+    });
+    expect(created.type).toBe('ai');
+    expect(created.anchor).toEqual({ type: 'paragraph', verticalPosition: 610, paragraphIndex: 7 });
+    expect(created.selection?.text).toBe('the selected passage');
+    expect(created.selection?.prefix).toBe('ctx ');
+    expect(created.aiQuestion).toBe('What does this passage mean?');
+    expect(created.aiStatus).toBe('pending');
+
+    // A plain note-text update must not wipe the AI/selection payload.
+    const updated = CourseService.addOrUpdateNoteCheckpoint(courseId, {
+      id: created.id,
+      file: '02.03.lesson.md',
+      verticalPosition: 615,
+      noteText: 'edited'
+    });
+    expect(updated.aiQuestion).toBe('What does this passage mean?');
+    expect(updated.aiStatus).toBe('pending');
+    expect(updated.selection?.text).toBe('the selected passage');
+    expect(updated.anchor?.paragraphIndex).toBe(7);
+
+    // AI completion patch normalizes the legacy 'ready' value.
+    const patched = CourseService.patchCheckpoint(courseId, created.id, {
+      aiAnswer: 'Here is the explanation.',
+      aiStatus: 'ready'
+    });
+    expect(patched).not.toBeNull();
+    expect(patched!.aiAnswer).toBe('Here is the explanation.');
+    expect(patched!.aiStatus).toBe('done');
+
+    expect(CourseService.patchCheckpoint(courseId, 'does-not-exist', { aiStatus: 'done' })).toBeNull();
+  });
+
+  it('normalizes legacy aiStatus values when reading .checkpoints.json', () => {
+    const legacyId = 'tstcp';
+    const dir = path.join(scratch, 'courses', legacyId);
+    const disk = JSON.parse(fs.readFileSync(path.join(dir, '.checkpoints.json'), 'utf8')) as any[];
+    disk.push({
+      id: 'cp_legacy_ready',
+      file: '03.01.lesson.md',
+      verticalPosition: 10,
+      type: 'ai',
+      date: '2026-11-01T00:00:00.000Z',
+      aiStatus: 'ready',
+      aiAnswer: 'old answer'
+    });
+    fs.writeFileSync(path.join(dir, '.checkpoints.json'), JSON.stringify(disk, null, 2));
+
+    const cps = CourseService.getCheckpoints(legacyId);
+    const legacy = cps.find((c) => c.id === 'cp_legacy_ready');
+    expect(legacy).toBeDefined();
+    expect(legacy!.aiStatus).toBe('done');
+  });
+
   it('reads and writes .checkpoints.json', () => {
     const cpCourseId = 'dotcp';
     const cpDir = path.join(scratch, 'courses', cpCourseId);

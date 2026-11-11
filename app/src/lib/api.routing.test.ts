@@ -17,6 +17,7 @@ let libSaveShouldFail = false;
 const libSavedDocs = new Map<string, ArrayBuffer>();
 let libAnnotations: any[] = [];
 let libCheckpoints: any[] = [];
+let courseCheckpoints: any[] = [];
 
 const windowStub = {
   __TAURI_INTERNALS__: {},
@@ -105,10 +106,16 @@ await mock.module('./storage/clientStore', () => ({
   },
   getCachedCheckpoints: async () => {
     storeCalls.push('getCachedCheckpoints');
-    return [];
+    return courseCheckpoints;
   },
-  saveCheckpointLocally: async () => {
+  saveCheckpointLocally: async (_courseId: string, checkpoint: any) => {
     storeCalls.push('saveCheckpointLocally');
+    const idx = courseCheckpoints.findIndex((c) => c.id === checkpoint.id);
+    if (idx !== -1) {
+      courseCheckpoints[idx] = checkpoint;
+    } else {
+      courseCheckpoints.push(checkpoint);
+    }
   },
   deleteCheckpointLocally: async () => {
     storeCalls.push('deleteCheckpointLocally');
@@ -235,6 +242,7 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
     libSavedDocs.clear();
     libAnnotations = [];
     libCheckpoints = [];
+    courseCheckpoints = [];
   });
 
   it('detects the iPad as Tauri mobile', () => {
@@ -262,6 +270,110 @@ describe('apiFetch routing in a Tauri mobile (iPad) environment', () => {
   it('serves checkpoints from the local store', async () => {
     await apiFetch('/api/courses/foo/checkpoints');
     expect(storeCalls).toContain('getCachedCheckpoints');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('preserves anchor/selection/AI fields when creating checkpoints locally', async () => {
+    const res = await apiFetch('/api/courses/foo/checkpoints', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        file: '01.01.lesson.md',
+        verticalPosition: 320,
+        type: 'ai',
+        color: 'lavender',
+        anchor: { type: 'paragraph', verticalPosition: 320, paragraphIndex: 4 },
+        selection: { text: 'quadratic formula', blockIndex: 4, charStart: 12, charEnd: 29 },
+        aiQuestion: 'Why does the discriminant matter?',
+        aiStatus: 'pending'
+      })
+    });
+    expect(res.status).toBe(200);
+    const data: any = await res.json();
+    expect(data.checkpoint.type).toBe('ai');
+    expect(data.checkpoint.anchor).toEqual({ type: 'paragraph', verticalPosition: 320, paragraphIndex: 4 });
+    expect(data.checkpoint.selection.text).toBe('quadratic formula');
+    expect(data.checkpoint.aiQuestion).toBe('Why does the discriminant matter?');
+    expect(data.checkpoint.aiStatus).toBe('pending');
+    // The stored copy keeps the same fields (queued for desktop push).
+    expect(courseCheckpoints.length).toBe(1);
+    expect(courseCheckpoints[0].anchor.type).toBe('paragraph');
+    expect(courseCheckpoints[0].aiStatus).toBe('pending');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('keeps existing AI fields when locally updating a checkpoint without them', async () => {
+    courseCheckpoints = [
+      {
+        id: 'cp_ai_1',
+        file: '01.01.lesson.md',
+        verticalPosition: 100,
+        type: 'ai',
+        color: 'lavender',
+        noteText: '',
+        date: '2026-11-01T00:00:00.000Z',
+        anchor: { type: 'paragraph', verticalPosition: 100, paragraphIndex: 2 },
+        selection: { text: 'legacy quote' },
+        aiQuestion: 'original question',
+        aiAnswer: 'original answer',
+        aiStatus: 'done'
+      }
+    ];
+    const res = await apiFetch('/api/courses/foo/checkpoints', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: 'cp_ai_1',
+        file: '01.01.lesson.md',
+        verticalPosition: 140,
+        color: 'pink',
+        noteText: 'edited note'
+      })
+    });
+    expect(res.status).toBe(200);
+    const data: any = await res.json();
+    expect(data.checkpoint.noteText).toBe('edited note');
+    expect(data.checkpoint.type).toBe('ai');
+    expect(data.checkpoint.aiQuestion).toBe('original question');
+    expect(data.checkpoint.aiAnswer).toBe('original answer');
+    expect(data.checkpoint.aiStatus).toBe('done');
+    expect(data.checkpoint.selection.text).toBe('legacy quote');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('patches checkpoint AI status locally without touching the network', async () => {
+    courseCheckpoints = [
+      {
+        id: 'cp_ai_2',
+        file: '01.02.lesson.md',
+        verticalPosition: 50,
+        type: 'ai',
+        date: '2026-11-01T00:00:00.000Z',
+        aiQuestion: 'q',
+        aiStatus: 'pending'
+      }
+    ];
+    const res = await apiFetch('/api/courses/foo/checkpoints/cp_ai_2', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiAnswer: 'the answer', aiStatus: 'ready' })
+    });
+    expect(res.status).toBe(200);
+    const data: any = await res.json();
+    expect(data.checkpoint.aiAnswer).toBe('the answer');
+    // Legacy 'ready' is normalized to the canonical status set.
+    expect(data.checkpoint.aiStatus).toBe('done');
+    expect(storeCalls).toContain('saveCheckpointLocally');
+    expect(fetchCalls.length).toBe(0);
+  });
+
+  it('returns 404 when patching an unknown checkpoint locally', async () => {
+    const res = await apiFetch('/api/courses/foo/checkpoints/missing', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ aiStatus: 'done' })
+    });
+    expect(res.status).toBe(404);
     expect(fetchCalls.length).toBe(0);
   });
 

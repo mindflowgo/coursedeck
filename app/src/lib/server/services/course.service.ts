@@ -215,10 +215,13 @@ export class CourseService {
         throw new ValidationError('Each lesson must include an id and title.');
       }
 
+      // Normalize lesson ID from 01.01 to 01-01
+      const lessonId = item.id.replace(/^(\d+)\.(\d+)/, '$1-$2');
+
       let uNum = item.unitNumber;
       let lNum = item.lessonNumber;
       if (uNum === undefined || lNum === undefined) {
-        const parts = item.id.split('.');
+        const parts = lessonId.split(/[.-]/);
         const parsedU = parseInt(parts[0], 10);
         const parsedL = parseInt(parts[1] || '1', 10);
         if (uNum === undefined) uNum = Number.isFinite(parsedU) ? parsedU : 1;
@@ -238,10 +241,10 @@ export class CourseService {
         unit.title = item.unitTitle;
       }
 
-      let lesson = unit.lessons.find((l) => l.id === item.id);
+      let lesson = unit.lessons.find((l) => l.id === lessonId || l.id === item.id);
       if (!lesson) {
         const newLesson: CourseManifestLesson = {
-          id: item.id,
+          id: lessonId,
           code: `${course.id}_u${uNum}l${lNum}`,
           title: item.title,
           unitNumber: uNum,
@@ -258,6 +261,7 @@ export class CourseService {
         unit.lessons.sort((a, b) => a.lessonNumber - b.lessonNumber);
         lesson = newLesson;
       } else {
+        lesson.id = lessonId;
         lesson.title = item.title;
         if (item.type) lesson.type = item.type;
         if (item.pageRange !== undefined) lesson.pageRange = item.pageRange;
@@ -267,7 +271,7 @@ export class CourseService {
       const activeLesson: CourseManifestLesson = lesson;
 
       if (typeof item.content === 'string') {
-        const fullFileName = tabFileName(item.id, 'lesson');
+        const fullFileName = tabFileName(lessonId, 'lesson');
         atomicWriteFileSync(path.join(courseDir, fullFileName), item.content);
         activeLesson.hasFull = true;
       }
@@ -275,7 +279,7 @@ export class CourseService {
       if (item.tabs && typeof item.tabs === 'object') {
         for (const [tabName, tabContent] of Object.entries(item.tabs)) {
           if (typeof tabContent === 'string') {
-            const tabFile = tabFileName(item.id, tabName);
+            const tabFile = tabFileName(lessonId, tabName);
             atomicWriteFileSync(path.join(courseDir, tabFile), tabContent);
             if (tabName === 'summary') activeLesson.hasSummary = true;
             if (tabName === 'notes' || tabName === 'studysheet') activeLesson.hasNotes = true;

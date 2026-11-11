@@ -35,6 +35,25 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CompanionResult {
+    pub companion_path: Option<String>,
+    pub markdown: String,
+    pub page_count: u32,
+    pub pdf_type: String,
+    pub used_ocr: bool,
+    pub pages_needing_ocr: Vec<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CompanionProgress {
+    pub current_page: usize,
+    pub total_pages: usize,
+    pub stage: String,
+    pub is_ocr: bool,
+    pub message: String,
+}
+
 /// Maximum number of PDF documents kept open in the cache. Dropping a cached
 /// document closes its handle inside pdfium, bounding memory use.
 const MAX_OPEN_DOCUMENTS: usize = 4;
@@ -352,6 +371,158 @@ impl PdfEngine {
         }
 
         Ok(hits)
+    }
+
+    pub fn render_page_png(
+        &self,
+        path: &Path,
+        page_index: u16,
+        scale: f32,
+    ) -> Result<Vec<u8>, String> {
+        let rgb_image = self.with_document(path, |doc| {
+            let page = doc
+                .pages()
+                .get(page_index)
+                .map_err(|e| format!("Page {page_index} out of bounds: {e}"))?;
+            render_page_to_rgb_image(&page, scale)
+        })?;
+
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(rgb_image)
+            .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+            .map_err(|e| format!("PNG encoding failed: {e}"))?;
+        Ok(png_bytes)
+    }
+
+    pub fn render_page_png_from_bytes(
+        &self,
+        pdf_bytes: &[u8],
+        page_index: u16,
+        scale: f32,
+    ) -> Result<Vec<u8>, String> {
+        let doc = self
+            .pdfium
+            .load_pdf_from_byte_slice(pdf_bytes, None)
+            .map_err(|e| format!("Failed to load PDF from bytes: {e}"))?;
+        let page = doc
+            .pages()
+            .get(page_index)
+            .map_err(|e| format!("Page {page_index} out of bounds: {e}"))?;
+        let rgb_image = render_page_to_rgb_image(&page, scale)?;
+
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgb8(rgb_image)
+            .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+            .map_err(|e| format!("PNG encoding failed: {e}"))?;
+        Ok(png_bytes)
+    }
+
+    pub fn extract_companion_markdown<F>(
+        &self,
+        pdf_bytes: &[u8],
+        pdf_path: Option<&Path>,
+        mut on_progress: F,
+    ) -> Result<CompanionResult, String>
+    where
+        F: FnMut(CompanionProgress),
+    {
+        on_progress(CompanionProgress {
+            current_page: 0,
+            total_pages: 0,
+            stage: "inspecting".to_string(),
+            is_ocr: false,
+            message: "Analyzing PDF structure...".to_string(),
+        });
+
+        let extraction = pdf_inspector::extract_pages_markdown_mem(pdf_bytes, None)
+            .map_err(|e| format!("pdf-inspector extraction failed: {e}"))?;
+
+        let detection = pdf_inspector::detect_pdf_type_mem(pdf_bytes);
+        let pdf_type_str = match detection {
+            Ok(d) => format!("{:?}", d.pdf_type),
+            Err(_) => "Unknown".to_string(),
+        };
+        let mut used_ocr = false;
+        let pages_needing_ocr = extraction.pages_needing_ocr.clone();
+        let ocr_supported = crate::ocr::is_ocr_supported();
+        let total_pages = extraction.pages.len();
+
+        let mut page_markdowns: Vec<(u32, String)> = Vec::with_capacity(total_pages);
+
+        for page in extraction.pages {
+            let page_num_1indexed = page.page + 1;
+            let mut md = page.markdown.trim().to_string();
+            let needs_ocr = page.needs_ocr || pages_needing_ocr.contains(&page_num_1indexed);
+
+            if (md.is_empty() || needs_ocr) && ocr_supported {
+                on_progress(CompanionProgress {
+                    current_page: page_num_1indexed as usize,
+                    total_pages,
+                    stage: "ocr".to_string(),
+                    is_ocr: true,
+                    message: format!("Processing page {}/{} (OCR)...", page_num_1indexed, total_pages),
+                });
+
+                let rendered_png = if let Some(path) = pdf_path {
+                    self.render_page_png(path, page.page as u16, 2.5)
+                } else {
+                    self.render_page_png_from_bytes(pdf_bytes, page.page as u16, 2.5)
+                };
+
+                if let Ok(png_bytes) = rendered_png {
+                    if let Ok(ocr_text) = crate::ocr::run_native_ocr(&png_bytes) {
+                        let trimmed = ocr_text.trim();
+                        if !trimmed.is_empty() {
+                            md = trimmed.to_string();
+                            used_ocr = true;
+                        }
+                    }
+                }
+            } else {
+                on_progress(CompanionProgress {
+                    current_page: page_num_1indexed as usize,
+                    total_pages,
+                    stage: "extracting".to_string(),
+                    is_ocr: false,
+                    message: format!("Extracting page {}/{}...", page_num_1indexed, total_pages),
+                });
+            }
+
+            // Apply generic text cleanup to both native-extracted and OCR text.
+            // This collapses tab/space artifacts, rejoins hyphenated words, removes
+            // stray punctuation noise lines, and normalises blank lines.
+            if !md.is_empty() {
+                md = crate::text_clean::clean_page_text(&md);
+            }
+
+            page_markdowns.push((page_num_1indexed, md));
+        }
+
+        let mut full_markdown = String::new();
+        for (page_num, md) in &page_markdowns {
+            full_markdown.push_str(&format!("<!-- page: {} -->\n\n", page_num));
+            if !md.is_empty() {
+                full_markdown.push_str(md);
+                full_markdown.push_str("\n\n");
+            }
+        }
+
+        on_progress(CompanionProgress {
+            current_page: total_pages,
+            total_pages,
+            stage: "done".to_string(),
+            is_ocr: used_ocr,
+            message: format!("Extracted {} pages", total_pages),
+        });
+
+        Ok(CompanionResult {
+            companion_path: None,
+            markdown: full_markdown,
+            page_count: page_markdowns.len() as u32,
+            pdf_type: pdf_type_str,
+            used_ocr,
+            pages_needing_ocr,
+        })
     }
 }
 
@@ -840,4 +1011,165 @@ pub async fn pdf_close_document(
     tauri::async_runtime::spawn_blocking(move || engine.close_document(&resolved))
         .await
         .map_err(|e| format!("PDF close task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn pdf_generate_companion(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, PdfEngineState>,
+    path: String,
+    force: Option<bool>,
+    on_progress: tauri::ipc::Channel<CompanionProgress>,
+) -> Result<CompanionResult, String> {
+    let engine = engine_from_state(&state)?;
+    let resolved = resolve_pdf_path(&app, &path);
+    let force = force.unwrap_or(false);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let companion_path = resolved.with_extension("companion.md");
+
+        // Freshness check: if companion exists and is newer than source PDF, read and return
+        if !force && companion_path.exists() {
+            if let (Ok(pdf_meta), Ok(comp_meta)) = (
+                std::fs::metadata(&resolved),
+                std::fs::metadata(&companion_path),
+            ) {
+                if comp_meta.modified().ok() >= pdf_meta.modified().ok() {
+                    if let Ok(content) = std::fs::read_to_string(&companion_path) {
+                        let page_count = content.matches("<!-- page:").count() as u32;
+                        let _ = on_progress.send(CompanionProgress {
+                            current_page: page_count as usize,
+                            total_pages: page_count as usize,
+                            stage: "done".to_string(),
+                            is_ocr: false,
+                            message: "Loaded cached companion".to_string(),
+                        });
+                        return Ok(CompanionResult {
+                            companion_path: Some(companion_path.to_string_lossy().to_string()),
+                            markdown: content,
+                            page_count,
+                            pdf_type: "TextBased".to_string(),
+                            used_ocr: false,
+                            pages_needing_ocr: vec![],
+                        });
+                    }
+                }
+            }
+        }
+
+        let bytes = std::fs::read(&resolved)
+            .map_err(|e| format!("Cannot read PDF at {:?}: {}", resolved, e))?;
+
+        let mut result = engine.extract_companion_markdown(&bytes, Some(&resolved), |p| {
+            let _ = on_progress.send(p);
+        })?;
+
+        if let Err(e) = std::fs::write(&companion_path, &result.markdown) {
+            eprintln!("[PDF-Companion] Warning: failed to write {:?}: {}", companion_path, e);
+        } else {
+            result.companion_path = Some(companion_path.to_string_lossy().to_string());
+        }
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("Companion generation task failed: {e}"))?
+}
+
+#[tauri::command]
+pub async fn pdf_read_companion(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Option<String>, String> {
+    let resolved = resolve_pdf_path(&app, &path);
+    let companion_path = resolved.with_extension("companion.md");
+    if companion_path.exists() {
+        std::fs::read_to_string(&companion_path)
+            .map(Some)
+            .map_err(|e| format!("Failed to read companion: {e}"))
+    } else {
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+pub async fn pdf_extract_companion_from_bytes(
+    state: tauri::State<'_, PdfEngineState>,
+    bytes: Vec<u8>,
+    pdf_path: Option<String>,
+    on_progress: tauri::ipc::Channel<CompanionProgress>,
+) -> Result<CompanionResult, String> {
+    let engine = engine_from_state(&state)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let path_buf = pdf_path.as_deref().map(Path::new);
+        let mut result = engine.extract_companion_markdown(&bytes, path_buf, |p| {
+            let _ = on_progress.send(p);
+        })?;
+
+        if let Some(ref p) = pdf_path {
+            let comp_path = Path::new(p).with_extension("companion.md");
+            if let Err(e) = std::fs::write(&comp_path, &result.markdown) {
+                eprintln!("[PDF-Companion] Warning: failed to write {:?}: {}", comp_path, e);
+            } else {
+                result.companion_path = Some(comp_path.to_string_lossy().to_string());
+            }
+        }
+
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("In-memory companion extraction failed: {e}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::OnceLock;
+
+    static SHARED_ENGINE: OnceLock<PdfEngine> = OnceLock::new();
+
+    fn get_engine() -> &'static PdfEngine {
+        SHARED_ENGINE.get_or_init(|| PdfEngine::new().expect("failed to init PdfEngine"))
+    }
+
+    #[test]
+    fn test_companion_extraction_from_sample_pdf() {
+        let sample_path = Path::new("../data.old/courses/gwl3o/assets/locker_docs/gwl3o_03.02.05.pdf");
+        if !sample_path.exists() {
+            eprintln!("Sample PDF not found, skipping test");
+            return;
+        }
+
+        let bytes = std::fs::read(sample_path).expect("failed to read sample PDF");
+        let engine = get_engine();
+        let mut progress_events = Vec::new();
+        let result = engine
+            .extract_companion_markdown(&bytes, Some(sample_path), |p| progress_events.push(p))
+            .expect("failed to extract companion markdown");
+
+        assert!(result.page_count > 0);
+        assert!(result.markdown.contains("<!-- page: 1 -->"));
+        assert!(!progress_events.is_empty());
+        assert_eq!(progress_events.last().unwrap().stage, "done");
+        println!("Extracted {} pages. PDF type: {}", result.page_count, result.pdf_type);
+        println!("Sample markdown preview:\n{}", &result.markdown[..result.markdown.len().min(300)]);
+    }
+
+    #[test]
+    fn test_native_ocr_on_rendered_page() {
+        let sample_path = Path::new("../data.old/courses/gwl3o/assets/locker_docs/gwl3o_03.02.05.pdf");
+        if !sample_path.exists() {
+            return;
+        }
+
+        let engine = get_engine();
+        let png = engine.render_page_png(sample_path, 0, 2.0).expect("failed to render png");
+        assert!(!png.is_empty());
+
+        if crate::ocr::is_ocr_supported() {
+            let ocr_result = crate::ocr::run_native_ocr(&png).expect("native ocr failed");
+            assert!(!ocr_result.is_empty());
+            println!("Native OCR text preview:\n{}", &ocr_result[..ocr_result.len().min(300)]);
+        }
+    }
 }

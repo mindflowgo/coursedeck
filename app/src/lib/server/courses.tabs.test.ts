@@ -328,4 +328,78 @@ describe('CourseService tab file helpers', () => {
       expect(resolved).toBe(diskPath);
     });
   });
+
+  describe('multi-format lesson and companion handling', () => {
+    const mfCourse = 'tstmf';
+    const mfDir = path.join(scratch, 'courses', mfCourse);
+
+    beforeAll(() => {
+      fs.mkdirSync(mfDir, { recursive: true });
+    });
+
+    it('returns format: html and companion content when .lesson.html exists', () => {
+      fs.writeFileSync(path.join(mfDir, '01-01.lesson.html'), '<html><body>HTML Content</body></html>');
+      fs.writeFileSync(path.join(mfDir, '01-01.lesson.companion.md'), '# Companion MD for 01-01');
+      fs.writeFileSync(path.join(mfDir, '01-01.summary.md'), '# Summary 01-01');
+
+      const bundle = CourseService.getLessonContent(mfCourse, '01-01');
+      expect(bundle).not.toBeNull();
+      expect(bundle?.format).toBe('html');
+      expect(bundle?.hasCompanion).toBe(true);
+      expect(bundle?.lesson).toBe('# Companion MD for 01-01');
+      expect(bundle?.tabs['summary']).toBe('# Summary 01-01');
+      expect(bundle?.tabs).not.toHaveProperty('companion');
+    });
+
+    it('returns format: pdf and companion content when .lesson.pdf exists', () => {
+      fs.writeFileSync(path.join(mfDir, '01-02.lesson.pdf'), 'PDF bytes');
+      fs.writeFileSync(path.join(mfDir, '01-02.lesson.companion.md'), '# Companion MD for 01-02');
+
+      const bundle = CourseService.getLessonContent(mfCourse, '01-02');
+      expect(bundle).not.toBeNull();
+      expect(bundle?.format).toBe('pdf');
+      expect(bundle?.hasCompanion).toBe(true);
+      expect(bundle?.lesson).toBe('# Companion MD for 01-02');
+    });
+
+    it('falls back to format: markdown when only .lesson.md exists', () => {
+      fs.writeFileSync(path.join(mfDir, '01-03.lesson.md'), '# Pure Markdown Lesson');
+
+      const bundle = CourseService.getLessonContent(mfCourse, '01-03');
+      expect(bundle).not.toBeNull();
+      expect(bundle?.format).toBe('markdown');
+      expect(bundle?.hasCompanion).toBe(false);
+      expect(bundle?.lesson).toBe('# Pure Markdown Lesson');
+    });
+
+    it('saveLessonTab routes save to .lesson.companion.md when HTML primary exists', () => {
+      const res = CourseService.saveLessonTab(mfCourse, '01-01', 'lesson', '# Updated Companion');
+      expect(res.success).toBe(true);
+      expect(res.filename).toBe('01-01.lesson.companion.md');
+      expect(fs.readFileSync(path.join(mfDir, '01-01.lesson.companion.md'), 'utf8')).toBe('# Updated Companion');
+    });
+
+    it('saveLessonTab writes .lesson.md when primary is markdown', () => {
+      const res = CourseService.saveLessonTab(mfCourse, '01-03', 'lesson', '# Updated MD Lesson');
+      expect(res.success).toBe(true);
+      expect(res.filename).toBe('01-03.lesson.md');
+      expect(fs.readFileSync(path.join(mfDir, '01-03.lesson.md'), 'utf8')).toBe('# Updated MD Lesson');
+    });
+
+    it('resolveAssetPath resolves assets via direct and categorized fallback paths', () => {
+      const cssDir = path.join(mfDir, 'assets', 'css');
+      const imgDir = path.join(mfDir, 'assets', 'img');
+      fs.mkdirSync(cssDir, { recursive: true });
+      fs.mkdirSync(imgDir, { recursive: true });
+      fs.writeFileSync(path.join(cssDir, 'ilc_core.css'), '/* css */');
+      fs.writeFileSync(path.join(imgDir, 'banner.png'), 'png data');
+
+      // Direct path
+      expect(CourseService.resolveAssetPath(mfCourse, 'css/ilc_core.css')).toBe(path.join(cssDir, 'ilc_core.css'));
+      // Fallback: finding banner.png without img/ prefix
+      expect(CourseService.resolveAssetPath(mfCourse, 'banner.png')).toBe(path.join(imgDir, 'banner.png'));
+      // Fallback: finding ilc_core.css requested from dependencies/ path
+      expect(CourseService.resolveAssetPath(mfCourse, 'dependencies/ilc_core.css')).toBe(path.join(cssDir, 'ilc_core.css'));
+    });
+  });
 });

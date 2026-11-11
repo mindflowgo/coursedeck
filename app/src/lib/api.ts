@@ -1,4 +1,4 @@
-import type { Checkpoint } from '$lib/checkpoint';
+import { isCheckpointType, normalizeAiStatus, type Anchor, type Checkpoint, type SelectionRange } from '$lib/checkpoint';
 import * as store from './storage/clientStore';
 import { pdfGetInfo } from './pdfClient';
 import { invoke } from '@tauri-apps/api/core';
@@ -259,7 +259,7 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
         number: Number(u.number) || uIdx + 1,
         title: u.title || `Unit ${uIdx + 1}`,
         lessons: (Array.isArray(u.lessons) ? u.lessons : []).map((l: any, lIdx: number) => ({
-          id: l.id || `${String(uIdx + 1).padStart(2, '0')}.${String(lIdx + 1).padStart(2, '0')}`,
+          id: String(l.id || `${String(uIdx + 1).padStart(2, '0')}-${String(lIdx + 1).padStart(2, '0')}`).replace(/^(\d+)\.(\d+)/, '$1-$2'),
           title: l.title || `Lesson ${lIdx + 1}`,
           type: l.type === 'assignment' ? 'assignment' : 'lesson',
           pageRange: typeof l.pageRange === 'string' && l.pageRange.trim() ? l.pageRange.trim() : undefined,
@@ -562,6 +562,15 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     const body = JSON.parse((init?.body as string) || '{}');
     const checkpoints = await store.getLibraryCheckpointsLocally();
     const now = new Date().toISOString();
+    const aiStatus = normalizeAiStatus(body.aiStatus);
+    const anchor =
+      body.anchor && typeof body.anchor === 'object' && !Array.isArray(body.anchor)
+        ? (body.anchor as Anchor)
+        : undefined;
+    const selection =
+      body.selection && typeof body.selection === 'object' && !Array.isArray(body.selection)
+        ? (body.selection as SelectionRange)
+        : undefined;
     let cp: Checkpoint;
     if (body.id) {
       const idx = checkpoints.findIndex((c) => c.id === body.id);
@@ -572,7 +581,12 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
           verticalPosition: body.verticalPosition,
           color: body.color || checkpoints[idx].color || 'yellow',
           noteText: body.noteText ?? checkpoints[idx].noteText ?? '',
-          date: now
+          date: now,
+          ...(anchor !== undefined && { anchor }),
+          ...(selection !== undefined && { selection }),
+          ...(typeof body.aiQuestion === 'string' && { aiQuestion: body.aiQuestion }),
+          ...(typeof body.aiAnswer === 'string' && { aiAnswer: body.aiAnswer }),
+          ...(aiStatus !== undefined && { aiStatus })
         };
         await store.saveLibraryCheckpointsLocally(checkpoints);
         return jsonRes({ success: true, checkpoint: checkpoints[idx] });
@@ -583,10 +597,15 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
       courseId: 'library',
       file: body.file,
       verticalPosition: body.verticalPosition,
-      type: 'note',
+      type: isCheckpointType(body.type) ? body.type : 'note',
       color: body.color || 'yellow',
       noteText: body.noteText || '',
-      date: now
+      date: now,
+      ...(anchor !== undefined && { anchor }),
+      ...(selection !== undefined && { selection }),
+      ...(typeof body.aiQuestion === 'string' && { aiQuestion: body.aiQuestion }),
+      ...(typeof body.aiAnswer === 'string' && { aiAnswer: body.aiAnswer }),
+      ...(aiStatus !== undefined && { aiStatus })
     };
     checkpoints.push(cp);
     await store.saveLibraryCheckpointsLocally(checkpoints);
@@ -718,8 +737,8 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     const courseId = decodeURIComponent(lessonGetMatch[1]);
     const lessonId = decodeURIComponent(lessonGetMatch[2]);
     console.log(`[OfflineFetch] GET lesson bundle for ${courseId}/${lessonId}`);
-    const { lesson, tabs } = await store.getLessonBundleLocally(courseId, lessonId);
-    return jsonRes({ courseId, lessonId, lesson, tabs });
+    const { lesson, tabs, format, hasCompanion } = await store.getLessonBundleLocally(courseId, lessonId);
+    return jsonRes({ courseId, lessonId, lesson, tabs, format: format || 'markdown', hasCompanion: Boolean(hasCompanion) });
   }
 
   // PUT /api/courses/:id/:lessonId (save tab offline)
@@ -847,14 +866,44 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
   if (method === 'POST' && cpGetMatch) {
     const body = JSON.parse((init?.body as string) || '{}');
     const courseId = cpGetMatch[1];
+    const now = new Date().toISOString();
+    const aiStatus = normalizeAiStatus(body.aiStatus);
+    const anchor =
+      body.anchor && typeof body.anchor === 'object' && !Array.isArray(body.anchor)
+        ? (body.anchor as Anchor)
+        : undefined;
+    const selection =
+      body.selection && typeof body.selection === 'object' && !Array.isArray(body.selection)
+        ? (body.selection as SelectionRange)
+        : undefined;
+
+    // Updating an existing record must preserve fields the caller omitted
+    // (mirrors the server's update branch).
+    let existing: Checkpoint | undefined;
+    if (body.id) {
+      const cached = await store.getCachedCheckpoints(courseId);
+      existing = cached.find((c) => c.id === body.id);
+    }
+
     const cp: Checkpoint = {
       id: body.id || `cp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       file: body.file,
       verticalPosition: body.verticalPosition ?? 0,
-      type: body.type ?? 'note',
-      color: body.color || 'yellow',
-      noteText: body.noteText || '',
-      date: new Date().toISOString()
+      type: existing && body.type === undefined ? existing.type : (isCheckpointType(body.type) ? body.type : 'note'),
+      color: body.color || existing?.color || 'yellow',
+      noteText: body.noteText ?? existing?.noteText ?? '',
+      date: now,
+      ...((anchor ?? existing?.anchor) !== undefined && { anchor: anchor ?? existing?.anchor }),
+      ...((selection ?? existing?.selection) !== undefined && { selection: selection ?? existing?.selection }),
+      ...((typeof body.aiQuestion === 'string' || existing?.aiQuestion !== undefined) && {
+        aiQuestion: typeof body.aiQuestion === 'string' ? body.aiQuestion : existing?.aiQuestion
+      }),
+      ...((typeof body.aiAnswer === 'string' || existing?.aiAnswer !== undefined) && {
+        aiAnswer: typeof body.aiAnswer === 'string' ? body.aiAnswer : existing?.aiAnswer
+      }),
+      ...((aiStatus !== undefined || existing?.aiStatus !== undefined) && {
+        aiStatus: aiStatus ?? existing?.aiStatus
+      })
     };
     await store.saveCheckpointLocally(courseId, cp);
     return jsonRes({ success: true, checkpoint: cp });
@@ -874,6 +923,29 @@ async function offlineFetch(path: string, method: string, init?: RequestInit): P
     };
     await store.saveCheckpointLocally(courseId, cp);
     return jsonRes({ success: true, checkpoint: cp });
+  }
+
+  // PATCH /api/courses/:id/checkpoints/:cpId (async AI answer update)
+  const cpPatchMatch = pathname.match(/^\/api\/courses\/([^/]+)\/checkpoints\/([^/]+)$/);
+  if (method === 'PATCH' && cpPatchMatch) {
+    const body = JSON.parse((init?.body as string) || '{}');
+    const [, courseId, checkpointId] = cpPatchMatch;
+    const list = await store.getCachedCheckpoints(courseId);
+    const idx = list.findIndex((c) => c.id === checkpointId);
+    if (idx === -1) {
+      return jsonRes({ error: 'Checkpoint not found' }, 404);
+    }
+    const aiStatus = normalizeAiStatus(body.aiStatus);
+    const patched: Checkpoint = {
+      ...list[idx],
+      date: new Date().toISOString(),
+      ...(typeof body.aiAnswer === 'string' && { aiAnswer: body.aiAnswer }),
+      ...(typeof body.noteText === 'string' && { noteText: body.noteText }),
+      ...(aiStatus !== undefined && { aiStatus })
+    };
+    list[idx] = patched;
+    await store.saveCheckpointLocally(courseId, patched);
+    return jsonRes({ success: true, checkpoint: patched });
   }
 
   // DELETE /api/courses/:id/checkpoints/:cpId

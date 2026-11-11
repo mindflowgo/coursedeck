@@ -11,6 +11,8 @@ mod courses_fs;
 pub mod pdf;
 mod fs_util;
 mod course_files;
+pub mod ocr;
+pub mod text_clean;
 #[cfg(target_os = "ios")]
 mod mobile;
 mod settings;
@@ -783,6 +785,9 @@ pub fn run() {
         pdf::pdf_get_page_text,
         pdf::pdf_search,
         pdf::pdf_close_document,
+        pdf::pdf_generate_companion,
+        pdf::pdf_read_companion,
+        pdf::pdf_extract_companion_from_bytes,
     ]);
 
     builder

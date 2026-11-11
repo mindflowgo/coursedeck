@@ -49,7 +49,7 @@
   import MarkupMenu from '$lib/components/MarkupMenu.svelte';
   import PageRenderer from './PageRenderer.svelte';
   import Search from './Search.svelte';
-  import ReadingGuideOverlay from './ReadingGuideOverlay.svelte';
+  import ReadingGuideOverlay, { type BookmarkedLesson } from './ReadingGuideOverlay.svelte';
 
   interface Props {
     docPath: string;
@@ -59,6 +59,7 @@
     lessonTitle?: string;
     pageRange?: string;
     readingDescription?: string;
+    bookmarkedLessons?: BookmarkedLesson[];
     initialPage?: number | null;
     sideBarThumbnails?: boolean;
     sideBarSearch?: boolean;
@@ -73,6 +74,7 @@
     lessonTitle = '',
     pageRange = '',
     readingDescription = '',
+    bookmarkedLessons = [],
     initialPage = null,
     sideBarThumbnails = $bindable(false),
     sideBarSearch = $bindable(false),
@@ -1231,6 +1233,7 @@
       {lessonTitle}
       {pageRange}
       {readingDescription}
+      {bookmarkedLessons}
       {currentPage}
       {totalPages}
       onJumpToPage={scrollToPage}

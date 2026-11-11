@@ -105,40 +105,40 @@ describe('User Preferences - Course Position Resume', () => {
     const checkpoints: Checkpoint[] = [
       {
         id: 'pos_1',
-        file: '01.05.lesson.md',
+        file: '01-05.lesson.md',
         verticalPosition: 1240,
         type: 'position',
         date: '2026-10-16T18:00:00Z'
       }
     ];
-    const lessons = [{ id: '01.01' }, { id: '01.05' }];
+    const lessons = [{ id: '01-01' }, { id: '01-05' }];
 
     const target = resolveLastAccessedCourseRoute('CLM3U', checkpoints, lessons);
     expect(target).not.toBeNull();
     expect(target?.isCourseScope).toBe(false);
-    expect(target?.lessonId).toBe('01.05');
+    expect(target?.lessonId).toBe('01-05');
     expect(target?.tab).toBe('lesson');
     expect(target?.verticalPosition).toBe(1240);
-    expect(target?.href).toBe('/courses/clm3u/01.05');
+    expect(target?.href).toBe('/courses/clm3u/01-05');
   });
 
   it('resolveLastAccessedCourseRoute resolves custom tab on lesson', () => {
     const checkpoints: Checkpoint[] = [
       {
         id: 'pos_1',
-        file: '02.03.summary.md',
+        file: '02-03.summary.md',
         verticalPosition: 300,
         type: 'position',
         date: '2026-10-16T18:00:00Z'
       }
     ];
-    const lessons = [{ id: '02.03' }];
+    const lessons = [{ id: '02-03' }];
 
     const target = resolveLastAccessedCourseRoute('clm3u', checkpoints, lessons);
     expect(target).not.toBeNull();
-    expect(target?.lessonId).toBe('02.03');
+    expect(target?.lessonId).toBe('02-03');
     expect(target?.tab).toBe('summary');
-    expect(target?.href).toBe('/courses/clm3u/02.03/summary');
+    expect(target?.href).toBe('/courses/clm3u/02-03/summary');
   });
 
   it('resolveLastAccessedCourseRoute resolves course practice test', () => {
@@ -180,13 +180,13 @@ describe('User Preferences - Course Position Resume', () => {
     const checkpoints: Checkpoint[] = [
       {
         id: 'pos_1',
-        file: '99.99.lesson.md',
+        file: '99-99.lesson.md',
         verticalPosition: 100,
         type: 'position',
         date: '2026-10-16T19:00:00Z'
       }
     ];
-    const lessons = [{ id: '01.01' }, { id: '01.02' }];
+    const lessons = [{ id: '01-01' }, { id: '01-02' }];
 
     const target = resolveLastAccessedCourseRoute('clm3u', checkpoints, lessons);
     expect(target).toBeNull();
@@ -196,7 +196,7 @@ describe('User Preferences - Course Position Resume', () => {
     expect(getCourseLastLocation('CLN4U')).toBeNull();
 
     setCourseLastLocation('CLN4U', {
-      lessonId: '02.04',
+      lessonId: '02-04',
       tab: 'notes',
       isCourseScope: false,
       isUnitScope: false
@@ -205,7 +205,7 @@ describe('User Preferences - Course Position Resume', () => {
     const loc = getCourseLastLocation('cln4u');
     expect(loc).not.toBeNull();
     expect(loc?.courseId).toBe('cln4u');
-    expect(loc?.lessonId).toBe('02.04');
+    expect(loc?.lessonId).toBe('02-04');
     expect(loc?.tab).toBe('notes');
     expect(loc?.isCourseScope).toBe(false);
     expect(loc?.pdfPage).toBeNull();
@@ -219,25 +219,25 @@ describe('User Preferences - Course Position Resume', () => {
     expect(
       buildCourseResumeUrl('cln4u', {
         courseId: 'cln4u',
-        lessonId: '01.02',
+        lessonId: '01-02',
         tab: 'summary',
         isCourseScope: false,
         isUnitScope: false,
         updatedAt: Date.now()
       })
-    ).toBe('/courses/cln4u/01.02/summary');
+    ).toBe('/courses/cln4u/01-02/summary');
 
     // Default lesson tab omits /lesson suffix
     expect(
       buildCourseResumeUrl('cln4u', {
         courseId: 'cln4u',
-        lessonId: '01.02',
+        lessonId: '01-02',
         tab: 'lesson',
         isCourseScope: false,
         isUnitScope: false,
         updatedAt: Date.now()
       })
-    ).toBe('/courses/cln4u/01.02');
+    ).toBe('/courses/cln4u/01-02');
 
     // Unit scope
     expect(
@@ -269,13 +269,13 @@ describe('User Preferences - Course Position Resume', () => {
     const checkpoints: Checkpoint[] = [
       {
         id: 'pos_old',
-        file: '01.01.lesson.md',
+        file: '01-01.lesson.md',
         verticalPosition: 200,
         type: 'position',
         date: '2026-10-16T10:00:00Z'
       }
     ];
-    const lessons = [{ id: '01.01' }, { id: '02.05' }];
+    const lessons = [{ id: '01-01' }, { id: '02-05' }];
 
     // Set explicit location to book page 77
     setCourseLastLocation('CLN4U', {

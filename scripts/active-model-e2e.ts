@@ -201,23 +201,23 @@ try {
   check('Ask-AI follows the newly active OAI card', askAi2.status === 200 && askAi2.body.completion === 'OAI-CARD-OK', JSON.stringify(askAi2.body).slice(0, 160));
   check('OpenAI-compatible endpoint was used', hits.oaiChat === 1, JSON.stringify(hits));
 
-  const enq2 = await json('/api/queue', { action: 'enqueue', courseId: 'zztest', lessonId: '01.01', lessonTitle: 'Lesson One', tab: 'cheatsheet' });
-  check('cheatsheet enqueued', enq2.status === 200 && enq2.body.enqueued?.length === 1);
+  const enq2 = await json('/api/queue', { action: 'enqueue', courseId: 'zztest', lessonId: '01.01', lessonTitle: 'Lesson One', tab: 'notes' });
+  check('notes enqueued', enq2.status === 200 && enq2.body.enqueued?.length === 1);
 
-  let cheatsheetDone = false;
+  let notesDone = false;
   for (let i = 0; i < 100; i++) {
     const status = await json('/api/queue?courseId=zztest', undefined, 'GET');
-    const task = status.body.tasks?.find((t: any) => t.tab === 'cheatsheet');
+    const task = status.body.tasks?.find((t: any) => t.tab === 'notes');
     if (task?.status === 'completed') {
-      cheatsheetDone = true;
+      notesDone = true;
       break;
     }
     if (task?.status === 'failed') break;
     await new Promise((r) => setTimeout(r, 150));
   }
-  const cheatsheetFile = path.join(courseDir, '01.01.cheatsheet.md');
-  const cheatsheetText = fs.existsSync(cheatsheetFile) ? fs.readFileSync(cheatsheetFile, 'utf8') : '';
-  check('queued cheatsheet followed the new active card', cheatsheetDone && cheatsheetText.includes('OAI-CARD-OK'), cheatsheetText.slice(0, 120));
+  const notesFile = path.join(courseDir, '01.01.notes.md');
+  const notesText = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8') : '';
+  check('queued notes followed the new active card', notesDone && notesText.includes('OAI-CARD-OK'), notesText.slice(0, 120));
 } catch (err: any) {
   console.error('E2E error:', err?.message || err);
   failures += 1;

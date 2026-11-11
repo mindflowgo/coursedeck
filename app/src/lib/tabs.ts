@@ -180,7 +180,7 @@ export function parseUnitNumber(id: string | null | undefined): number | null {
   const clean = id.trim();
   const unitMatch = clean.match(/^(\d+)\.unit$/i);
   if (unitMatch) return parseInt(unitMatch[1], 10);
-  const lessonMatch = clean.match(/^(\d+)\.\d+/);
+  const lessonMatch = clean.match(/^(\d+)-\d+/);
   if (lessonMatch) return parseInt(lessonMatch[1], 10);
   const rawNum = clean.match(/^(\d+)$/);
   if (rawNum) return parseInt(rawNum[1], 10);
@@ -256,7 +256,7 @@ export function parseDocFileName(
     };
   }
 
-  const lessonMatch = clean.match(/^([0-9]+(?:\.[0-9]+)?(?:_[a-z0-9]+)?)\.([a-z0-9_-]+)\.md$/i);
+  const lessonMatch = clean.match(/^([0-9]+-[0-9]+(?:_[a-z0-9]+)?)\.([a-z0-9_-]+)\.md$/i);
   if (lessonMatch) {
     return {
       isCourseScope: false,

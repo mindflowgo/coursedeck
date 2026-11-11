@@ -66,7 +66,7 @@ describe('Course Builder Endpoints', () => {
       expect(data.course.title).toBe('Introduction to Computer Science');
       expect(data.course.units.length).toBe(1);
       expect(data.course.units[0].lessons.length).toBe(2);
-      expect(data.course.units[0].lessons[0].id).toBe('01.01');
+      expect(data.course.units[0].lessons[0].id).toBe('01-01');
       expect(data.course.units[0].lessons[1].type).toBe('assignment');
 
       // Check files on disk
@@ -75,7 +75,7 @@ describe('Course Builder Endpoints', () => {
       expect(meta.title).toBe('Introduction to Computer Science');
 
       // Check lesson content was written
-      const lessonPath = path.join(testCourseDir, '01.01.lesson.md');
+      const lessonPath = path.join(testCourseDir, '01-01.lesson.md');
       expect(fs.existsSync(lessonPath)).toBe(true);
       expect(fs.readFileSync(lessonPath, 'utf8')).toContain('Variables and Expressions');
     });
@@ -247,7 +247,7 @@ describe('Course Builder Endpoints', () => {
       expect(data.proposal.title).toBe('Physics 12');
       expect(data.proposal.suggestedId).toBe('sph4u');
       expect(data.proposal.units.length).toBe(1);
-      expect(data.proposal.units[0].lessons[0].id).toBe('01.01');
+      expect(data.proposal.units[0].lessons[0].id).toBe('01-01');
 
       spy.mockRestore();
       configSpy.mockRestore();
@@ -314,6 +314,131 @@ describe('Course Builder Endpoints', () => {
       spy.mockRestore();
       configSpy.mockRestore();
     });
+
+    it('uses companionMarkdown directly when provided in FormData', async () => {
+      const mockResult = {
+        title: 'Companion Test Course',
+        suggestedId: 'comp101',
+        grade: '11',
+        level: 'University',
+        description: 'Test course with companion markdown',
+        units: [
+          {
+            number: 1,
+            title: 'Unit 1: Foundations',
+            lessons: [
+              {
+                id: '01.01',
+                title: 'Lesson 1',
+                type: 'lesson',
+                pageRange: '10-25',
+                readingDescription: 'Chapter 1: Read sections 1.1-1.4',
+                externalRefs: ['https://example.com/video1'],
+                content: '# Lesson 1\nContent.'
+              }
+            ]
+          }
+        ]
+      };
+
+      const configSpy = spyOn(LLMService, 'loadStoredConfig').mockReturnValue({
+        baseUrl: 'http://mock-ai',
+        model: 'test-model'
+      } as any);
+
+      let capturedPrompt = '';
+      const spy = spyOn(LLMService, 'generateResult').mockImplementation(async (_cfg, _sys, userPrompt) => {
+        capturedPrompt = userPrompt;
+        return {
+          completion: '```json\n' + JSON.stringify(mockResult) + '\n```',
+          usage: { promptTokens: 10, completionTokens: 50, totalTokens: 60 }
+        } as any;
+      });
+
+      const companionMd = '<!-- page: 1 -->\n\n# Chapter 1\nIntro text\n\n<!-- page: 2 -->\n\nMore details';
+      const formData = new FormData();
+      formData.append('file', new File([new Uint8Array([1, 2, 3])], 'book.pdf', { type: 'application/pdf' }));
+      formData.append('companionMarkdown', companionMd);
+      formData.append('instructions', 'Build lessons');
+
+      const req = new Request('http://127.0.0.1:3182/api/builder/propose', {
+        method: 'POST',
+        body: formData
+      });
+
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.proposal.units[0].lessons[0].pageRange).toBe('10-25');
+      expect(data.proposal.units[0].lessons[0].externalRefs[0].url).toBe('https://example.com/video1');
+      expect(capturedPrompt).toContain('<!-- page: 1 -->');
+      expect(capturedPrompt).toContain('Chapter 1');
+
+      spy.mockRestore();
+      configSpy.mockRestore();
+    });
+
+    it('extracts chapter text with page annotations from an EPUB file', async () => {
+      const { zipSync, strToU8 } = await import('fflate');
+
+      // Build a minimal valid EPUB zip
+      const epubZip = zipSync({
+        'mimetype': strToU8('application/epub+zip'),
+        'META-INF/container.xml': strToU8(
+          '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'
+        ),
+        'content.opf': strToU8(
+          '<package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata></metadata><manifest><item id="c1" href="chap1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/></spine></package>'
+        ),
+        'chap1.xhtml': strToU8(
+          '<?xml version="1.0" encoding="utf-8"?><html><body><h1>Chapter 1: Kinematics</h1><p>Motion in one dimension is described using vectors, velocity, acceleration, and position coordinates over time.</p></body></html>'
+        )
+      });
+
+      const mockResult = {
+        title: 'EPUB Physics',
+        units: [
+          {
+            number: 1,
+            title: 'Unit 1: Kinematics',
+            lessons: [{ id: '01.01', title: 'Motion', type: 'lesson', pageRange: '1', content: '# Motion' }]
+          }
+        ]
+      };
+
+      const configSpy = spyOn(LLMService, 'loadStoredConfig').mockReturnValue({
+        baseUrl: 'http://mock-ai',
+        model: 'test-model'
+      } as any);
+
+      let capturedPrompt = '';
+      const spy = spyOn(LLMService, 'generateResult').mockImplementation(async (_cfg, _sys, userPrompt) => {
+        capturedPrompt = userPrompt;
+        return {
+          completion: '```json\n' + JSON.stringify(mockResult) + '\n```',
+          usage: { promptTokens: 10, completionTokens: 50, totalTokens: 60 }
+        } as any;
+      });
+
+      const formData = new FormData();
+      formData.append('file', new File([epubZip], 'physics.epub', { type: 'application/epub+zip' }));
+
+      const req = new Request('http://127.0.0.1:3182/api/builder/propose', {
+        method: 'POST',
+        body: formData
+      });
+
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(capturedPrompt).toContain('<!-- page: 1 -->');
+      expect(capturedPrompt).toContain('Chapter 1: Kinematics');
+
+      spy.mockRestore();
+      configSpy.mockRestore();
+    });
   });
 
   describe('POST /api/builder/generate-lesson', () => {
@@ -361,6 +486,116 @@ describe('Course Builder Endpoints', () => {
 
       spy.mockRestore();
       configSpy.mockRestore();
+    });
+  });
+
+  describe('Companion Markdown Endpoints', () => {
+    it('retrieves companion markdown for a course locker document', async () => {
+      const courseId = 'locker_companion_test';
+      const courseDir = path.join(CourseService.getCoursesDir(), courseId);
+      const lockerDir = path.join(courseDir, 'assets', 'locker_docs');
+      fs.mkdirSync(lockerDir, { recursive: true });
+      fs.writeFileSync(path.join(lockerDir, 'test.pdf'), 'fake pdf');
+      fs.writeFileSync(path.join(lockerDir, 'test.pdf.companion.md'), '<!-- page: 1 -->\n\n# Test Book');
+
+      // Create dummy manifest so CourseService recognizes the course
+      fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify({ id: courseId, title: 'Test' }));
+
+      const req = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/locker-docs?companion=true&file=test.pdf`);
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.companion).toContain('<!-- page: 1 -->');
+      expect(data.companion).toContain('Test Book');
+
+      fs.rmSync(courseDir, { recursive: true, force: true });
+    });
+
+    it('retrieves companion markdown for a library document', async () => {
+      const { LibraryService } = await import('./library');
+      const libDir = LibraryService.getDir();
+      if (!fs.existsSync(libDir)) fs.mkdirSync(libDir, { recursive: true });
+
+      const testPdf = path.join(libDir, 'test_lib.pdf');
+      const testComp = path.join(libDir, 'test_lib.pdf.companion.md');
+      fs.writeFileSync(testPdf, 'fake pdf bytes');
+      fs.writeFileSync(testComp, '<!-- page: 1 -->\n\n# Library Companion');
+
+      const req = new Request('http://127.0.0.1:3182/api/library/companion/test_lib.pdf');
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.success).toBe(true);
+      expect(data.companion).toContain('Library Companion');
+
+      if (fs.existsSync(testPdf)) fs.unlinkSync(testPdf);
+      if (fs.existsSync(testComp)) fs.unlinkSync(testComp);
+    });
+
+    it('serves HTML lesson content with base href, discovered stylesheets, and bridge script', async () => {
+      const courseId = 'content_test_course';
+      const courseDir = path.join(CourseService.getCoursesDir(), courseId);
+      const cssDir = path.join(courseDir, 'assets', 'css');
+      fs.mkdirSync(cssDir, { recursive: true });
+      fs.writeFileSync(path.join(cssDir, 'ilc_core.css'), 'body { background: #fff; }');
+      fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify({ id: courseId, title: 'Content Test' }));
+      fs.writeFileSync(path.join(courseDir, '01-01.lesson.html'), '<html><head><title>Lesson 1</title></head><body><h1>Hello</h1></body></html>');
+
+      const req = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/01-01/content`);
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('text/html');
+      const body = await res.text();
+      expect(body).toContain(`<base href="/api/courses/${courseId}/">`);
+      expect(body).toContain('<link rel="stylesheet" href="./assets/css/ilc_core.css">');
+      expect(body).toContain('courseDeck:lessonHeight');
+      expect(body).toContain('courseDeck:openDocument');
+      expect(body).toContain('courseDeck:navigateLesson');
+      expect(body).toContain('data-toggle');
+
+      fs.rmSync(courseDir, { recursive: true, force: true });
+    });
+
+    it('serves PDF lesson content as application/pdf binary', async () => {
+      const courseId = 'pdf_content_test_course';
+      const courseDir = path.join(CourseService.getCoursesDir(), courseId);
+      fs.mkdirSync(courseDir, { recursive: true });
+      fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify({ id: courseId, title: 'PDF Test' }));
+      fs.writeFileSync(path.join(courseDir, '01-02.lesson.pdf'), 'fake pdf data buffer');
+
+      const req = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/01-02/content`);
+      const res = await handleApiRequest(req, new URL(req.url));
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toBe('application/pdf');
+
+      fs.rmSync(courseDir, { recursive: true, force: true });
+    });
+
+    it('resolves image assets with fuzzy extensions and transparent 1x1 fallback', async () => {
+      const courseId = 'asset_fallback_test_course';
+      const courseDir = path.join(CourseService.getCoursesDir(), courseId);
+      const imgDir = path.join(courseDir, 'assets', 'img');
+      fs.mkdirSync(imgDir, { recursive: true });
+      fs.writeFileSync(path.join(courseDir, '.manifest.json'), JSON.stringify({ id: courseId, title: 'Asset Test' }));
+      fs.writeFileSync(path.join(imgDir, 'sample_header.jpg'), 'fake-jpeg-data');
+
+      // 1. Fuzzy extension match: request .png, resolves to .jpg
+      const fuzzyReq = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/assets/img/sample_header.png`);
+      const fuzzyRes = await handleApiRequest(fuzzyReq, new URL(fuzzyReq.url));
+      expect(fuzzyRes.status).toBe(200);
+      expect(fuzzyRes.headers.get('Content-Type')).toBe('image/jpeg');
+      const fuzzyText = await fuzzyRes.text();
+      expect(fuzzyText).toBe('fake-jpeg-data');
+
+      // 2. Completely missing image: returns 1x1 transparent PNG fallback
+      const missingReq = new Request(`http://127.0.0.1:3182/api/courses/${courseId}/assets/img/non_existent.png`);
+      const missingRes = await handleApiRequest(missingReq, new URL(missingReq.url));
+      expect(missingRes.status).toBe(200);
+      expect(missingRes.headers.get('Content-Type')).toBe('image/png');
+      expect(missingRes.headers.get('X-Asset-Fallback')).toBe('transparent-pixel');
+
+      fs.rmSync(courseDir, { recursive: true, force: true });
     });
   });
 });
