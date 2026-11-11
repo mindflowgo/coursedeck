@@ -16,4 +16,5 @@ const handle: RequestHandler = ({ request, url }) => handleApiRequest(request, u
 export const GET = handle;
 export const POST = handle;
 export const PUT = handle;
+export const PATCH = handle;
 export const DELETE = handle;
