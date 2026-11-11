@@ -96,7 +96,7 @@ describe('streamUpload', () => {
     const receivedMessages: StreamUploadProgressMessage[] = [];
 
     const uploadPromise = streamUpload({
-      url: '/api/backup/import?stream=true',
+      url: '/api/backup/import',
       body: new FormData(),
       onUploadProgress: (pct) => uploadProgress.push(pct),
       onMessage: (msg) => receivedMessages.push(msg)
@@ -156,7 +156,7 @@ describe('streamUpload', () => {
 
   it('rejects when server emits an error message line in stream', async () => {
     const uploadPromise = streamUpload({
-      url: '/api/backup/import?stream=true',
+      url: '/api/backup/import',
       body: new FormData()
     });
 

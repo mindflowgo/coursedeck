@@ -12,7 +12,7 @@ export interface StreamUploadProgressMessage {
 }
 
 export interface StreamUploadOptions<TMessage = StreamUploadProgressMessage> {
-  /** Target endpoint (absolute or relative, e.g. '/api/backup/import?stream=true') */
+  /** Target endpoint (absolute or relative, e.g. '/api/backup/import') */
   url: string;
   /** Request body to stream (FormData, Blob, File, or ArrayBuffer) */
   body: FormData | Blob | File | ArrayBuffer;

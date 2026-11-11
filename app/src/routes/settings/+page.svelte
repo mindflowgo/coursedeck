@@ -599,7 +599,7 @@
       formData.append('file', file);
 
       const result = await streamUpload<{ message?: string; coursesRestored?: number; filesRestored?: number }>({
-        url: '/api/backup/import?stream=true',
+        url: '/api/backup/import',
         body: formData,
         onUploadProgress: (percent, loaded, total) => {
           if (total > 0) {
