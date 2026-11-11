@@ -6,7 +6,7 @@
   import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
   import CourseGroupsSettings from '$lib/components/settings/CourseGroupsSettings.svelte';
   import { onMount } from 'svelte';
-  import { apiFetch, isTauriEnvironment, isTauriDesktop, getApiBaseUrl } from '$lib/api';
+  import { apiFetch, isTauriEnvironment, isTauriDesktop, getApiBaseUrl, streamUpload } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import {
     Server,
@@ -598,86 +598,37 @@
       const formData = new FormData();
       formData.append('file', file);
 
-      const targetUrl = `${getApiBaseUrl()}/api/backup/import?stream=true`;
-
-      await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', targetUrl, true);
-        xhr.setRequestHeader('Accept', 'application/x-ndjson');
-
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable && e.total > 0) {
-            const loadedMb = (e.loaded / 1024 / 1024).toFixed(1);
-            const totalMb = (e.total / 1024 / 1024).toFixed(1);
-            const pct = Math.round((e.loaded / e.total) * 100);
-            if (pct < 100) {
-              backupImportProgress = `Uploading archive: ${loadedMb} MB / ${totalMb} MB (${pct}%)...`;
+      const result = await streamUpload<{ message?: string; coursesRestored?: number; filesRestored?: number }>({
+        url: '/api/backup/import?stream=true',
+        body: formData,
+        onUploadProgress: (percent, loaded, total) => {
+          if (total > 0) {
+            const loadedMb = (loaded / 1024 / 1024).toFixed(1);
+            const totalMb = (total / 1024 / 1024).toFixed(1);
+            if (percent < 100) {
+              backupImportProgress = `Uploading archive: ${loadedMb} MB / ${totalMb} MB (${percent}%)...`;
             } else {
               backupImportProgress = 'Upload complete. Unpacking archive on server...';
             }
           } else {
             backupImportProgress = 'Uploading archive...';
           }
-        };
-
-        let lastIndex = 0;
-        let completedResult: { message?: string } | null = null;
-        let errorMessage: string | null = null;
-
-        xhr.onprogress = () => {
-          const chunk = xhr.responseText.slice(lastIndex);
-          lastIndex = xhr.responseText.length;
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const msg = JSON.parse(trimmed);
-              if (msg.type === 'progress') {
-                if (msg.total > 0) {
-                  backupImportProgress = `Extracting: ${msg.current}/${msg.total} files (${msg.percent}%)`;
-                } else if (msg.status) {
-                  backupImportProgress = msg.status;
-                }
-              } else if (msg.type === 'complete') {
-                completedResult = msg;
-              } else if (msg.type === 'error') {
-                errorMessage = msg.message || 'Server extraction failed';
-              }
-            } catch {}
+        },
+        onMessage: (msg) => {
+          if (msg.type === 'progress') {
+            if (msg.total && msg.total > 0) {
+              backupImportProgress = `Extracting: ${msg.current}/${msg.total} files (${msg.percent}%)`;
+            } else if (msg.status) {
+              backupImportProgress = msg.status;
+            }
           }
-        };
-
-        xhr.onload = () => {
-          const tail = xhr.responseText.slice(lastIndex);
-          for (const line of tail.split('\n')) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            try {
-              const msg = JSON.parse(trimmed);
-              if (msg.type === 'complete') completedResult = msg;
-              if (msg.type === 'error') errorMessage = msg.message;
-            } catch {}
-          }
-
-          if (xhr.status >= 200 && xhr.status < 300 && !errorMessage) {
-            backupMessage = {
-              type: 'success',
-              text: `Backup restored! ${completedResult?.message || ''}`
-            };
-            resolve();
-          } else {
-            const err = errorMessage || `Restore failed (HTTP ${xhr.status}): ${xhr.statusText || 'Server error'}`;
-            reject(new Error(err));
-          }
-        };
-
-        xhr.onerror = () => {
-          reject(new Error('Network error occurred while uploading backup archive'));
-        };
-
-        xhr.send(formData);
+        }
       });
+
+      backupMessage = {
+        type: 'success',
+        text: `Backup restored! ${result?.message || ''}`
+      };
 
       // Refresh storage metrics
       loadStorageInfo();

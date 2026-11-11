@@ -1353,6 +1353,16 @@ The pure function `resolveFetchTransport(url, init)` evaluates requests in stric
 ### 23.4 Fault Tolerance & Graceful Fallback
 If `resolveFetchTransport` selects `native` (for example, when calling an external cloud LLM in Tauri) and `tauriFetch` throws a network or plugin exception, `smartFetch` catches the failure, logs a diagnostic warning, and transparently attempts `window.fetch` before throwing a combined diagnostic error. This guarantees maximum resilience across diverse network configurations.
 
+### 23.5 Reusable Streaming Upload Utility (`streamUpload`)
+
+For high-payload operations that require both **upload progress** (e.g. multi-megabyte backup archives or course media) and **real-time server progress streaming** (via newline-delimited JSON / NDJSON):
+
+- **Architecture**: `streamUpload` (`app/src/lib/streamUpload.ts`) wraps `XMLHttpRequest` under the hood in a clean, Promise-based TypeScript API.
+- **Cross-WebView Compatibility**: Standard `fetch` does not support upload progress tracking in browser webviews (`ReadableStream` upload is not universally supported in WebKitGTK and WKWebView). `XMLHttpRequest.upload.onprogress` remains the standard cross-platform mechanism for granular (0–100%) upload metrics.
+- **Partial Chunk Buffering**: Network TCP chunks can be cut at arbitrary byte offsets within a JSON payload. `streamUpload` safely buffers partial lines during `xhr.onprogress`, ensuring `JSON.parse` is only executed against fully received, newline-terminated (`\n`) records.
+- **Clean UI Separation**: Components provide `onUploadProgress(percent, loaded, total)` and `onMessage(msg)` callbacks, completely decoupling network transport mechanics, index arithmetic, and buffer slicing from Svelte reactive state.
+- **AbortSignal Support**: Native integration with `AbortSignal` allows immediate or in-flight cancellation via `xhr.abort()`.
+
 
 
 

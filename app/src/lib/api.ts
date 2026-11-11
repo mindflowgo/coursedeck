@@ -33,6 +33,7 @@ export function isTauriMobile(): boolean {
 }
 
 export type FetchTransport = 'browser' | 'native';
+export { streamUpload, resolveUploadUrl, type StreamUploadOptions, type StreamUploadProgressMessage } from './streamUpload';
 
 /**
  * ============================================================================
