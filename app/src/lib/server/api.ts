@@ -2216,6 +2216,11 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
     if (pathname === '/api/backup/import' && method === 'POST') {
       try {
+        const isStreaming =
+          url.searchParams.get('stream') === 'true' ||
+          Boolean(req.headers.get('accept')?.includes('application/x-ndjson')) ||
+          Boolean(req.headers.get('accept')?.includes('text/event-stream'));
+
         const formData = await req.formData();
         const file = formData.get('file') as File | null;
         if (!file) {
@@ -2226,7 +2231,49 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         }
         const arrayBuffer = await file.arrayBuffer();
         const buffer = Buffer.from(arrayBuffer);
-        const result = restoreDataBackupZip(buffer);
+
+        if (isStreaming) {
+          const stream = new ReadableStream<Uint8Array>({
+            async start(controller) {
+              const encoder = new TextEncoder();
+              const send = (data: unknown) => {
+                try {
+                  controller.enqueue(encoder.encode(JSON.stringify(data) + '\n'));
+                } catch {}
+              };
+
+              try {
+                const result = await restoreDataBackupZip(buffer, undefined, (progress) => {
+                  send({ type: 'progress', ...progress });
+                });
+                send({
+                  type: 'complete',
+                  message: `Successfully restored ${result.coursesRestored} courses and ${result.filesRestored} files.`,
+                  ...result
+                });
+                controller.close();
+              } catch (err) {
+                console.error('[Backup Import Error]', err);
+                send({
+                  type: 'error',
+                  success: false,
+                  message: err instanceof Error ? err.message : 'Failed to restore backup archive'
+                });
+                controller.close();
+              }
+            }
+          });
+
+          return new Response(stream, {
+            headers: {
+              'Content-Type': 'application/x-ndjson',
+              'Cache-Control': 'no-cache',
+              'X-Accel-Buffering': 'no'
+            }
+          });
+        }
+
+        const result = await restoreDataBackupZip(buffer);
         return json({
           message: `Successfully restored ${result.coursesRestored} courses and ${result.filesRestored} files.`,
           ...result

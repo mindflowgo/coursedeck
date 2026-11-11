@@ -6,7 +6,7 @@
   import SyncMcpSettings from '$lib/components/SyncMcpSettings.svelte';
   import CourseGroupsSettings from '$lib/components/settings/CourseGroupsSettings.svelte';
   import { onMount } from 'svelte';
-  import { apiFetch, isTauriEnvironment, isTauriDesktop } from '$lib/api';
+  import { apiFetch, isTauriEnvironment, isTauriDesktop, getApiBaseUrl } from '$lib/api';
   import { confirmDialog } from '$lib/dialog';
   import {
     Server,
@@ -130,6 +130,7 @@
   let backupExportProgress = $state('');
   let includeRawArchives = $state(false);
   let isImportingBackup = $state(false);
+  let backupImportProgress = $state('');
   let backupFileInput: HTMLInputElement | null = $state(null);
   let backupMessage = $state<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -579,8 +580,9 @@
     const file = input?.files?.[0];
     if (!file) return;
 
+    const sizeMb = (file.size / 1024 / 1024).toFixed(1);
     const confirmed = await confirmDialog(
-      `Restore course data from "${file.name}"?\n\nThis will extract courses and prompts into your active data directory.`,
+      `Restore course data from "${file.name}" (${sizeMb} MB)?\n\nThis will extract courses and prompts into your active data directory.`,
       'Restore Backup'
     );
     if (!confirmed) {
@@ -589,36 +591,105 @@
     }
 
     isImportingBackup = true;
+    backupImportProgress = 'Connecting to server...';
     backupMessage = null;
 
     try {
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await apiFetch('/api/backup/import', {
-        method: 'POST',
-        body: formData
+      const targetUrl = `${getApiBaseUrl()}/api/backup/import?stream=true`;
+
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', targetUrl, true);
+        xhr.setRequestHeader('Accept', 'application/x-ndjson');
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && e.total > 0) {
+            const loadedMb = (e.loaded / 1024 / 1024).toFixed(1);
+            const totalMb = (e.total / 1024 / 1024).toFixed(1);
+            const pct = Math.round((e.loaded / e.total) * 100);
+            if (pct < 100) {
+              backupImportProgress = `Uploading archive: ${loadedMb} MB / ${totalMb} MB (${pct}%)...`;
+            } else {
+              backupImportProgress = 'Upload complete. Unpacking archive on server...';
+            }
+          } else {
+            backupImportProgress = 'Uploading archive...';
+          }
+        };
+
+        let lastIndex = 0;
+        let completedResult: { message?: string } | null = null;
+        let errorMessage: string | null = null;
+
+        xhr.onprogress = () => {
+          const chunk = xhr.responseText.slice(lastIndex);
+          lastIndex = xhr.responseText.length;
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const msg = JSON.parse(trimmed);
+              if (msg.type === 'progress') {
+                if (msg.total > 0) {
+                  backupImportProgress = `Extracting: ${msg.current}/${msg.total} files (${msg.percent}%)`;
+                } else if (msg.status) {
+                  backupImportProgress = msg.status;
+                }
+              } else if (msg.type === 'complete') {
+                completedResult = msg;
+              } else if (msg.type === 'error') {
+                errorMessage = msg.message || 'Server extraction failed';
+              }
+            } catch {}
+          }
+        };
+
+        xhr.onload = () => {
+          const tail = xhr.responseText.slice(lastIndex);
+          for (const line of tail.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const msg = JSON.parse(trimmed);
+              if (msg.type === 'complete') completedResult = msg;
+              if (msg.type === 'error') errorMessage = msg.message;
+            } catch {}
+          }
+
+          if (xhr.status >= 200 && xhr.status < 300 && !errorMessage) {
+            backupMessage = {
+              type: 'success',
+              text: `Backup restored! ${completedResult?.message || ''}`
+            };
+            resolve();
+          } else {
+            const err = errorMessage || `Restore failed (HTTP ${xhr.status}): ${xhr.statusText || 'Server error'}`;
+            reject(new Error(err));
+          }
+        };
+
+        xhr.onerror = () => {
+          reject(new Error('Network error occurred while uploading backup archive'));
+        };
+
+        xhr.send(formData);
       });
-
-      const data = await res.json();
-      if (!res.ok || !data.success) {
-        throw new Error(data.message || data.error || 'Failed to restore backup');
-      }
-
-      backupMessage = {
-        type: 'success',
-        text: `Backup restored! ${data.message || ''}`
-      };
 
       // Refresh storage metrics
       loadStorageInfo();
     } catch (err: any) {
+      console.error('[Backup Import Error]', err);
       backupMessage = {
         type: 'error',
         text: 'Restore failed: ' + (err?.message || 'Unknown error')
       };
     } finally {
       isImportingBackup = false;
+      backupImportProgress = '';
       if (input) {
         input.value = '';
       }
@@ -1106,6 +1177,13 @@
           </button>
         </div>
       </div>
+
+      {#if isImportingBackup && backupImportProgress}
+        <div class="flex items-center space-x-2 text-[11px] px-2.5 py-1.5 rounded border border-amber-200 dark:border-amber-800/80 bg-amber-50/70 dark:bg-amber-950/30 text-amber-900 dark:text-amber-200 animate-in fade-in duration-150">
+          <Loader2 class="w-3.5 h-3.5 animate-spin text-amber-600 dark:text-amber-400 shrink-0" />
+          <span class="font-medium">{backupImportProgress}</span>
+        </div>
+      {/if}
 
       {#if backupMessage}
         <div class="flex items-center space-x-1.5 text-[11px] px-2 py-1 rounded border {backupMessage.type === 'success' ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200' : 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'}">

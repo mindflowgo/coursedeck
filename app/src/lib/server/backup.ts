@@ -345,27 +345,98 @@ export function createDataBackupZip(options: BackupOptions = {}): {
   return { buffer, filename, courseCount, fileCount };
 }
 
+export interface RestoreProgress {
+  current: number;
+  total: number;
+  percent: number;
+  currentFile: string;
+  status: string;
+}
+
 /**
  * Safely extracts a zip archive into the active data directory.
  * Defends against Zip Slip by ensuring all destination paths stay inside target directory.
+ * Supports progress callbacks, normalizes Windows backslashes, ignores macOS metadata,
+ * and yields to the event loop regularly so other tasks and HTTP streams do not stall.
  */
-export function restoreDataBackupZip(buffer: Buffer, customTargetDir?: string): RestoreResult {
+export async function restoreDataBackupZip(
+  buffer: Buffer,
+  customTargetDir?: string,
+  onProgress?: (progress: RestoreProgress) => void
+): Promise<RestoreResult> {
   const targetDir = customTargetDir || getDataDir();
   fs.mkdirSync(targetDir, { recursive: true });
 
-  const entries = unzipSync(new Uint8Array(buffer));
+  const totalMb = (buffer.length / 1024 / 1024).toFixed(1);
+  console.log(`[Backup Import] Unpacking ${totalMb} MB archive into ${targetDir}...`);
+  onProgress?.({
+    current: 0,
+    total: 0,
+    percent: 0,
+    currentFile: '',
+    status: 'Decompressing archive...'
+  });
+
+  let entries: Record<string, Uint8Array>;
+  try {
+    entries = unzipSync(new Uint8Array(buffer));
+  } catch (err) {
+    console.error('[Backup Import Error] unzipSync failed:', err);
+    throw new Error(`Invalid or corrupted zip archive: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const allEntries = Object.entries(entries);
+  const validFiles = allEntries.filter(([name]) => {
+    if (name.endsWith('/')) return false;
+    const clean = name.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (
+      clean.startsWith('__MACOSX/') ||
+      clean.includes('/__MACOSX/') ||
+      clean.endsWith('/.DS_Store') ||
+      clean === '.DS_Store'
+    ) {
+      return false;
+    }
+    return true;
+  });
+
+  const totalFiles = validFiles.length;
+  console.log(`[Backup Import] Found ${totalFiles} file(s) to restore.`);
   let filesRestored = 0;
 
-  for (const [entryName, data] of Object.entries(entries)) {
-    if (entryName.endsWith('/')) continue;
+  for (let i = 0; i < validFiles.length; i++) {
+    const [entryName, data] = validFiles[i];
 
-    // Defend against Zip Slip
-    const cleanName = entryName.replace(/^[/\\]+/, '');
-    const destinationPath = safeJoin(targetDir, cleanName);
+    // Normalize Windows backslashes and defend against Zip Slip
+    const cleanName = entryName.replace(/\\/g, '/').replace(/^\/+/, '');
+    let destinationPath: string;
+    try {
+      destinationPath = safeJoin(targetDir, cleanName);
+    } catch (slipErr) {
+      console.warn(`[Backup Import] Skipping unsafe zip entry "${entryName}":`, slipErr);
+      continue;
+    }
+
+    if (fs.existsSync(destinationPath) && fs.statSync(destinationPath).isDirectory()) {
+      continue;
+    }
 
     fs.mkdirSync(path.dirname(destinationPath), { recursive: true });
     fs.writeFileSync(destinationPath, Buffer.from(data));
     filesRestored++;
+
+    if (i % 20 === 0 || i === validFiles.length - 1) {
+      const percent = totalFiles > 0 ? Math.round(((i + 1) / totalFiles) * 100) : 100;
+      onProgress?.({
+        current: i + 1,
+        total: totalFiles,
+        percent,
+        currentFile: cleanName,
+        status: `Extracting ${cleanName} (${i + 1}/${totalFiles})...`
+      });
+      // Yield to the event loop so HTTP streams push chunks immediately
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
 
   const coursesDir = path.join(targetDir, 'courses');
@@ -374,6 +445,8 @@ export function restoreDataBackupZip(buffer: Buffer, customTargetDir?: string): 
     coursesRestored = fs.readdirSync(coursesDir, { withFileTypes: true })
       .filter((d) => d.isDirectory()).length;
   }
+
+  console.log(`[Backup Import] Restored ${coursesRestored} courses and ${filesRestored} files.`);
 
   return {
     success: true,

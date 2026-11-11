@@ -36,8 +36,23 @@ export function isTauriMobile(): boolean {
  * Universal fetch that routes through Tauri's native Rust HTTP client
  * when running in Tauri (bypassing all WebKit/Safari CORS & mixed-content restrictions),
  * and standard window.fetch in standard browser environments.
+ *
+ * NOTE: For local requests to the sidecar backend (127.0.0.1 or localhost), or requests
+ * carrying large FormData/Blob bodies, we intentionally use standard window.fetch.
+ * tauri-plugin-http serializes body buffers into full JavaScript arrays (Array.from(new Uint8Array))
+ * across Tauri IPC, which locks the UI thread and fails on multi-megabyte payloads.
  */
 export async function smartFetch(url: string, init?: RequestInit): Promise<Response> {
+  const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?/i.test(url);
+  const isBinaryOrForm =
+    (typeof FormData !== 'undefined' && init?.body instanceof FormData) ||
+    (typeof Blob !== 'undefined' && init?.body instanceof Blob) ||
+    (typeof ArrayBuffer !== 'undefined' && init?.body instanceof ArrayBuffer);
+
+  if (isLocalBackend || isBinaryOrForm) {
+    return fetch(url, init);
+  }
+
   if (isTauriEnvironment()) {
     try {
       return await tauriFetch(url, init);
