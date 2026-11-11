@@ -47,3 +47,7 @@ objc2-vision = "0.3"
 # Windows Desktop OCR
 [target.'cfg(target_os = "windows")'.dependencies]
 win_ocr = "0.1"
+
+[profile.dev]
+# Use line tables only for dev builds to drastically reduce linker memory and disk usage on Linux/macOS
+debug = 1
