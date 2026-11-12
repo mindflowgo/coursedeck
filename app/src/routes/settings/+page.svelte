@@ -157,6 +157,46 @@
   let isCompressingImages = $state(false);
   let compressImagesResult: string = $state('');
 
+  let imageQuality = $state(70);
+  let isSavingImageQuality = $state(false);
+  let imageQualitySaved = $state(false);
+
+  async function loadImageQuality() {
+    try {
+      const res = await apiFetch('/api/settings/ingestion');
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof data.imageQuality === 'number') {
+          imageQuality = Math.min(85, Math.max(50, data.imageQuality));
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load image quality setting:', e);
+    }
+  }
+
+  async function saveImageQuality(newQuality: number) {
+    isSavingImageQuality = true;
+    try {
+      const res = await apiFetch('/api/settings/ingestion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageQuality: newQuality })
+      });
+      if (res.ok) {
+        imageQuality = newQuality;
+        imageQualitySaved = true;
+        setTimeout(() => {
+          imageQualitySaved = false;
+        }, 2000);
+      }
+    } catch (e) {
+      console.warn('Failed to save image quality setting:', e);
+    } finally {
+      isSavingImageQuality = false;
+    }
+  }
+
   function flashLlmMessage(text: string) {
     llmMessage = text;
     setTimeout(() => {
@@ -733,6 +773,7 @@
   onMount(() => {
     resumeLastPosition = getResumeLastPosition();
     loadModelCards();
+    loadImageQuality();
     if (isTauriDesktop()) {
       loadStorageInfo();
       loadTeacherCheckin();
@@ -1160,6 +1201,39 @@
         <span class="text-[11px] text-stone-400 dark:text-stone-500">Only needed if files were damaged</span>
       </div>
 
+      <!-- Ingestion JPG Quality Control -->
+      <div class="p-2.5 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 space-y-1.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-[11px] font-medium text-stone-700 dark:text-stone-300">
+              Image Compression Quality (JPEG)
+            </div>
+            <div class="text-[10px] text-stone-500 dark:text-stone-400">
+              Applied to newly ingested course images, converted PNGs, and editor uploads (default: 70%)
+            </div>
+          </div>
+          <div class="flex items-center space-x-1.5 shrink-0">
+            <span class="font-mono text-xs font-semibold text-stone-800 dark:text-stone-200">{imageQuality}%</span>
+            {#if imageQualitySaved}
+              <span class="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">Saved</span>
+            {/if}
+          </div>
+        </div>
+        <div class="flex items-center space-x-2 pt-0.5">
+          <span class="text-[10px] text-stone-400 font-mono">50%</span>
+          <input
+            type="range"
+            min="50"
+            max="85"
+            step="5"
+            bind:value={imageQuality}
+            onchange={() => saveImageQuality(imageQuality)}
+            class="flex-1 h-1.5 bg-stone-200 dark:bg-stone-700 rounded-lg appearance-none cursor-pointer accent-stone-900 dark:accent-stone-100"
+          />
+          <span class="text-[10px] text-stone-400 font-mono">85%</span>
+        </div>
+      </div>
+
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-0.5">
         <div class="flex items-center justify-between p-2 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 gap-2">
           <div class="text-[11px] text-stone-600 dark:text-stone-400 leading-tight">
@@ -1182,7 +1256,7 @@
 
         <div class="flex items-center justify-between p-2 rounded border border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-950 gap-2">
           <div class="text-[11px] text-stone-600 dark:text-stone-400 leading-tight">
-            Compress course images (&gt;512px)
+            Compress course images (&gt;1024px, {imageQuality}% JPG)
           </div>
           <button
             onclick={compressCourseImages}

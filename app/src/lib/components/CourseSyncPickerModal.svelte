@@ -77,7 +77,11 @@
 
     syncError = null;
     try {
-      await syncFromDesktop({ courseIds: selectedIds });
+      // Courses not yet on this device must arrive complete — otherwise the
+      // incremental `since` cursor silently skips their (unchanged) files.
+      const onDeviceLower = new Set(Array.from(onDevice).map((id) => id.toLowerCase()));
+      const fullCourseIds = selectedIds.filter((id) => !onDeviceLower.has(id.toLowerCase()));
+      await syncFromDesktop({ courseIds: selectedIds, fullCourseIds });
       onClose();
       if (typeof window !== 'undefined') {
         window.location.reload();
@@ -203,6 +207,13 @@
       <div class="px-4 py-3 border-t border-stone-200 dark:border-stone-800 space-y-2">
         {#if syncError}
           <p class="text-[11px] text-red-600 dark:text-red-400 text-center">{syncError}</p>
+        {/if}
+        {#if syncState.isSyncing && syncState.syncLog.length > 0}
+          <div class="space-y-0.5 max-h-28 overflow-y-auto" aria-live="polite">
+            {#each syncState.syncLog.slice(-5) as line (line)}
+              <p class="text-[10px] font-mono text-stone-400 dark:text-stone-500 truncate">{line}</p>
+            {/each}
+          </div>
         {/if}
         <div class="flex space-x-2">
           <button

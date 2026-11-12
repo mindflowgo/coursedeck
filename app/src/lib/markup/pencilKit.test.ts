@@ -7,21 +7,35 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
   maxTouchPoints: 0
 };
 
+(globalThis as any).$state = (v: any) => v;
+(globalThis as any).$derived = (v: any) => v;
+
 await mock.module('$app/environment', () => ({
   browser: true
 }));
 
+await mock.module('$lib/api', () => ({
+  apiFetch: async () => ({ ok: true, json: async () => ({}) })
+}));
+
+export const invokedCommands: { cmd: string; args?: any }[] = [];
+
 await mock.module('@tauri-apps/api/core', () => ({
-  invoke: async () => {},
+  invoke: async (cmd: string, args?: any) => {
+    invokedCommands.push({ cmd, args });
+  },
   addPluginListener: async () => () => {}
 }));
 
-await mock.module('./annotationStore.svelte', () => ({
-  exitMarkupMode: () => {},
-  markupUi: { mode: false, pencilOnly: false }
-}));
-
-const { isIPad, mapPencilKitWidth, mapAppWidthToPencilKit } = await import('./pencilKit');
+const {
+  isIPad,
+  mapPencilKitWidth,
+  mapAppWidthToPencilKit,
+  registerPencilKitExcludedRegion,
+  unregisterPencilKitExcludedRegion,
+  refreshPencilKitExcludedRects,
+  clearPencilKitExcludedRects
+} = await import('./pencilKit');
 
 describe('isIPad detection', () => {
   beforeEach(() => {
@@ -105,5 +119,109 @@ describe('PencilKit width mapping', () => {
 
     const hlPencilWidth = mapAppWidthToPencilKit('highlighter', 12.0);
     expect(mapPencilKitWidth('highlighter', hlPencilWidth)).toBe(12.0);
+  });
+});
+
+describe('Dynamic PencilKit exclusion rects', () => {
+  const originalDocument = (globalThis as any).document;
+  const originalWindow = (globalThis as any).window;
+
+  beforeEach(() => {
+    invokedCommands.length = 0;
+    (globalThis as any).window = {
+      innerWidth: 1024,
+      innerHeight: 768,
+      __isIPad: true,
+      __pencilKitReady: true
+    };
+    (globalThis as any).document = {
+      documentElement: { style: {} },
+      querySelectorAll: () => []
+    };
+    (globalThis as any).requestAnimationFrame = (cb: () => void) => {
+      cb();
+      return 1;
+    };
+    (globalThis as any).cancelAnimationFrame = () => {};
+    clearPencilKitExcludedRects();
+    invokedCommands.length = 0;
+  });
+
+  afterEach(() => {
+    (globalThis as any).document = originalDocument;
+    (globalThis as any).window = originalWindow;
+  });
+
+  it('aggregates programmatic exclusion regions and dispatches IPC', async () => {
+    const unreg = registerPencilKitExcludedRegion('test-popover', [
+      { x: 100, y: 50, width: 200, height: 150 }
+    ]);
+
+    await refreshPencilKitExcludedRects(80);
+
+    const last = invokedCommands.filter((c) => c.cmd === 'plugin:pencilkit|set_excluded_rects').pop();
+    expect(last).toBeDefined();
+    expect(last?.args.rects).toEqual([{ x: 100, y: 50, width: 200, height: 150 }]);
+    expect(last?.args.topHeight).toBe(80);
+
+    unreg();
+    await refreshPencilKitExcludedRects(80);
+    const afterUnreg = invokedCommands[invokedCommands.length - 1];
+    expect(afterUnreg?.args.rects).toEqual([]);
+  });
+
+  it('filters out non-positive and completely off-screen rects', async () => {
+    registerPencilKitExcludedRegion('offscreen-tests', () => [
+      { x: -500, y: 50, width: 100, height: 100 }, // totally to the left
+      { x: 2000, y: 50, width: 100, height: 100 }, // totally to the right
+      { x: 50, y: 50, width: 0, height: 100 },    // zero width
+      { x: 50, y: 50, width: 80, height: 80 }     // valid in viewport
+    ]);
+
+    await refreshPencilKitExcludedRects();
+
+    const last = invokedCommands.filter((c) => c.cmd === 'plugin:pencilkit|set_excluded_rects').pop();
+    expect(last?.args.rects).toEqual([{ x: 50, y: 50, width: 80, height: 80 }]);
+  });
+
+  it('scans DOM elements matching exclusion attributes and combines with providers', async () => {
+    const mockEl = {
+      offsetParent: {},
+      offsetWidth: 120,
+      offsetHeight: 40,
+      getBoundingClientRect: () => ({
+        left: 250,
+        top: 300,
+        right: 370,
+        bottom: 340,
+        width: 120,
+        height: 40
+      })
+    };
+
+    (globalThis as any).HTMLElement = class {};
+    Object.setPrototypeOf(mockEl, (globalThis as any).HTMLElement.prototype);
+
+    (globalThis as any).document.querySelectorAll = () => [mockEl];
+
+    registerPencilKitExcludedRegion('custom-button', [
+      { x: 10, y: 20, width: 50, height: 30 }
+    ]);
+
+    await refreshPencilKitExcludedRects();
+
+    const last = invokedCommands.filter((c) => c.cmd === 'plugin:pencilkit|set_excluded_rects').pop();
+    expect(last?.args.rects).toEqual([
+      { x: 10, y: 20, width: 50, height: 30 },
+      { x: 250, y: 300, width: 120, height: 40 }
+    ]);
+  });
+
+  it('clears all exclusions cleanly when requested', () => {
+    registerPencilKitExcludedRegion('temp', [{ x: 1, y: 1, width: 10, height: 10 }]);
+    clearPencilKitExcludedRects();
+    const last = invokedCommands[invokedCommands.length - 1];
+    expect(last?.cmd).toBe('plugin:pencilkit|set_excluded_rects');
+    expect(last?.args.rects).toEqual([]);
   });
 });

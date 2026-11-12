@@ -4,7 +4,7 @@ import path from 'node:path';
 import { unzipSync } from 'fflate';
 import { handleApiRequest } from './api';
 import { CourseService } from './courses';
-import { getPromptsDir } from './paths';
+import { getPromptsDir, getDataDir } from './paths';
 
 const testCourseId = 'sync_bundle_test_101';
 const testCourseDir = path.join(CourseService.getCoursesDir(), testCourseId);
@@ -175,6 +175,74 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
     );
     const res = await handleApiRequest(req, new URL(req.url));
     expect(res.status).toBe(400);
+  });
+
+  it('fullCourses bypasses the since cursor so new courses arrive complete', async () => {
+    // Age every file: an incremental sync would skip the whole course.
+    const dayAgo = new Date(Date.now() - 86_400_000);
+    const ageAll = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        fs.utimesSync(abs, dayAgo, dayAgo);
+        if (entry.isDirectory()) ageAll(abs);
+      }
+    };
+    ageAll(testCourseDir);
+
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const req = new Request(
+      `http://127.0.0.1:3182/api/sync/bundle?courseIds=${testCourseId}&since=${encodeURIComponent(since)}&fullCourses=${testCourseId}`,
+      { method: 'GET' }
+    );
+    const res = await handleApiRequest(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Sync-Courses')).toBe('1');
+
+    const archive = unzipSync(new Uint8Array(await res.arrayBuffer()));
+    expect(archive[`courses/${testCourseId}/01.01.lesson.md`]).toBeDefined();
+    expect(archive[`courses/${testCourseId}/assets/locker_docs/course.pdf`]).toBeDefined();
+    expect(archive[`courses/${testCourseId}/assets/img/diagram.png`]).toBeDefined();
+  });
+
+  it('prepare streams NDJSON progress, writes a valid bundle, and serves it by token', async () => {
+    const req = new Request(
+      `http://127.0.0.1:3182/api/sync/bundle/prepare?courseIds=${testCourseId}`,
+      { method: 'POST', body: new FormData() }
+    );
+    const res = await handleApiRequest(req, new URL(req.url));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/x-ndjson');
+
+    const lines = (await res.text())
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const complete = lines.find((l: any) => l.type === 'complete');
+    expect(complete).toBeDefined();
+    expect(complete.token).toMatch(/^sync-[\w-]+\.zip$/);
+    expect(complete.url).toContain('/api/sync/bundle/download?token=');
+    // At least the opening and final progress lines streamed through.
+    expect(lines.some((l: any) => l.type === 'progress')).toBe(true);
+
+    // The prepared archive downloads intact and contains the course.
+    const dl = new Request(`http://127.0.0.1:3182${complete.url}`, { method: 'GET' });
+    const dlRes = await handleApiRequest(dl, new URL(dl.url));
+    expect(dlRes.status).toBe(200);
+    const archive = unzipSync(new Uint8Array(await dlRes.arrayBuffer()));
+    expect(archive[`courses/${testCourseId}/01.01.lesson.md`]).toBeDefined();
+    expect(archive['_sync/meta.json']).toBeDefined();
+
+    // Don't leave the prepared temp file behind in the data dir.
+    fs.rmSync(path.join(getDataDir(), '_sync-tmp', complete.token), { force: true });
+
+    // Bogus tokens are rejected.
+    const bad = new Request(
+      `http://127.0.0.1:3182/api/sync/bundle/download?token=${encodeURIComponent('../../evil.zip')}`,
+      { method: 'GET' }
+    );
+    const badRes = await handleApiRequest(bad, new URL(bad.url));
+    expect(badRes.status).toBe(400);
   });
 });
 

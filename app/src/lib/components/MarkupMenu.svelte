@@ -16,7 +16,13 @@
   } from '$lib/markup/annotationStore.svelte';
   import { MARKUP_PRESETS } from '$lib/markup/render';
   import { PALETTE_COLORS, type MarkupColor, type MarkupTool } from '$lib/markup/types';
-  import { isIPad, isPencilKitAvailable, setPencilKitExcludedRects, setPencilKitTool } from '$lib/markup/pencilKit';
+  import {
+    isIPad,
+    isPencilKitAvailable,
+    registerPencilKitExcludedRegion,
+    scheduleRefreshPencilKitExcludedRects,
+    setPencilKitTool
+  } from '$lib/markup/pencilKit';
 
   /**
    * Top-bar markup dropdown: marker + highlighter swatches, eraser, undo/redo,
@@ -86,12 +92,14 @@
   $effect(() => {
     if (isPencilKitAvailable()) {
       if (isOpen && popoverEl) {
-        const r = popoverEl.getBoundingClientRect();
-        void setPencilKitExcludedRects([
-          { x: r.left, y: r.top, width: r.width, height: r.height }
-        ]);
+        const unreg = registerPencilKitExcludedRegion('markup-menu-popover', () => {
+          if (!popoverEl) return null;
+          const r = popoverEl.getBoundingClientRect();
+          return { x: r.left, y: r.top, width: r.width, height: r.height };
+        });
+        return () => unreg();
       } else {
-        void setPencilKitExcludedRects([]);
+        scheduleRefreshPencilKitExcludedRects();
       }
     }
   });
@@ -224,7 +232,7 @@
   }
 </script>
 
-<div class="relative">
+<div class="relative" data-pencilkit-exclude>
   {#if markupUi.mode && isPencilKitAvailable() && markupUi.pencilOnly}
     <!-- Apple Pencil mode active on iPad: Done button with dropdown chevron to access/deselect pencil mode -->
     <div class="flex items-stretch rounded-lg bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white shadow-xs overflow-hidden shrink-0">
@@ -289,6 +297,7 @@
 
     <div
       bind:this={popoverEl}
+      data-pencilkit-exclude
       use:ensureInViewport
       class="absolute right-0 mt-1.5 w-[280px] max-w-[calc(100vw-1rem)] max-h-[calc(100vh-5rem)] overflow-y-auto rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 overflow-hidden"
     >

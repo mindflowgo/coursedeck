@@ -18,15 +18,35 @@ import { spawnSync } from 'node:child_process';
  * maintenance endpoint / CLI script for already-imported courses.
  */
 
-export const MAX_IMAGE_WIDTH = 512;
-export const JPEG_QUALITY = 82;
+export const MAX_IMAGE_WIDTH = 1024;
+export const DEFAULT_JPEG_QUALITY = 70;
+export const JPEG_QUALITY = 70;
 /** Approximate CSS width of the lesson reading column the viewer renders into. */
 export const READING_COLUMN_PX = 720;
 /** Images displaying wider than this fraction of the column get an explicit 50% spec. */
 export const MAX_DISPLAY_FRACTION = 0.5;
 
-const RASTER_RE = /\.(jpe?g|png)$/i;
+export const SKIP_SIZE_THRESHOLD = 20 * 1024; // 20 KB
+
+const RASTER_RE = /\.(jpe?g|png|webp|gif)$/i;
 const CONCURRENCY = 8;
+
+export interface ImageOptimizeOptions {
+  quality?: number;
+  maxWidth?: number;
+}
+
+export function getResolvedQuality(explicitQuality?: number): number {
+  if (typeof explicitQuality === 'number' && explicitQuality >= 10 && explicitQuality <= 100) {
+    return Math.round(explicitQuality);
+  }
+  try {
+    const { getImageQualitySetting } = require('../server/paths');
+    return getImageQualitySetting();
+  } catch {
+    return DEFAULT_JPEG_QUALITY;
+  }
+}
 
 // Minimal structural types so both the root (bun) and app tsconfigs check
 // cleanly without requiring @types/bun in the app package.
@@ -50,7 +70,6 @@ function getImageCtor(): BunImageConstructor | null {
 export interface ImageOptimizeSummary {
   scanned: number;
   converted: number;
-  skippedSmall: number;
   bytesBefore: number;
   bytesAfter: number;
   markdownFilesUpdated: number;
@@ -162,10 +181,21 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return results;
 }
 
-function optimizeCourseImagesViaBun(courseDir: string, summary: ImageOptimizeSummary): ImageOptimizeSummary {
+function optimizeCourseImagesViaBun(
+  courseDir: string,
+  options?: ImageOptimizeOptions
+): ImageOptimizeSummary {
+  const fallbackSummary: ImageOptimizeSummary = {
+    scanned: 0,
+    converted: 0,
+    bytesBefore: 0,
+    bytesAfter: 0,
+    markdownFilesUpdated: 0,
+    markdownRefsUpdated: 0
+  };
   try {
     const currentFilePath = fileURLToPath(import.meta.url);
-    const script = `import(${JSON.stringify(currentFilePath)}).then(m => m.optimizeCourseImages(${JSON.stringify(courseDir)})).then(r => console.log(JSON.stringify(r))).catch(e => { console.error(e); process.exit(1); })`;
+    const script = `import(${JSON.stringify(currentFilePath)}).then(m => m.optimizeCourseImages(${JSON.stringify(courseDir)}, ${JSON.stringify(options)})).then(r => console.log(JSON.stringify(r))).catch(e => { console.error(e); process.exit(1); })`;
     const res = spawnSync('bun', ['-e', script], {
       encoding: 'utf8',
       timeout: 120000,
@@ -174,7 +204,7 @@ function optimizeCourseImagesViaBun(courseDir: string, summary: ImageOptimizeSum
 
     if (res.error || res.status !== 0) {
       console.warn('[ImageOptimizer] Bun fallback failed or Bun is not installed; skipping image optimization.', res.error?.message || res.stderr);
-      return summary;
+      return fallbackSummary;
     }
 
     const lines = res.stdout.trim().split('\n');
@@ -182,19 +212,76 @@ function optimizeCourseImagesViaBun(courseDir: string, summary: ImageOptimizeSum
     return JSON.parse(lastLine) as ImageOptimizeSummary;
   } catch (err) {
     console.warn('[ImageOptimizer] Bun invocation failed, continuing without optimization:', err instanceof Error ? err.message : err);
-    return summary;
+    return fallbackSummary;
+  }
+}
+
+/**
+ * Optimizes a single image buffer using the project's standard rules:
+ * - PNG: always reprocessed to JPEG, alpha flattened over solid white, renamed to .jpg.
+ * - JPEG/WEBP/GIF: reprocessed to JPEG if width >= 1024 or size >= 20KB; otherwise skipped.
+ */
+export async function optimizeImageBuffer(
+  inputBuffer: Buffer,
+  filename: string,
+  options?: ImageOptimizeOptions
+): Promise<{ buffer: Buffer; filename: string; converted: boolean }> {
+  const Image = getImageCtor();
+  if (!Image) {
+    return { buffer: inputBuffer, filename, converted: false };
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const isPng = ext === '.png';
+  const isJpeg = ext === '.jpg' || ext === '.jpeg';
+  const isWebpOrGif = ext === '.webp' || ext === '.gif';
+
+  if (!isPng && !isJpeg && !isWebpOrGif) {
+    return { buffer: inputBuffer, filename, converted: false };
+  }
+
+  try {
+    const img = new Image(inputBuffer);
+    const meta = await img.metadata();
+    if (!meta.width || !meta.height) {
+      return { buffer: inputBuffer, filename, converted: false };
+    }
+
+    const maxWidth = options?.maxWidth ?? MAX_IMAGE_WIDTH;
+    const quality = getResolvedQuality(options?.quality);
+    const fileSize = inputBuffer.length;
+
+    const needsReprocess = isPng || meta.width >= maxWidth || fileSize >= SKIP_SIZE_THRESHOLD;
+    if (!needsReprocess) {
+      return { buffer: inputBuffer, filename, converted: false };
+    }
+
+    let pipeline = img;
+    if (meta.width > maxWidth) {
+      pipeline = pipeline.resize(maxWidth);
+    }
+    const output = await pipeline.jpeg({ quality, progressive: true }).buffer();
+    const base = filename.replace(/\.[^.]+$/, '');
+    const targetFilename = `${base}.jpg`;
+
+    return { buffer: output, filename: targetFilename, converted: true };
+  } catch (err) {
+    console.warn(`[ImageOptimizer] Failed to optimize buffer for ${filename}:`, err);
+    return { buffer: inputBuffer, filename, converted: false };
   }
 }
 
 /**
  * Optimizes all raster images in `<courseDir>/assets/img` and rewrites
- * markdown references in the course's `*.md` files to match.
+ * markdown and HTML references to match.
  */
-export async function optimizeCourseImages(courseDir: string): Promise<ImageOptimizeSummary> {
+export async function optimizeCourseImages(
+  courseDir: string,
+  options?: ImageOptimizeOptions
+): Promise<ImageOptimizeSummary> {
   const summary: ImageOptimizeSummary = {
     scanned: 0,
     converted: 0,
-    skippedSmall: 0,
     bytesBefore: 0,
     bytesAfter: 0,
     markdownFilesUpdated: 0,
@@ -205,7 +292,7 @@ export async function optimizeCourseImages(courseDir: string): Promise<ImageOpti
   if (!fs.existsSync(imgDir)) return summary;
 
   if (!isImageOptimizerAvailable()) {
-    return optimizeCourseImagesViaBun(courseDir, summary);
+    return optimizeCourseImagesViaBun(courseDir, options);
   }
 
   const Image = getImageCtor();
@@ -214,6 +301,9 @@ export async function optimizeCourseImages(courseDir: string): Promise<ImageOpti
   }
   const files = fs.readdirSync(imgDir).filter((f) => RASTER_RE.test(f) && !f.startsWith('.'));
   summary.scanned = files.length;
+
+  const maxWidth = options?.maxWidth ?? MAX_IMAGE_WIDTH;
+  const quality = getResolvedQuality(options?.quality);
 
   /** Final pixel width per assets-relative key (lowercased). */
   const widths = new Map<string, number>();
@@ -228,15 +318,22 @@ export async function optimizeCourseImages(courseDir: string): Promise<ImageOpti
       const meta = await img.metadata();
       if (!meta.width || !meta.height) return;
 
-      if (meta.width <= MAX_IMAGE_WIDTH) {
+      const isPng = /\.png$/i.test(file);
+      const needsReprocess = isPng || meta.width >= maxWidth || bytesBefore >= SKIP_SIZE_THRESHOLD;
+
+      if (!needsReprocess) {
         widths.set(`img/${file}`.toLowerCase(), meta.width);
-        summary.skippedSmall++;
         return;
       }
 
-      const output = await img
-        .resize(MAX_IMAGE_WIDTH)
-        .jpeg({ quality: JPEG_QUALITY, progressive: true })
+      let pipeline = img;
+      if (meta.width > maxWidth) {
+        pipeline = pipeline.resize(maxWidth);
+      }
+      const finalWidth = Math.min(meta.width, maxWidth);
+
+      const output = await pipeline
+        .jpeg({ quality, progressive: true })
         .buffer();
 
       // Target name: same basename with .jpg extension, avoiding collisions
@@ -248,7 +345,7 @@ export async function optimizeCourseImages(courseDir: string): Promise<ImageOpti
       const samePath = target === file;
 
       fs.writeFileSync(path.join(imgDir, target), output);
-      widths.set(`img/${target}`.toLowerCase(), Math.min(meta.width, MAX_IMAGE_WIDTH));
+      widths.set(`img/${target}`.toLowerCase(), finalWidth);
 
       summary.converted++;
       summary.bytesBefore += bytesBefore;

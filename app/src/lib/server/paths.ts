@@ -63,6 +63,7 @@ export interface AppSettings {
   data_dir?: string;
   theme?: string;
   mcp_enabled?: boolean;
+  image_quality?: number;
   teacher_checkin?: TeacherCheckinConfig;
   course_groups?: string[];
   [key: string]: any;
@@ -111,6 +112,14 @@ export function saveAppSettings(settings: Partial<AppSettings>): void {
   } catch (e) {
     console.warn('[paths] Failed to write app settings:', e);
   }
+}
+
+export function getImageQualitySetting(): number {
+  const settings = loadAppSettings();
+  if (typeof settings.image_quality === 'number' && settings.image_quality >= 50 && settings.image_quality <= 85) {
+    return Math.round(settings.image_quality);
+  }
+  return 70;
 }
 
 /**

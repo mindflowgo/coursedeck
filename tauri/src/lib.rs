@@ -781,6 +781,8 @@ pub fn run() {
         courses_fs::list_library_docs,
         #[cfg(target_os = "ios")]
         mobile::sync_fetch_bundle_zip,
+        #[cfg(target_os = "ios")]
+        mobile::sync_fetch_prepared_zip,
         pdf::pdf_get_info,
         pdf::pdf_render_page,
         pdf::pdf_render_thumbnail,

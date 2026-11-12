@@ -1,7 +1,7 @@
 <!-- app/src/lib/components/InitialSyncModal.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { syncFromDesktop } from '$lib/syncState.svelte';
+  import { syncFromDesktop, syncState } from '$lib/syncState.svelte';
   import { isTauriMobile } from '$lib/api';
   import { CheckCircle2, AlertCircle, Loader2, Sparkles, QrCode, Camera, Download } from 'lucide-svelte';
 
@@ -204,6 +204,13 @@
           <p class="text-xs font-semibold text-stone-900 dark:text-stone-100">Downloading courses from your desktop...</p>
           <p class="text-[11px] text-stone-500 dark:text-stone-400">Packaging manifests, lessons, and formulas into offline storage</p>
         </div>
+        {#if syncState.syncLog.length > 0}
+          <div class="w-full space-y-0.5 max-h-24 overflow-y-auto text-left" aria-live="polite">
+            {#each syncState.syncLog.slice(-5) as line (line)}
+              <p class="text-[10px] font-mono text-stone-400 dark:text-stone-500 truncate">{line}</p>
+            {/each}
+          </div>
+        {/if}
       </div>
 
     {:else if progress === 'done'}

@@ -98,6 +98,7 @@
 <div
   class="absolute {side === 'left' ? 'left-2 sm:left-3' : 'right-2 sm:right-3'} z-40 flex items-center"
   data-checkpoint-marker
+  data-pencilkit-exclude
   style="top: {resolvedTop ?? checkpoint.verticalPosition}px; transform: translateY(-50%);"
 >
   <!-- Circular Marker Dot + Date -->

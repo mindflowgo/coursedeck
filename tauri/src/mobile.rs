@@ -7,7 +7,7 @@
 //! desktop uses under its data dir, resolved through courses_fs.
 
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// Documents (fallback: app support) — the iOS data root.
 pub fn base_dir(app: &tauri::AppHandle) -> PathBuf {
@@ -78,6 +78,12 @@ pub fn serve_course_asset(app: &tauri::AppHandle, uri: &str) -> tauri::http::Res
 
 // ── Zip Sync (iPad ← desktop bundle archive) ──────────────────────────────────
 
+/// Progress channel consumed by the webview sync UI (subtle grey log lines).
+/// Quietly ignored when no listener is attached (e.g. background auto-sync).
+fn emit_sync_progress(app: &tauri::AppHandle, message: String) {
+    let _ = app.emit("sync-progress", serde_json::json!({ "message": message }));
+}
+
 #[derive(serde::Serialize)]
 struct CourseSyncSummary {
     course_id: String,
@@ -128,22 +134,61 @@ fn merge_annotations_lww(existing_path: &std::path::Path, incoming: &str) -> Str
 /// no base64, no webview round-trips.
 #[tauri::command]
 pub async fn sync_fetch_bundle_zip(app: tauri::AppHandle, url: String) -> Result<SyncZipSummary, String> {
-    let response = tauri_plugin_http::reqwest::get(&url)
+    let bytes = download_with_progress(&app, &url).await?;
+    extract_sync_zip(&app, &bytes)
+}
+
+/// Same as `sync_fetch_bundle_zip`, but for a bundle the desktop already
+/// packed to disk via `/api/sync/bundle/prepare` — the webview watched the
+/// packing progress there and hands us the download URL.
+#[tauri::command]
+pub async fn sync_fetch_prepared_zip(app: tauri::AppHandle, url: String) -> Result<SyncZipSummary, String> {
+    let bytes = download_with_progress(&app, &url).await?;
+    extract_sync_zip(&app, &bytes)
+}
+
+/// Streams a sync bundle with periodic `sync-progress` events (MB downloaded,
+/// and a percent when the server sent a Content-Length).
+async fn download_with_progress(app: &tauri::AppHandle, url: &str) -> Result<Vec<u8>, String> {
+    let response = tauri_plugin_http::reqwest::get(url)
         .await
         .map_err(|e| format!("Could not reach the desktop app ({e}). Is it running on the same Wi-Fi?"))?;
     if !response.status().is_success() {
         return Err(format!("Desktop returned HTTP {}", response.status()));
     }
-    let bytes = response
-        .bytes()
+    let total: Option<u64> = response
+        .headers()
+        .get(tauri_plugin_http::reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let mut response = response;
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut last_emitted: u64 = 0;
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| format!("Failed to download sync bundle: {e}"))?;
+        .map_err(|e| format!("Failed to download sync bundle: {e}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        let loaded = bytes.len() as u64;
+        if loaded - last_emitted >= 1024 * 1024 {
+            last_emitted = loaded;
+            let message = match total {
+                Some(total) if total > 0 => format!(
+                    "Downloading… {:.1} / {:.1} MB",
+                    loaded as f64 / (1024.0 * 1024.0),
+                    total as f64 / (1024.0 * 1024.0)
+                ),
+                _ => format!("Downloading… {:.1} MB", loaded as f64 / (1024.0 * 1024.0)),
+            };
+            emit_sync_progress(app, message);
+        }
+    }
     eprintln!(
         "[ios-sync] downloaded sync zip: {:.1} MB",
         bytes.len() as f64 / (1024.0 * 1024.0)
     );
-
-    extract_sync_zip(&app, &bytes)
+    Ok(bytes)
 }
 
 fn extract_sync_zip(app: &tauri::AppHandle, bytes: &[u8]) -> Result<SyncZipSummary, String> {
@@ -158,6 +203,8 @@ fn extract_sync_zip(app: &tauri::AppHandle, bytes: &[u8]) -> Result<SyncZipSumma
     let mut llm_config: Option<serde_json::Value> = None;
     let mut prompts: Vec<serde_json::Value> = Vec::new();
     let mut counts: std::collections::BTreeMap<String, (usize, usize)> = Default::default();
+    let mut seen_courses: std::collections::BTreeSet<String> = Default::default();
+    let mut extracted: usize = 0;
 
     for index in 0..archive.len() {
         let mut entry = archive
@@ -234,11 +281,17 @@ fn extract_sync_zip(app: &tauri::AppHandle, bytes: &[u8]) -> Result<SyncZipSumma
                 .map_err(|e| format!("Failed to extract {name:?}: {e}"))?;
         }
 
-        let counters = counts.entry(course_id).or_insert((0, 0));
+        let counters = counts.entry(course_id.clone()).or_insert((0, 0));
         if rel.starts_with("assets/") {
             counters.1 += 1;
         } else {
             counters.0 += 1;
+        }
+        extracted += 1;
+        if seen_courses.insert(course_id.clone()) {
+            emit_sync_progress(app, format!("Importing {course_id}…"));
+        } else if extracted % 25 == 0 {
+            emit_sync_progress(app, format!("Importing {course_id} — {extracted} files"));
         }
     }
 
@@ -258,10 +311,13 @@ fn extract_sync_zip(app: &tauri::AppHandle, bytes: &[u8]) -> Result<SyncZipSumma
 
     let courses: Vec<CourseSyncSummary> = counts
         .into_iter()
-        .map(|(course_id, (files, assets))| CourseSyncSummary {
-            course_id,
-            files,
-            assets,
+        .map(|(course_id, (files, assets))| {
+            emit_sync_progress(app, format!("{course_id} — {files} files, {assets} assets"));
+            CourseSyncSummary {
+                course_id,
+                files,
+                assets,
+            }
         })
         .collect();
     eprintln!("[ios-sync] extracted {} course(s)", courses.len());

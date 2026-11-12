@@ -44,8 +44,7 @@ for (const courseId of courseIds) {
   grandTotals.after += s.bytesAfter;
   console.log(
     `${courseId.padEnd(8)} scanned=${s.scanned} converted=${s.converted} ` +
-      `small=${s.skippedSmall} ` +
-      `${s.bytesBefore ? `${mb(s.bytesBefore)}→${mb(s.bytesAfter)}` : ''} ` +
+      `${s.bytesBefore ? `${mb(s.bytesBefore)}→${mb(s.bytesAfter)} ` : ''}` +
       `mdRefs=${s.markdownRefsUpdated} (${(performance.now() - t0).toFixed(0)}ms)`
   );
 }

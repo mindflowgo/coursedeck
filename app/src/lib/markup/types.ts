@@ -1,15 +1,16 @@
 /**
  * Free-hand markup domain model.
  *
- * Strokes are drawn over rendered markdown documents (the `.markdown-body`
- * container) and persisted per course in `.annotations.json`, mirroring the
- * checkpoint pipeline (server JSON + Tauri offline storage + pending push).
+ * Strokes are drawn over rendered documents (markdown body or HTML iframe surface)
+ * and persisted per course in `.annotations.json`, mirroring the checkpoint
+ * pipeline (server JSON + Tauri offline storage + pending push).
  *
- * Coordinates are stored in author pixels relative to the `.markdown-body`
- * top-left corner, together with the container width at draw time
- * (`authorWidth`). Renderers rescale both axes uniformly by
- * `currentWidth / authorWidth` so stroke shapes never distort when the
- * document reflows at a different width (phone vs iPad, zoom, resize).
+ * Coordinates are stored in author pixels relative to the document surface
+ * top-left corner, together with the surface width at draw time (`authorWidth`).
+ * Renderers rescale both axes uniformly by `currentWidth / authorWidth` so
+ * stroke geometry scales with the container width; note that uniform scaling
+ * scales the stroke shape, but does not reposition strokes relative to reflowed
+ * responsive text lines or layout changes.
  */
 
 export type MarkupTool = 'marker' | 'highlighter';

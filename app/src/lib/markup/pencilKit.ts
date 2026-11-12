@@ -216,6 +216,142 @@ export async function setPencilKitTool(
   }
 }
 
+type RectProvider = ExcludedRect[] | (() => ExcludedRect[] | ExcludedRect | null | undefined);
+const dynamicRectProviders = new Map<string, RectProvider>();
+let refreshRafId: number | null = null;
+let lastSentExcludedRectsKey = '';
+
+/**
+ * Registers a dynamic source of excluded rectangles (such as an open popover,
+ * checkpoint gutter, or floating toolbar). Returns an unregister function.
+ */
+export function registerPencilKitExcludedRegion(
+  id: string,
+  provider: RectProvider
+): () => void {
+  dynamicRectProviders.set(id, provider);
+  scheduleRefreshPencilKitExcludedRects();
+  return () => {
+    unregisterPencilKitExcludedRegion(id);
+  };
+}
+
+/**
+ * Unregisters a dynamic source of excluded rectangles.
+ */
+export function unregisterPencilKitExcludedRegion(id: string): void {
+  if (dynamicRectProviders.delete(id)) {
+    scheduleRefreshPencilKitExcludedRects();
+  }
+}
+
+/**
+ * Schedules a refresh of native PencilKit excluded rects on the next animation frame,
+ * coalescing multiple calls (e.g. during scroll or layout changes).
+ */
+export function scheduleRefreshPencilKitExcludedRects(topHeight?: number): void {
+  if (!browser || !isPencilKitAvailable()) return;
+  if (refreshRafId !== null) return;
+  refreshRafId = requestAnimationFrame(() => {
+    refreshRafId = null;
+    void refreshPencilKitExcludedRects(topHeight);
+  });
+}
+
+/**
+ * Collects all active excluded regions (from registered providers and DOM elements with
+ * [data-pencilkit-exclude], [data-markup-exclude], or [data-checkpoint-marker]) and synchronizes
+ * them with native PencilKit via IPC.
+ */
+export async function refreshPencilKitExcludedRects(topHeight?: number): Promise<void> {
+  if (!browser || !isPencilKitAvailable()) return;
+
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 0;
+  const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 0;
+
+  const collected: ExcludedRect[] = [];
+
+  // 1. Programmatic providers
+  for (const provider of dynamicRectProviders.values()) {
+    try {
+      const res = typeof provider === 'function' ? provider() : provider;
+      if (!res) continue;
+      const arr = Array.isArray(res) ? res : [res];
+      for (const r of arr) {
+        if (!r || r.width <= 0 || r.height <= 0) continue;
+        if (
+          r.x + r.width <= 0 ||
+          (viewportWidth > 0 && r.x >= viewportWidth) ||
+          r.y + r.height <= 0 ||
+          (viewportHeight > 0 && r.y >= viewportHeight)
+        ) {
+          continue;
+        }
+        collected.push({
+          x: Math.round(r.x),
+          y: Math.round(r.y),
+          width: Math.round(r.width),
+          height: Math.round(r.height)
+        });
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  // 2. DOM elements marked with [data-pencilkit-exclude], [data-markup-exclude], or [data-checkpoint-marker]
+  if (typeof document !== 'undefined') {
+    const selector = '[data-pencilkit-exclude], [data-markup-exclude], [data-checkpoint-marker]';
+    const elements = document.querySelectorAll(selector);
+    for (let i = 0; i < elements.length; i++) {
+      const el = elements[i];
+      if (!(el instanceof HTMLElement)) continue;
+      // Skip hidden / detached elements unless fixed position
+      if (el.offsetParent === null && el.offsetWidth === 0 && el.offsetHeight === 0 && el.style.position !== 'fixed') {
+        continue;
+      }
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) continue;
+      if (
+        r.right <= 0 ||
+        (viewportWidth > 0 && r.left >= viewportWidth) ||
+        r.bottom <= 0 ||
+        (viewportHeight > 0 && r.top >= viewportHeight)
+      ) {
+        continue;
+      }
+      collected.push({
+        x: Math.round(r.left),
+        y: Math.round(r.top),
+        width: Math.round(r.width),
+        height: Math.round(r.height)
+      });
+    }
+  }
+
+  // Deduplicate and avoid redundant IPC
+  const serialized = `${topHeight ?? ''}:${collected.map((r) => `${r.x},${r.y},${r.width},${r.height}`).sort().join(';')}`;
+  if (serialized === lastSentExcludedRectsKey) {
+    return;
+  }
+  lastSentExcludedRectsKey = serialized;
+
+  await setPencilKitExcludedRects(collected, topHeight);
+}
+
+/**
+ * Resets all excluded regions when deactivating native PencilKit.
+ */
+export function clearPencilKitExcludedRects(): void {
+  if (refreshRafId !== null) {
+    cancelAnimationFrame(refreshRafId);
+    refreshRafId = null;
+  }
+  lastSentExcludedRectsKey = '';
+  dynamicRectProviders.clear();
+  void setPencilKitExcludedRects([]);
+}
+
 /**
  * Sets interactive regions (such as open menus, dialogs, or dropdowns)
  * that should never capture Apple Pencil drawing strokes, allowing pencil
@@ -226,6 +362,9 @@ export async function setPencilKitExcludedRects(
   topHeight?: number
 ): Promise<void> {
   if (!browser || !isPencilKitAvailable()) return;
+  if (rects.length === 0) {
+    lastSentExcludedRectsKey = '';
+  }
   try {
     await invoke('plugin:pencilkit|set_excluded_rects', {
       rects,

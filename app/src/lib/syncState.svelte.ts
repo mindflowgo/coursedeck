@@ -31,8 +31,23 @@ export const syncState = $state({
   isSyncing: false,
   isPushing: false,
   syncError: null as string | null,
-  pushError: null as string | null
+  pushError: null as string | null,
+  // Subtle grey progress lines rendered by the sync UI while a sync runs.
+  syncLog: [] as string[]
 });
+
+const SYNC_LOG_MAX = 10;
+
+function appendSyncLog(line: string): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  const lines = syncState.syncLog;
+  if (lines[lines.length - 1] === trimmed) return;
+  lines.push(trimmed);
+  if (lines.length > SYNC_LOG_MAX) {
+    lines.splice(0, lines.length - SYNC_LOG_MAX);
+  }
+}
 
 async function countPendingPush(): Promise<number> {
   const [checkpoints, annotations, documents, prompts, assets] = await Promise.all([
@@ -169,10 +184,23 @@ export async function fetchDesktopCourses(customUrl?: string): Promise<DesktopCo
 }
 
 export async function syncFromDesktop(
-  opts?: { includeLlmKeys?: boolean; customUrl?: string; since?: string | null; courseIds?: string[]; forceFullSync?: boolean }
+  opts?: {
+    includeLlmKeys?: boolean;
+    customUrl?: string;
+    since?: string | null;
+    courseIds?: string[];
+    /** Courses the device doesn't have yet — archived in full, ignoring `since`. */
+    fullCourseIds?: string[];
+    forceFullSync?: boolean;
+  }
 ): Promise<void> {
   syncState.isSyncing = true;
   syncState.syncError = null;
+  syncState.syncLog = [];
+
+  // Rust emits `sync-progress` while the bundle downloads and extracts; feed
+  // the grey log lines in the sync UI.
+  let unlistenProgress: (() => void) | null = null;
 
   try {
     if (opts?.customUrl && typeof localStorage !== 'undefined') {
@@ -195,6 +223,11 @@ export async function syncFromDesktop(
     if (opts?.courseIds && opts.courseIds.length > 0) {
       params.set('courseIds', opts.courseIds.join(','));
     }
+    // Courses missing on this device must ignore the incremental cursor, or
+    // the bundle skips them entirely and the sync is a silent no-op.
+    if (opts?.fullCourseIds && opts.fullCourseIds.length > 0) {
+      params.set('fullCourses', opts.fullCourseIds.join(','));
+    }
 
     const { getApiBaseUrl } = await import('./api');
     const baseUrl = opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : getApiBaseUrl();
@@ -216,12 +249,56 @@ export async function syncFromDesktop(
       }
     }
 
-    // One zip archive downloaded and extracted natively in Rust — no JSON
-    // bundle, no base64 assets, nothing large passing through the webview.
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlistenProgress = await listen<{ message?: string }>('sync-progress', (event) => {
+        if (event.payload.message) appendSyncLog(event.payload.message);
+      });
+    } catch {}
+
     const { invoke } = await import('@tauri-apps/api/core');
-    const summary = await invoke<SyncZipSummary>('sync_fetch_bundle_zip', {
-      url: `${baseUrl}/api/sync/bundle?${params.toString()}`
-    });
+
+    // Preferred flow: the desktop packs the zip server-side while we watch
+    // NDJSON progress via streamUpload, then Rust downloads the prepared
+    // archive. Falls back to the one-shot GET when the desktop predates the
+    // prepare endpoint so sync never breaks.
+    let summary: SyncZipSummary;
+    try {
+      const { streamUpload } = await import('./streamUpload');
+      const query = params.toString();
+      const prepareUrl =
+        (opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : baseUrl) +
+        '/api/sync/bundle/prepare' +
+        (query ? `?${query}` : '');
+      const prepared = await streamUpload<{
+        type?: string;
+        url?: string;
+        message?: string;
+        status?: string;
+        courseCount?: number;
+        fileCount?: number;
+        generatedAt?: string;
+      }>({
+        url: prepareUrl,
+        body: new FormData(),
+        onMessage: (msg) => {
+          if (msg.status) appendSyncLog(msg.status);
+        }
+      });
+      if (!prepared?.url) {
+        throw new Error(prepared?.message || 'Desktop did not return a prepared bundle');
+      }
+      const base = opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : baseUrl;
+      summary = await invoke<SyncZipSummary>('sync_fetch_prepared_zip', {
+        url: `${base}${prepared.url}`
+      });
+    } catch (prepareErr) {
+      console.warn('[Sync] Prepare flow unavailable, falling back to direct bundle GET:', prepareErr);
+      appendSyncLog('Downloading bundle…');
+      summary = await invoke<SyncZipSummary>('sync_fetch_bundle_zip', {
+        url: `${baseUrl}/api/sync/bundle?${params.toString()}`
+      });
+    }
 
     if (summary.llmConfig) {
       await saveLlmConfigLocally(summary.llmConfig);
@@ -244,8 +321,10 @@ export async function syncFromDesktop(
   } catch (e) {
     console.error('[Sync Error]', e);
     syncState.syncError = e instanceof Error ? e.message : 'Sync failed';
+    appendSyncLog(`Failed: ${syncState.syncError}`);
     throw e;
   } finally {
+    unlistenProgress?.();
     syncState.isSyncing = false;
   }
 }

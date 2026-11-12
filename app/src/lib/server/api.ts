@@ -27,6 +27,7 @@ import {
   setCustomDataDir,
   loadAppSettings,
   saveAppSettings,
+  getImageQualitySetting,
   getMcpServerInfo
 } from './paths';
 import { parseFrontmatter, serializeWithFrontmatter } from '../parser/frontmatter';
@@ -35,7 +36,7 @@ import { CourseIngest, type CourseDocType, type CourseManifest } from '../parser
 import { validateScheduleMarkdown } from '../parser/scheduleValidation';
 import type { SchedulePreferences } from '../schedule';
 import { ScheduleParser, toggleEventDone } from '../parser/scheduleParser';
-import { optimizeCourseImages } from '../parser/imageOptimizer';
+import { optimizeCourseImages, optimizeImageBuffer } from '../parser/imageOptimizer';
 import { unzipSync } from 'fflate';
 import { createDataBackupZip, createDataBackupZipStream, createSyncBundleZipStream, restoreDataBackupZip } from './backup';
 import { SyncService } from './services/sync/sync.service';
@@ -679,6 +680,10 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       const requestedIds = courseIdsParam
         ? courseIdsParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
         : null;
+      const fullCoursesParam = url.searchParams.get('fullCourses');
+      const fullCourseIds = fullCoursesParam
+        ? fullCoursesParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+        : null;
 
       const sinceParam = url.searchParams.get('since');
       if (sinceParam && Number.isNaN(Date.parse(sinceParam))) {
@@ -691,6 +696,7 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
 
       const { stream, courseCount, fileCount } = createSyncBundleZipStream({
         courseIds: requestedIds,
+        fullCourses: fullCourseIds,
         since: sinceParam,
         syncMeta: {
           version: 1,
@@ -715,6 +721,156 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           'X-Sync-Generated-At': generatedAt,
           'X-Sync-Courses': String(courseCount),
           'X-Sync-Files': String(fileCount),
+          'Cache-Control': 'no-store'
+        }
+      });
+    }
+
+    // ---- /api/sync/bundle/prepare (pack the iPad sync zip server-side while
+    // streaming NDJSON packing progress; the device then downloads the file) ----
+    if (pathname === '/api/sync/bundle/prepare' && method === 'POST') {
+      const courseIdsParam = url.searchParams.get('courseIds');
+      const requestedIds = courseIdsParam
+        ? courseIdsParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+        : null;
+      const fullCoursesParam = url.searchParams.get('fullCourses');
+      const fullCourseIds = fullCoursesParam
+        ? fullCoursesParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+        : null;
+
+      const sinceParam = url.searchParams.get('since');
+      if (sinceParam && Number.isNaN(Date.parse(sinceParam))) {
+        return error(400, 'Invalid "since" timestamp — use ISO 8601 (e.g. 2026-10-27T12:00:00Z)');
+      }
+
+      const generatedAt = new Date().toISOString();
+      const includeLlmKeys = url.searchParams.get('includeLlmKeys') === 'true';
+      const llmStore = LLMService.loadStore();
+      const token = `sync-${generatedAt.replace(/[:.]/g, '-')}.zip`;
+      const tmpDir = safeJoin(getDataDir(), '_sync-tmp');
+      fs.mkdirSync(tmpDir, { recursive: true });
+      // Best-effort cleanup of stale prepare files (older than 1 hour).
+      try {
+        const cutoff = Date.now() - 60 * 60 * 1000;
+        for (const old of fs.readdirSync(tmpDir)) {
+          const oldPath = safeJoin(tmpDir, old);
+          try {
+            if (fs.statSync(oldPath).mtimeMs < cutoff) fs.unlinkSync(oldPath);
+          } catch {}
+        }
+      } catch {}
+
+      // The zip pump runs while the NDJSON reader drains the stream, so
+      // per-course packing lines are queued here and flushed after each read.
+      const packingLines: string[] = [];
+      const { stream, courseCount, fileCount } = createSyncBundleZipStream({
+        courseIds: requestedIds,
+        fullCourses: fullCourseIds,
+        since: sinceParam,
+        onProgress: (info) => {
+          if (info.courseId) {
+            packingLines.push(`Packing ${info.courseId} — ${info.current}/${info.total} files`);
+          }
+        },
+        syncMeta: {
+          version: 1,
+          generatedAt,
+          llmConfig: {
+            version: llmStore.version,
+            activeId: llmStore.activeId,
+            cards: llmStore.cards.map((card) => ({
+              ...card,
+              apiKey: includeLlmKeys ? card.apiKey : undefined
+            }))
+          },
+          prompts: PromptService.listPrompts(),
+          groups: GroupService.getAllGroups()
+        }
+      });
+
+      const zipPath = safeJoin(tmpDir, token);
+      const ndjson = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          const send = (data: unknown) => {
+            try {
+              controller.enqueue(encoder.encode(JSON.stringify(data) + '\n'));
+            } catch {}
+          };
+
+          try {
+            send({ type: 'progress', status: `Packing ${courseCount} course(s), ${fileCount} file(s)...` });
+            const out = fs.createWriteStream(zipPath);
+            const reader = stream.getReader();
+            let bytes = 0;
+            let lastBytes = 0;
+            const waitForDrain = () =>
+              new Promise<void>((resolve) => out.once('drain', () => resolve()));
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              bytes += value?.length || 0;
+              if (!out.write(value)) await waitForDrain();
+              while (packingLines.length > 0) {
+                send({ type: 'progress', status: packingLines.shift() });
+              }
+              if (bytes - lastBytes > 1024 * 1024) {
+                lastBytes = bytes;
+                send({ type: 'progress', status: `Packed ${(bytes / 1024 / 1024).toFixed(1)} MB` });
+              }
+            }
+            await new Promise<void>((resolve, reject) => {
+              out.end(() => resolve());
+              out.on('error', reject);
+            });
+            send({ type: 'progress', status: `Packed ${(bytes / 1024 / 1024).toFixed(1)} MB total` });
+            send({
+              type: 'complete',
+              token,
+              url: `/api/sync/bundle/download?token=${encodeURIComponent(token)}`,
+              courseCount,
+              fileCount,
+              generatedAt
+            });
+            controller.close();
+          } catch (err) {
+            console.error('[SyncServer] Prepare failed:', err);
+            try {
+              fs.unlinkSync(zipPath);
+            } catch {}
+            send({
+              type: 'error',
+              success: false,
+              message: err instanceof Error ? err.message : 'Failed to pack sync bundle'
+            });
+            controller.close();
+          }
+        }
+      });
+
+      return new Response(ndjson, {
+        headers: {
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache, no-store',
+          'X-Accel-Buffering': 'no'
+        }
+      });
+    }
+
+    // ---- /api/sync/bundle/download (fetch a prepared sync bundle by token) ----
+    if (pathname === '/api/sync/bundle/download' && method === 'GET') {
+      const token = url.searchParams.get('token') || '';
+      if (!/^sync-[\w-]+\.zip$/.test(token)) {
+        return error(400, 'Invalid sync bundle token');
+      }
+      const zipPath = safeJoin(getDataDir(), '_sync-tmp', token);
+      if (!fs.existsSync(zipPath)) {
+        return error(404, 'Prepared sync bundle not found or expired — restart the sync');
+      }
+      return new Response(fs.readFileSync(zipPath), {
+        headers: {
+          'Content-Type': 'application/zip',
+          'Content-Disposition': `attachment; filename="${token}"`,
           'Cache-Control': 'no-store'
         }
       });
@@ -1768,6 +1924,28 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
           return json({ success: true, theme, message: `Theme saved as ${theme}` });
         } catch (err) {
           return error(500, err instanceof Error ? err.message : 'Failed to save theme setting');
+        }
+      }
+    }
+
+    // ---- /api/settings/ingestion ----
+    if (pathname === '/api/settings/ingestion') {
+      if (method === 'GET') {
+        const quality = getImageQualitySetting();
+        return json({ success: true, imageQuality: quality });
+      }
+      if (method === 'POST') {
+        try {
+          const body = (await req.json()) as Record<string, unknown>;
+          const rawQuality = Number(body.imageQuality ?? body.quality);
+          if (Number.isNaN(rawQuality) || rawQuality < 50 || rawQuality > 85) {
+            return error(400, 'Invalid image quality: must be a number between 50 and 85');
+          }
+          const quality = Math.round(rawQuality);
+          saveAppSettings({ image_quality: quality });
+          return json({ success: true, imageQuality: quality });
+        } catch (err) {
+          return error(400, err instanceof Error ? err.message : 'Failed to save ingestion settings');
         }
       }
     }
@@ -3331,7 +3509,8 @@ ${answers[q.number] || answers[String(parseInt(q.number, 10))] || '(No response 
 
             const arrayBuffer = await file.arrayBuffer();
             const buffer = Buffer.from(arrayBuffer);
-            const saved = CourseService.saveLockerDoc(courseId, file.name, buffer);
+            const opt = await optimizeImageBuffer(buffer, file.name);
+            const saved = CourseService.saveLockerDoc(courseId, opt.filename, opt.buffer);
             return json({ success: true, courseId, file: saved });
           } catch (err) {
             console.error(`Failed to upload locker doc for ${courseId}:`, err);

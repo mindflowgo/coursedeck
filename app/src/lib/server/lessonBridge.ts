@@ -22,6 +22,8 @@
 export function buildLessonBridgeScript(courseId: string): string {
   return `<style>
     html, body {
+      height: auto !important;
+      min-height: auto !important;
       overflow-x: hidden !important;
       overflow-y: hidden !important;
     }
@@ -41,14 +43,27 @@ export function buildLessonBridgeScript(courseId: string): string {
       var heightTimer = null;
       function sendHeight() {
         var body = document.body;
-        var html = document.documentElement;
+        if (!body) return;
+        // Intrinsic content height: avoid using documentElement viewport dimensions,
+        // which match the iframe's outer window and prevent shrinking when
+        // accordions or dynamic elements collapse.
         var h = Math.max(
-          body ? body.scrollHeight : 0,
-          body ? body.offsetHeight : 0,
-          html ? html.clientHeight : 0,
-          html ? html.scrollHeight : 0,
-          html ? html.offsetHeight : 0
+          body.scrollHeight || 0,
+          body.offsetHeight || 0,
+          body.getBoundingClientRect ? Math.ceil(body.getBoundingClientRect().height) : 0
         );
+        var children = body.children;
+        if (children && children.length) {
+          var bodyTop = body.getBoundingClientRect ? body.getBoundingClientRect().top : 0;
+          for (var i = 0; i < children.length; i++) {
+            var child = children[i];
+            if (child && child.getBoundingClientRect) {
+              var r = child.getBoundingClientRect();
+              var b = Math.ceil(r.bottom - bodyTop);
+              if (b > h) h = b;
+            }
+          }
+        }
         if (h > 50) {
           post({ type: 'courseDeck:lessonHeight', height: h });
         }

@@ -24,11 +24,13 @@
   import type { MarkupStroke } from '$lib/markup/types';
   import {
     ackPencilKitRendered,
+    clearPencilKitExcludedRects,
     isPencilKitAvailable,
     mapPencilKitWidth,
     onPencilKitRedo,
     onPencilKitStroke,
     onPencilKitUndo,
+    scheduleRefreshPencilKitExcludedRects,
     setPencilKitActive,
     setPencilKitTool,
     syncPencilKitUndoRedo
@@ -210,6 +212,11 @@
 
     return () => {
       stopInertia();
+      if (livePathRafId !== null) {
+        cancelAnimationFrame(livePathRafId);
+        livePathRafId = null;
+      }
+      cancelStroke();
       ro.disconnect();
       mo.disconnect();
       window.removeEventListener('resize', syncDimensions);
@@ -226,6 +233,7 @@
       }
       if (isPencilKitAvailable()) {
         setPencilKitActive({ active: false });
+        clearPencilKitExcludedRects();
       }
     };
   });
@@ -251,21 +259,35 @@
     return 140;
   }
 
-  // Sync native PencilKit active state and tool selection (only when Pencil Mode is enabled).
-  // NOTE: keep live store reads (canUndo/canRedo) OUT of this effect — they change on every
-  // committed stroke, and re-sending set_active mid-batch wipes the native scratchpad before
-  // the SVG layer renders. Undo state flows via syncPencilKitUndoRedo below.
+  // Sync native PencilKit active state, tool selection, and dynamic exclusion rects
   $effect(() => {
     if (isPencilKitAvailable()) {
       const shouldActivate = active && markupUi.pencilOnly;
       if (shouldActivate) {
+        const topHeight = computeTopCutoff();
         setPencilKitActive({
           active: true,
-          topHeight: computeTopCutoff()
+          topHeight
         });
         setPencilKitTool(markupUi.eraser ? 'eraser' : markupUi.tool, markupUi.color);
+        scheduleRefreshPencilKitExcludedRects(topHeight);
+
+        const scroller = getScroller();
+        const handleScrollOrResize = () => {
+          scheduleRefreshPencilKitExcludedRects(topHeight);
+        };
+
+        scroller?.addEventListener('scroll', handleScrollOrResize, { passive: true });
+        window.addEventListener('resize', handleScrollOrResize, { passive: true });
+
+        return () => {
+          scroller?.removeEventListener('scroll', handleScrollOrResize);
+          window.removeEventListener('resize', handleScrollOrResize);
+          clearPencilKitExcludedRects();
+        };
       } else {
         setPencilKitActive({ active: false });
+        clearPencilKitExcludedRects();
       }
     }
   });
@@ -393,13 +415,28 @@
     }
   }
 
+  let livePathRafId: number | null = null;
+
+  function scheduleUpdateLivePath(): void {
+    if (livePathRafId === null) {
+      livePathRafId = requestAnimationFrame(() => {
+        livePathRafId = null;
+        updateLivePath();
+      });
+    }
+  }
+
   function clearLive(): void {
+    if (livePathRafId !== null) {
+      cancelAnimationFrame(livePathRafId);
+      livePathRafId = null;
+    }
     currentPoints = [];
     livePathEl?.setAttribute('d', '');
     livePathEl?.style.removeProperty('mix-blend-mode');
   }
 
-  function appendPoint(e: PointerEvent): void {
+  function appendPoint(e: PointerEvent, schedule = true): void {
     if (!svgEl) return;
     const rect = svgEl.getBoundingClientRect();
     const scale = (rect.width || authorWidth) / authorWidth;
@@ -407,7 +444,11 @@
     const y = (e.clientY - rect.top) / scale;
     const p = e.pointerType === 'pen' ? Math.min(1, Math.max(0.1, e.pressure || 0.5)) : 0.5;
     currentPoints.push(x, y, p);
-    updateLivePath();
+    if (schedule) {
+      scheduleUpdateLivePath();
+    } else {
+      updateLivePath();
+    }
   }
 
   function eraseAt(e: PointerEvent): void {
@@ -483,7 +524,7 @@
     const rect = svgEl.getBoundingClientRect();
     authorWidth = rect.width || svgWidth || 1;
     currentPoints = [];
-    appendPoint(e);
+    appendPoint(e, false);
   }
 
   function onPointerMove(e: PointerEvent): void {
@@ -529,9 +570,11 @@
     }
     const coalesced = e.getCoalescedEvents?.() ?? [];
     if (coalesced.length > 0) {
-      for (const ce of coalesced) appendPoint(ce);
+      for (let i = 0; i < coalesced.length; i++) {
+        appendPoint(coalesced[i], i === coalesced.length - 1);
+      }
     } else {
-      appendPoint(e);
+      appendPoint(e, true);
     }
   }
 
@@ -566,6 +609,10 @@
       erasing = false;
       return;
     }
+    if (livePathRafId !== null) {
+      cancelAnimationFrame(livePathRafId);
+      livePathRafId = null;
+    }
     if (!strokeCancelled && isCommittableStroke(currentPoints)) {
       addStroke(
         courseId,
@@ -598,17 +645,23 @@
     drawingPointerId = null;
     erasing = false;
 
-    if (!strokeCancelled && isCommittableStroke(currentPoints)) {
-      addStroke(
-        courseId,
-        createStroke(courseId, file, markupUi.tool, markupUi.color, currentPoints, authorWidth, markupUi.width, markupUi.opacity)
-      );
-    }
-    clearLive();
+    // Discard interrupted stroke on cancellation rather than committing partial stroke
+    cancelStroke();
   }
+
+  $effect(() => {
+    if (typeof document === 'undefined') return;
+    const handleVisibility = () => {
+      if (document.hidden) flushNow();
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  });
 </script>
 
-<svelte:window onbeforeunload={flushNow} onvisibilitychange={() => (document.hidden ? flushNow() : undefined)} />
+<svelte:window onbeforeunload={flushNow} />
 
 <div
   bind:this={overlayEl}

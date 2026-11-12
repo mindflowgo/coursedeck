@@ -19,12 +19,19 @@ export function generateLockerDocFilename(lessonId?: string): string {
   return `${prefix}_${base36Timestamp}${randomSuffix}.jpg`;
 }
 
+export const MAX_PASTE_IMAGE_WIDTH = 1024;
+
 /**
- * Converts an image File or Blob into a compressed JPEG Blob with 70% quality.
+ * Converts an image File or Blob into a compressed JPEG Blob with 70% quality
+ * and clamps width to maxWidth (default 1024px, aspect preserved).
  * Paints transparent areas over an opaque white background to prevent dark
  * or inverted backgrounds on transparent PNG screenshots.
  */
-export async function compressImageToJpeg(fileOrBlob: Blob, quality = 0.7): Promise<Blob> {
+export async function compressImageToJpeg(
+  fileOrBlob: Blob,
+  quality = 0.7,
+  maxWidth = MAX_PASTE_IMAGE_WIDTH
+): Promise<Blob> {
   // If running in a non-browser environment (e.g. tests without DOM canvas), return as-is
   if (typeof window === 'undefined' || typeof document === 'undefined' || typeof Image === 'undefined') {
     return fileOrBlob;
@@ -37,9 +44,18 @@ export async function compressImageToJpeg(fileOrBlob: Blob, quality = 0.7): Prom
     img.onload = () => {
       try {
         URL.revokeObjectURL(url);
+        const naturalWidth = img.naturalWidth || img.width;
+        const naturalHeight = img.naturalHeight || img.height;
+        let targetWidth = naturalWidth;
+        let targetHeight = naturalHeight;
+        if (targetWidth > maxWidth) {
+          targetHeight = Math.round(targetHeight * (maxWidth / targetWidth));
+          targetWidth = maxWidth;
+        }
+
         const canvas = document.createElement('canvas');
-        canvas.width = img.naturalWidth || img.width;
-        canvas.height = img.naturalHeight || img.height;
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
 
         const ctx = canvas.getContext('2d');
         if (!ctx) {
@@ -50,7 +66,7 @@ export async function compressImageToJpeg(fileOrBlob: Blob, quality = 0.7): Prom
         // Fill opaque white background (critical for PNG screenshots with transparency)
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
 
         canvas.toBlob(
           (blob) => {

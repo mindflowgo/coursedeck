@@ -377,6 +377,14 @@
   );
   const annotationRenderer = $derived(activeTab === 'lesson' && effectiveFormat === 'html' && lessonViewMode === 'original' ? 'html' : 'markdown');
   const annotationFile = $derived(currentFile.startsWith('.') ? currentFile : annotationSourceFile(currentFile, annotationRenderer, activeTab === 'lesson' && effectiveFormat !== 'markdown'));
+  const isMarkupEligible = $derived(
+    !isEditing &&
+    activeTab !== 'test' &&
+    activeTab !== 'book' &&
+    activeTab !== 'schedule' &&
+    activeTab !== 'logs' &&
+    (activeTab !== 'lesson' || effectiveFormat !== 'pdf')
+  );
   let currentFileNotes = $derived(
     checkpoints.filter(
       (c) => (c.type === 'note' || c.type === 'highlight' || c.type === 'ai') && c.file === currentFile &&
@@ -1538,6 +1546,7 @@
   }
 
   function toggleLessonViewMode() {
+    exitMarkupMode();
     const next = lessonViewMode === 'original' ? 'markdown' : 'original';
     lessonViewMode = next;
     if (courseId) {
@@ -1785,6 +1794,7 @@
 
   let isExtendingPage: boolean = $state(false);
   let extendBtnEl = $state<HTMLButtonElement>();
+  let htmlViewerRef = $state<ReturnType<typeof HtmlViewer> | null>(null);
 
   async function handleExtendPage() {
     if (isExtendingPage) return;
@@ -2238,26 +2248,53 @@
     }
   }
 
-  // Markup drawing requires the rendered reader; leave the mode when editing.
+  // Markup drawing requires an active rendered reader surface; exit markup mode
+  // whenever switching to an ineligible surface, opening a modal, or navigating files.
   $effect(() => {
-    if (isEditing) exitMarkupMode();
+    if (
+      isEditing ||
+      !isMarkupEligible ||
+      Boolean(activeDocument) ||
+      isCheckpointModalOpen
+    ) {
+      if (markupUi.mode) exitMarkupMode();
+    }
+  });
+
+  let lastActiveAnnotationFile: string | undefined = undefined;
+  $effect(() => {
+    const current = annotationFile;
+    if (lastActiveAnnotationFile !== undefined && current !== lastActiveAnnotationFile) {
+      if (markupUi.mode) {
+        exitMarkupMode();
+      }
+    }
+    lastActiveAnnotationFile = current;
   });
 
   function handleKeydown(e: KeyboardEvent) {
-    if (markupUi.mode && course && (e.metaKey || e.ctrlKey)) {
+    const target = e.target as HTMLElement | null;
+    const isInput = target && (
+      target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable ||
+      Boolean(target.closest?.('input, textarea, [contenteditable="true"]'))
+    );
+
+    if (markupUi.mode && course && (e.metaKey || e.ctrlKey) && !isInput) {
       if ((e.key === 'z' || e.key === 'Z') && e.shiftKey) {
         e.preventDefault();
-        markupRedo(course.id, currentFile);
+        markupRedo(course.id, annotationFile);
         return;
       }
       if (e.key === 'y' || e.key === 'Y') {
         e.preventDefault();
-        markupRedo(course.id, currentFile);
+        markupRedo(course.id, annotationFile);
         return;
       }
       if (e.key === 'z' || e.key === 'Z') {
         e.preventDefault();
-        markupUndo(course.id, currentFile);
+        markupUndo(course.id, annotationFile);
         return;
       }
     }
@@ -3394,6 +3431,7 @@
              while staying flush on mobile. -->
         <div
           data-markdown-floating-bar
+          data-pencilkit-exclude
           class="sticky top-1 sm:-top-[30px] z-20 flex justify-end px-2 sm:px-12 pt-0.5 mt-1 mb-2 sm:-mb-[30px] pointer-events-none max-w-full"
         >
           <div class="pointer-events-auto flex items-center space-x-1.5 sm:space-x-2 max-w-full">
@@ -3471,8 +3509,8 @@
                 </span>
               {/if}
 
-              {#if activeTab !== 'test' && activeTab !== 'book' && course?.id}
-                <MarkupMenu courseId={course.id} file={currentFile} />
+              {#if isMarkupEligible && course?.id}
+                <MarkupMenu courseId={course.id} file={annotationFile} />
               {/if}
 
               <!-- More actions menu ([...]): Edit, Prompt, PDF -->
@@ -3691,8 +3729,10 @@
               <article class="px-[6px] py-4 sm:p-6 w-full max-w-full min-w-0 overflow-hidden">
                 {#if effectiveFormat === 'html'}
                   <HtmlViewer
+                    bind:this={htmlViewerRef}
                     courseId={course.id}
                     lessonId={selectedLessonId}
+                    markupFile={annotationFile}
                     title={currentLessonItem?.title || 'Lesson'}
                     scrollerEl={contentScroller}
                     checkpoints={currentFileNotes}
@@ -3715,6 +3755,28 @@
                       anchorPositions = { ...anchorPositions, ...positions };
                     }}
                   />
+                  {#if markupUi.mode}
+                    <div class="relative z-10 flex justify-center pt-2 pb-1">
+                      <button
+                        bind:this={extendBtnEl}
+                        data-pencilkit-exclude
+                        type="button"
+                        onpointerdown={(e) => e.stopPropagation()}
+                        onclick={() => {
+                          htmlViewerRef?.addSketchBlock();
+                          tick().then(() => {
+                            extendBtnEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                          });
+                        }}
+                        class="group inline-flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-white/95 dark:bg-stone-800/95 backdrop-blur-xs text-stone-700 dark:text-stone-200 hover:text-stone-900 dark:hover:text-stone-100 hover:bg-stone-50 dark:hover:bg-stone-700/80 shadow-xs hover:shadow-sm transition cursor-pointer select-none active:scale-95"
+                        title="Add Sketch"
+                        aria-label="Add Sketch"
+                      >
+                        <StickyNotePlus class="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                        <span class="text-xs font-medium">Add Sketch</span>
+                      </button>
+                    </div>
+                  {/if}
                 {:else if effectiveFormat === 'pdf'}
                   <iframe
                     src="{getApiBaseUrl()}/api/courses/{encodeURIComponent(course.id)}/{encodeURIComponent(selectedLessonId)}/content"
@@ -3732,7 +3794,7 @@
                   courseId={course.id}
                   onDeleteNote={handleDeleteNote}
                   onOpenDocument={handleOpenDocument}
-                  markupFile={currentFile}
+                  markupFile={annotationFile}
                   markupScroller={contentScroller}
                   checkpoints={currentFileNotes}
                   onResolveAnchors={(positions) => {
@@ -3754,6 +3816,7 @@
                   <div class="relative z-10 flex justify-center pt-2 pb-1">
                     <button
                       bind:this={extendBtnEl}
+                      data-pencilkit-exclude
                       type="button"
                       onpointerdown={(e) => e.stopPropagation()}
                       onclick={handleExtendPage}

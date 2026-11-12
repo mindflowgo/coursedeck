@@ -64,7 +64,7 @@ flowchart TD
     Extractor --> UniformStorage["Uniform Storage Layout\n(assets/css, assets/fonts, assets/img, ...)"]
     UniformStorage --> DOMCleaner["2. DOM Cleaner (domCleaner.ts)\nStrip Chrome & Rewrite URLs to ./assets/**"]
     DOMCleaner --> LessonHTML["Normalized *.lesson.html"]
-    LessonHTML --> ImageOptimizer["3. Image Optimizer (imageOptimizer.ts)\nClamp >512px to JPG, Sync MD & HTML"]
+    LessonHTML --> ImageOptimizer["3. Image Optimizer (imageOptimizer.ts)\nClamp >1024px width, Compress to 70% JPG, Sync MD & HTML"]
     ImageOptimizer --> ServerServing["4. Server Presentation (api.ts)\nInject <base href>, CSS Self-Heal & Bridge Script"]
     ServerServing --> SandboxedIframe["5. Sandboxed Viewer (HtmlViewer.svelte)"]
 ```
@@ -95,10 +95,17 @@ The `preparePresentationHtml()` function runs Cheerio against each extracted HTM
 
 ### Stage 3: Image Optimization & Reference Alignment (`imageOptimizer.ts`)
 To maintain fast load times and small archive footprints:
-1. **Pass 1 (Compression)**: Raster images wider than 512px are resized to 512px progressive JPEG (quality 82) via `Bun.Image`.
-2. **Pass 2 (Markdown Sync)**: Markdown files (`*.md`) are updated to point to the new `.jpg` filenames.
-3. **Pass 2b (HTML Sync)**: All `.lesson.html` files are updated to replace original `.png` references with the optimized `.jpg` filenames.
-4. **Pass 3 (Safe Cleanup)**: Original oversized images are deleted only after both Markdown and HTML files have been successfully rewritten.
+1. **Pass 1 (Selective Compression & Normalization)**:
+   - **Quality**: Encodes at configured quality (default 70% quality, customizable in Settings).
+   - **Width Clamping**: If width $> 1024\text{px}$, clamped to 1024px width (aspect ratio preserved). Never upscales images $\le 1024\text{px}$.
+   - **PNG Images**: **Always** reprocessed, alpha channels flattened over solid white (`#ffffff`), and converted to `.jpg`.
+   - **JPEG / WEBP / GIF Images**:
+     - Skipped if `width < 1024px` **and** `fileSize < 20KB` (avoiding generation loss and preserving small animations).
+     - Reprocessed and converted/renamed to `.jpg` if `width >= 1024px` **or** `fileSize >= 20KB`.
+   - **SVG Icons**: Kept in `assets/icons/` untouched.
+2. **Pass 2 (Markdown Sync)**: Markdown files (`*.md`) are updated to point to the new `.jpg` filenames and given width-based display specs.
+3. **Pass 2b (HTML Sync)**: All `.lesson.html` files are updated to replace original renamed references (e.g. `.png` $\to$ `.jpg`) in both `<img>` tags and inline CSS background styles.
+4. **Pass 3 (Safe Cleanup)**: Original replaced images are deleted only after both Markdown and HTML files have been successfully rewritten.
 
 ### Stage 4: Asset Serving & Fallback Engine (`courses.ts` & `api.ts`)
 When assets are requested via `GET /api/courses/:course_id/assets/**`:

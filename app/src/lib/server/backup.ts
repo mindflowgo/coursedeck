@@ -136,10 +136,22 @@ export interface SyncBundleZipOptions {
    * with a current course list.
    */
   since?: string | Date | null;
+  /**
+   * Lowercase course ids that ignore `since` and are archived in full.
+   * Selective sync uses this for courses the device doesn't have yet —
+   * otherwise an incremental cursor newer than the course's files would
+   * produce an empty bundle and the course would never arrive.
+   */
+  fullCourses?: string[] | null;
   /** JSON-serialized into `_sync/meta.json` inside the archive. */
   syncMeta?: unknown;
   /** Custom compression level for text files (1-9). Defaults to 6 for incremental sync, 1 for full sync. */
   deflateLevel?: 1 | 4 | 6 | 9;
+  /**
+   * Optional progress observer fired as the archive is packed: once per
+   * course when it starts, and throttled per-file while files stream in.
+   */
+  onProgress?: (info: { courseId: string | null; current: number; total: number; currentFile: string }) => void;
 }
 
 /**
@@ -164,6 +176,10 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
       : options.since instanceof Date
         ? options.since.getTime()
         : Date.parse(options.since);
+  const fullCourseSet =
+    options.fullCourses && options.fullCourses.length > 0
+      ? new Set(options.fullCourses.map((id) => id.toLowerCase()))
+      : null;
   const coursesDir = path.join(getDataDir(), 'courses');
 
   const fileList: { absPath: string; relPath: string }[] = [];
@@ -172,7 +188,8 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
   const collectCourseFiles = (
     absDir: string,
     relPrefix: string,
-    entries: { absPath: string; relPath: string }[]
+    entries: { absPath: string; relPath: string }[],
+    full: boolean
   ): void => {
     for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
       const isAllowedDot =
@@ -183,14 +200,14 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
       const absPath = path.join(absDir, entry.name);
       const relPath = `${relPrefix}/${entry.name}`;
       if (entry.isDirectory()) {
-        collectCourseFiles(absPath, relPath, entries);
+        collectCourseFiles(absPath, relPath, entries, full);
       } else if (entry.isFile()) {
         // Manifests are handled separately in incremental mode (included
         // whenever the course has any real change, not by their own mtime).
-        if (Number.isFinite(sinceMs) && /(?:^|\/)\.manifest\.json$/i.test(relPath)) {
+        if (!full && Number.isFinite(sinceMs) && /(?:^|\/)\.manifest\.json$/i.test(relPath)) {
           continue;
         }
-        if (Number.isFinite(sinceMs)) {
+        if (!full && Number.isFinite(sinceMs)) {
           try {
             if (fs.statSync(absPath).mtimeMs <= sinceMs) continue;
           } catch {
@@ -219,13 +236,14 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
         } catch {}
       }
       if (wanted && !wanted.has(courseId)) continue;
+      const full = fullCourseSet ? fullCourseSet.has(courseId) : !Number.isFinite(sinceMs);
 
       const courseEntries: { absPath: string; relPath: string }[] = [];
-      collectCourseFiles(courseFolder, `courses/${courseId}`, courseEntries);
+      collectCourseFiles(courseFolder, `courses/${courseId}`, courseEntries, full);
       if (courseEntries.length === 0) {
         continue; // incremental sync: nothing changed in this course
       }
-      if (Number.isFinite(sinceMs)) {
+      if (!full && Number.isFinite(sinceMs)) {
         const manifestPath = path.join(courseFolder, '.manifest.json');
         if (fs.existsSync(manifestPath)) {
           courseEntries.unshift({
@@ -272,6 +290,7 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
 
       (async () => {
         try {
+          let lastCourse: string | null = null;
           for (let i = 0; i < fileList.length; i++) {
             const { absPath, relPath } = fileList[i];
             const data =
@@ -284,6 +303,21 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
               : new ZipDeflate(relPath, { level: textDeflateLevel });
             zip.add(file);
             file.push(data, true);
+
+            if (options.onProgress) {
+              const courseId = relPath.startsWith('courses/') ? relPath.split('/')[1] ?? null : null;
+              if (courseId !== lastCourse || i % 20 === 0) {
+                if (courseId && courseId !== lastCourse) {
+                  lastCourse = courseId;
+                }
+                options.onProgress({
+                  courseId,
+                  current: i + 1,
+                  total: totalFiles,
+                  currentFile: relPath
+                });
+              }
+            }
 
             // Yield regularly so concurrent server work is never blocked.
             if (i % 20 === 0) await new Promise((r) => setTimeout(r, 0));

@@ -149,31 +149,56 @@ function scheduleFlush(courseId: string): void {
   );
 }
 
+const inflightFlushes = new Map<string, Promise<void>>();
+
 async function flush(courseId: string): Promise<void> {
   const id = courseId.toLowerCase();
-  const queue = pendingUpserts.get(id);
-  if (!queue || queue.size === 0) return;
-  const upserts = Array.from(queue.values());
-  queue.clear();
-  try {
-    const url = id === 'library' ? '/api/library/annotations' : `/api/courses/${encodeURIComponent(id)}/annotations`;
-    const res = await apiFetch(url, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ upserts })
-    });
-    if (!res.ok) throw new Error(`annotations PUT ${res.status}`);
-  } catch (err) {
-    console.warn('[Markup] Failed to persist strokes:', err);
-    // Re-queue so the next mutation (or undo) retries the batch.
-    for (const s of upserts) {
+  const existingFlush = inflightFlushes.get(id);
+  if (existingFlush) {
+    await existingFlush.catch(() => {});
+    if (pendingUpserts.get(id)?.size) {
+      return flush(courseId);
+    }
+    return;
+  }
+
+  const promise = (async () => {
+    const queue = pendingUpserts.get(id);
+    if (!queue || queue.size === 0) return;
+    const upserts = Array.from(queue.values());
+    queue.clear();
+    try {
+      const url = id === 'library' ? '/api/library/annotations' : `/api/courses/${encodeURIComponent(id)}/annotations`;
+      const res = await apiFetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ upserts })
+      });
+      if (!res.ok) throw new Error(`annotations PUT ${res.status}`);
+    } catch (err) {
+      console.warn('[Markup] Failed to persist strokes:', err);
+      // Re-queue with last-write-wins reconciliation so newer local operations
+      // (like erasures or undos) queued during the in-flight request are never
+      // overwritten by retried older stroke records.
       let requeue = pendingUpserts.get(id);
       if (!requeue) {
         requeue = new Map();
         pendingUpserts.set(id, requeue);
       }
-      requeue.set(s.id, s);
+      for (const s of upserts) {
+        const existing = requeue.get(s.id);
+        if (!existing || existing.date <= s.date) {
+          requeue.set(s.id, s);
+        }
+      }
     }
+  })();
+
+  inflightFlushes.set(id, promise);
+  try {
+    await promise;
+  } finally {
+    inflightFlushes.delete(id);
   }
 }
 
@@ -193,8 +218,10 @@ export async function loadAnnotations(courseId: string): Promise<void> {
         const body = (await res.json()) as { strokes?: unknown[] };
         const incoming = Array.isArray(body.strokes) ? body.strokes.filter(isMarkupStroke) : [];
         applyLocalUpsert(id, incoming);
+        loadedCourses.add(id);
+      } else {
+        console.warn(`[Markup] Failed to load annotations: HTTP ${res.status}`);
       }
-      loadedCourses.add(id);
     } catch (err) {
       console.warn('[Markup] Failed to load annotations:', err);
     } finally {
@@ -338,13 +365,15 @@ export function redo(courseId: string, file: string): void {
 }
 
 /** Flushes any pending batches immediately (e.g. before navigating away). */
-export function flushNow(): void {
+export async function flushNow(): Promise<void> {
+  const promises: Promise<void>[] = [];
   for (const id of Array.from(pendingUpserts.keys())) {
     const timer = flushTimers.get(id);
     if (timer) {
       clearTimeout(timer);
       flushTimers.delete(id);
     }
-    void flush(id);
+    promises.push(flush(id));
   }
+  await Promise.all(promises);
 }
