@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Check, Trash2, X, FlagTriangleRight } from 'lucide-svelte';
+  import { Check, ChevronDown, Trash2, X, FlagTriangleRight } from 'lucide-svelte';
   import {
     CHECKPOINT_COLORS,
     DEFAULT_CHECKPOINT_COLOR,
@@ -21,12 +21,15 @@
   let selectedColorId: string = $state(DEFAULT_CHECKPOINT_COLOR);
   let noteText: string = $state('');
   let isSaving: boolean = $state(false);
+  let isColorDropdownOpen: boolean = $state(false);
   let textareaEl: HTMLTextAreaElement | null = $state(null);
 
   $effect(() => {
     if (isOpen) {
       selectedColorId = checkpoint?.color || DEFAULT_CHECKPOINT_COLOR;
       noteText = checkpoint?.noteText || checkpoint?.aiAnswer || '';
+      isColorDropdownOpen = false;
+      isConfirmingDelete = false;
       setTimeout(() => {
         textareaEl?.focus();
       }, 50);
@@ -39,6 +42,10 @@
     if (!isOpen) return;
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (isColorDropdownOpen) {
+        isColorDropdownOpen = false;
+        return;
+      }
       onClose();
     } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -94,10 +101,10 @@
 
     <!-- Modal Card with Post-it styled note surface -->
     <div
-      class="relative w-full max-w-md rounded-2xl shadow-2xl border transition-colors flex flex-col overflow-hidden z-10 bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-800"
+      class="relative w-full max-w-[420px] rounded-2xl shadow-2xl border transition-colors flex flex-col z-10 bg-white dark:bg-stone-900 border-stone-200 dark:border-stone-800"
     >
       <!-- Header -->
-      <div class="flex items-center justify-between px-5 py-3.5 border-b border-stone-100 dark:border-stone-800">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-stone-100 dark:border-stone-800 rounded-t-2xl">
         <div class="flex items-center space-x-2">
           <FlagTriangleRight
             class="w-4 h-4 shrink-0 transition-colors"
@@ -121,83 +128,123 @@
       </div>
 
       <!-- EDIT FORM -->
-      <div class="p-5 space-y-4">
+      <div class="p-4 space-y-3">
         {#if checkpoint?.selection?.text}
-          <div class="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-200 italic leading-relaxed">
+          <div class="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-900 dark:text-amber-200 italic leading-relaxed">
             <span class="not-italic font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wider text-[10px] mr-1.5">Selection</span>"{checkpoint.selection.text.length > 200
               ? checkpoint.selection.text.slice(0, 200) + '…'
               : checkpoint.selection.text}"
           </div>
         {/if}
 
-        <!-- Color Picker: First set grouped together then second set grouped together -->
+        <!-- Note Header + Color Dropdown -->
         <div>
-          <div class="flex items-center justify-between mb-2">
-            <label for="color-picker-group" class="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
-              Colour
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="checkpoint-note-textarea" class="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400">
+              Note
             </label>
-            <span class="text-[11px] font-medium text-stone-400 dark:text-stone-500">
-              {activeColor.label}
-            </span>
+
+            <!-- Color Picker Dropdown -->
+            <div class="relative">
+              <button
+                type="button"
+                onclick={() => (isColorDropdownOpen = !isColorDropdownOpen)}
+                class="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/80 hover:bg-stone-100 dark:hover:bg-stone-800 text-xs font-medium text-stone-700 dark:text-stone-300 transition cursor-pointer shadow-2xs"
+                aria-haspopup="listbox"
+                aria-expanded={isColorDropdownOpen}
+                title="Choose note color"
+              >
+                <span
+                  class="w-3 h-3 rounded-full shrink-0 border border-black/10 dark:border-white/20"
+                  style="background-color: {activeColor.dot};"
+                ></span>
+                <span class="text-xs font-medium text-stone-700 dark:text-stone-200">{activeColor.label}</span>
+                <ChevronDown class="w-3 h-3 text-stone-400 transition-transform duration-150 {isColorDropdownOpen ? 'rotate-180' : ''}" />
+              </button>
+
+              {#if isColorDropdownOpen}
+                <!-- Backdrop to close on click outside -->
+                <div
+                  class="fixed inset-0 z-40 cursor-default"
+                  onclick={() => (isColorDropdownOpen = false)}
+                  aria-hidden="true"
+                ></div>
+
+                <!-- Dropdown Menu of Colors -->
+                <div
+                  class="absolute right-0 top-full mt-1.5 w-64 sm:w-72 rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-xl z-50 p-2 animate-in fade-in zoom-in-95 duration-100 select-none"
+                  role="listbox"
+                  aria-label="Note colors"
+                >
+                  <div class="grid grid-cols-2 gap-2">
+                    <!-- Set 1: Pastel Tones -->
+                    <div>
+                      <div class="px-2 py-0.5 mb-1 text-[10px] font-semibold uppercase tracking-wider text-stone-400 dark:text-stone-500">
+                        Pastel
+                      </div>
+                      <div class="space-y-0.5">
+                        {#each CHECKPOINT_COLORS.filter((c) => c.set === 1) as color (color.id)}
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={selectedColorId === color.id}
+                            onclick={() => {
+                              selectedColorId = color.id;
+                              isColorDropdownOpen = false;
+                            }}
+                            class="w-full flex items-center space-x-1.5 px-2 py-1 rounded-md text-xs transition cursor-pointer text-left {selectedColorId === color.id ? 'bg-stone-100 dark:bg-stone-800 font-semibold text-stone-900 dark:text-stone-100' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100/70 dark:hover:bg-stone-800/70'}"
+                          >
+                            <span
+                              class="w-3 h-3 rounded-full shrink-0 border border-black/10 dark:border-white/20"
+                              style="background-color: {color.dot};"
+                            ></span>
+                            <span class="truncate text-[11px]">{color.label}</span>
+                            {#if selectedColorId === color.id}
+                              <Check class="w-3 h-3 ml-auto shrink-0 text-stone-600 dark:text-stone-300" />
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
+                    </div>
+
+                    <!-- Set 2: Vibrant Tones -->
+                    <div class="border-l border-stone-100 dark:border-stone-800 pl-2">
+                      <div class="px-2 py-0.5 mb-1 text-[10px] font-semibold uppercase tracking-wider text-stone-400 dark:text-stone-500">
+                        Vibrant
+                      </div>
+                      <div class="space-y-0.5">
+                        {#each CHECKPOINT_COLORS.filter((c) => c.set === 2) as color (color.id)}
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={selectedColorId === color.id}
+                            onclick={() => {
+                              selectedColorId = color.id;
+                              isColorDropdownOpen = false;
+                            }}
+                            class="w-full flex items-center space-x-1.5 px-2 py-1 rounded-md text-xs transition cursor-pointer text-left {selectedColorId === color.id ? 'bg-stone-100 dark:bg-stone-800 font-semibold text-stone-900 dark:text-stone-100' : 'text-stone-700 dark:text-stone-300 hover:bg-stone-100/70 dark:hover:bg-stone-800/70'}"
+                          >
+                            <span
+                              class="w-3 h-3 rounded-full shrink-0 border border-black/10 dark:border-white/20"
+                              style="background-color: {color.dot};"
+                            ></span>
+                            <span class="truncate text-[11px]">{color.label}</span>
+                            {#if selectedColorId === color.id}
+                              <Check class="w-3 h-3 ml-auto shrink-0 text-stone-600 dark:text-stone-300" />
+                            {/if}
+                          </button>
+                        {/each}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              {/if}
+            </div>
           </div>
 
-          <div id="color-picker-group" class="flex flex-wrap items-center gap-2.5">
-            <!-- Set 1: Pastel Tones Group -->
-            <div class="flex items-center space-x-1.5 p-1 rounded-xl bg-stone-100/90 dark:bg-stone-800/80 border border-stone-200/80 dark:border-stone-700/80">
-              {#each CHECKPOINT_COLORS.filter((c) => c.set === 1) as color (color.id)}
-                <button
-                  type="button"
-                  onclick={() => (selectedColorId = color.id)}
-                  title={`${color.label} (Set 1)`}
-                  aria-label={color.label}
-                  class="relative w-6 h-6 rounded-full shrink-0 flex items-center justify-center transition-transform hover:scale-110 cursor-pointer focus:outline-hidden"
-                  style="background-color: {color.dot};"
-                >
-                  {#if selectedColorId === color.id}
-                    <span
-                      class="absolute -inset-1 rounded-full border-2 pointer-events-none"
-                      style="border-color: {color.dot};"
-                    ></span>
-                    <Check class="w-3.5 h-3.5 stroke-[2.8] {color.isLight ? 'text-stone-900' : 'text-white'}" />
-                  {/if}
-                </button>
-              {/each}
-            </div>
-
-            <!-- Visual Divider Between Sets -->
-            <div class="w-px h-6 bg-stone-200 dark:bg-stone-700 self-center hidden sm:block"></div>
-
-            <!-- Set 2: Vibrant Tones Group -->
-            <div class="flex items-center space-x-1.5 p-1 rounded-xl bg-stone-100/90 dark:bg-stone-800/80 border border-stone-200/80 dark:border-stone-700/80">
-              {#each CHECKPOINT_COLORS.filter((c) => c.set === 2) as color (color.id)}
-                <button
-                  type="button"
-                  onclick={() => (selectedColorId = color.id)}
-                  title={`${color.label} (Set 2)`}
-                  aria-label={color.label}
-                  class="relative w-6 h-6 rounded-full shrink-0 flex items-center justify-center transition-transform hover:scale-110 cursor-pointer focus:outline-hidden"
-                  style="background-color: {color.dot};"
-                >
-                  {#if selectedColorId === color.id}
-                    <span
-                      class="absolute -inset-1 rounded-full border-2 pointer-events-none"
-                      style="border-color: {color.dot};"
-                    ></span>
-                    <Check class="w-3.5 h-3.5 stroke-[2.8] {color.isLight ? 'text-stone-900' : 'text-white'}" />
-                  {/if}
-                </button>
-              {/each}
-            </div>
-          </div>
-        </div>
-
-        <!-- Post-It Note Text Input -->
-        <div>
-          <label for="checkpoint-note-textarea" class="block text-xs font-semibold uppercase tracking-wider text-stone-500 dark:text-stone-400 mb-1.5">
-            Note
-          </label>
+          <!-- Post-It Note Text Input -->
           <div
-            class="rounded-xl border p-3 transition-colors shadow-inner bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)]"
+            class="rounded-xl border p-2 transition-colors shadow-inner bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)]"
             style="
               --note-bg-light: {activeColor.bgLight};
               --note-bg-dark: {activeColor.bgDark};
@@ -209,7 +256,7 @@
               id="checkpoint-note-textarea"
               bind:this={textareaEl}
               bind:value={noteText}
-              rows="4"
+              rows="3"
               placeholder="Write a note at this point in the lesson..."
               class="w-full bg-transparent resize-y text-sm font-medium placeholder:text-stone-500/70 focus:outline-hidden leading-relaxed text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
               style="
@@ -218,15 +265,14 @@
               "
             ></textarea>
           </div>
-          <p class="text-[11px] text-stone-400 dark:text-stone-500 mt-1.5 flex justify-between">
-            <span>Press <kbd class="px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[10px] font-mono">⌘+Enter</kbd> to save</span>
-            <span>Position: {Math.round(checkpoint?.verticalPosition ?? 0)}px</span>
+          <p class="text-[11px] text-stone-400 dark:text-stone-500 mt-1">
+            Press <kbd class="px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-[10px] font-mono">⌘+Enter</kbd> to save
           </p>
         </div>
       </div>
 
       <!-- Footer Actions -->
-      <div class="flex items-center justify-between px-5 py-3.5 bg-stone-50 dark:bg-stone-900/80 border-t border-stone-100 dark:border-stone-800">
+      <div class="flex items-center justify-between px-4 py-2.5 bg-stone-50 dark:bg-stone-900/80 border-t border-stone-100 dark:border-stone-800 rounded-b-2xl">
         <div>
           {#if checkpoint?.id && onDelete}
             {#if isConfirmingDelete}
@@ -254,7 +300,7 @@
                 type="button"
                 onclick={handleDelete}
                 disabled={isSaving}
-                class="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
+                class="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:text-rose-700 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition cursor-pointer"
               >
                 <Trash2 class="w-3.5 h-3.5" />
                 <span>Delete</span>
@@ -268,7 +314,7 @@
             type="button"
             onclick={onClose}
             disabled={isSaving}
-            class="px-3.5 py-1.5 rounded-lg text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-800 transition cursor-pointer"
+            class="px-3 py-1.5 rounded-lg text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-800 transition cursor-pointer"
           >
             Cancel
           </button>
@@ -276,7 +322,7 @@
             type="button"
             onclick={handleSubmit}
             disabled={isSaving}
-            class="px-4 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50 hover:brightness-105 active:scale-98"
+            class="px-3.5 py-1.5 rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50 hover:brightness-105 active:scale-98"
             style="background-color: {activeColor.dot}; color: {activeColor.isLight ? '#1c1917' : '#ffffff'};"
           >
             {isSaving ? 'Saving…' : checkpoint?.id ? 'Save Changes' : 'Add Note'}
