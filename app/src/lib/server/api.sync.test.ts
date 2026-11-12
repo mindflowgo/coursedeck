@@ -168,6 +168,44 @@ describe('Sync Bundle API (/api/sync/bundle)', () => {
     expect(archive['_sync/meta.json']).toBeDefined();
   });
 
+  it('prepare honors fullCourses so aged courses still arrive complete', async () => {
+    // Age every file: an incremental prepare would skip the whole course.
+    const dayAgo = new Date(Date.now() - 86_400_000);
+    const ageAll = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        fs.utimesSync(abs, dayAgo, dayAgo);
+        if (entry.isDirectory()) ageAll(abs);
+      }
+    };
+    ageAll(testCourseDir);
+
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const req = new Request(
+      `http://127.0.0.1:3182/api/sync/bundle/prepare?courseIds=${testCourseId}&since=${encodeURIComponent(since)}&fullCourses=${testCourseId}`,
+      { method: 'POST', body: new FormData() }
+    );
+    const res = await handleApiRequest(req, new URL(req.url));
+    expect(res.status).toBe(200);
+
+    const lines = (await res.text())
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
+    const complete = lines.find((l: any) => l.type === 'complete');
+    expect(complete).toBeDefined();
+    expect(complete.courseCount).toBe(1);
+
+    const dl = new Request(`http://127.0.0.1:3182${complete.url}`, { method: 'GET' });
+    const dlRes = await handleApiRequest(dl, new URL(dl.url));
+    expect(dlRes.status).toBe(200);
+    const archive = unzipSync(new Uint8Array(await dlRes.arrayBuffer()));
+    expect(archive[`courses/${testCourseId}/01.01.lesson.md`]).toBeDefined();
+    expect(archive[`courses/${testCourseId}/assets/locker_docs/course.pdf`]).toBeDefined();
+    fs.rmSync(path.join(getDataDir(), '_sync-tmp', complete.token), { force: true });
+  });
+
   it('rejects an invalid since timestamp', async () => {
     const req = new Request(
       `http://127.0.0.1:3182/api/sync/bundle?since=not-a-date`,

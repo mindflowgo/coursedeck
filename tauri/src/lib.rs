@@ -747,6 +747,7 @@ pub fn run() {
         settings::get_setting,
         #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
         settings::set_setting,
+        settings::debug_log_append,
         courses_fs::get_lesson_bundle,
         courses_fs::read_course_doc,
         courses_fs::read_annotation_source,
@@ -780,7 +781,7 @@ pub fn run() {
         courses_fs::save_library_doc,
         courses_fs::list_library_docs,
         #[cfg(target_os = "ios")]
-        mobile::sync_fetch_bundle_zip,
+        mobile::sync_prepare_bundle,
         #[cfg(target_os = "ios")]
         mobile::sync_fetch_prepared_zip,
         pdf::pdf_get_info,

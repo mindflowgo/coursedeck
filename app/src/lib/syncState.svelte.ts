@@ -1,6 +1,7 @@
 // app/src/lib/syncState.svelte.ts
 // Reactive sync store for CourseDeck iPad Lite using Svelte 5 runes.
 
+import { debugLog } from './debugLog.svelte';
 import {
   getPendingPushPayload,
   getPendingPushAnnotations,
@@ -15,6 +16,7 @@ import {
   clearPendingPushText,
   removePendingPushAsset,
   isTauri,
+  listCachedCourses,
   saveLlmConfigLocally,
   setMeta,
   PUSH_QUEUED_EVENT,
@@ -41,6 +43,7 @@ const SYNC_LOG_MAX = 10;
 function appendSyncLog(line: string): void {
   const trimmed = line.trim();
   if (!trimmed) return;
+  debugLog(trimmed, { tag: 'sync' });
   const lines = syncState.syncLog;
   if (lines[lines.length - 1] === trimmed) return;
   lines.push(trimmed);
@@ -191,6 +194,8 @@ export async function syncFromDesktop(
     courseIds?: string[];
     /** Courses the device doesn't have yet — archived in full, ignoring `since`. */
     fullCourseIds?: string[];
+    /** Skip the pre-sync push and drop pending local writes ("replace local data"). */
+    discardPendingPush?: boolean;
     forceFullSync?: boolean;
   }
 ): Promise<void> {
@@ -216,6 +221,30 @@ export async function syncFromDesktop(
     // ISO timestamp are sent. Defaults to lastSyncedAt unless forceFullSync is requested.
     const lastSynced = await getLastSyncedAt();
     const sinceCursor = opts?.since !== undefined ? opts.since : (opts?.forceFullSync ? null : lastSynced);
+
+    // Courses this device has never received must bypass the cursor, or the
+    // desktop skips them (no file newer than the cursor → course omitted) and
+    // the sync is a silent no-op. Computed here so every sync entry point is
+    // correct by construction; callers may still override with fullCourseIds
+    // to force a full re-download of partially-synced courses.
+    appendSyncLog('Checking which courses are on this device…');
+    let fullCourseIds = opts?.fullCourseIds;
+    if (fullCourseIds === undefined) {
+      const cached = await listCachedCourses().catch(() => []);
+      const onDevice = new Set(cached.map((c) => c.id.toLowerCase()));
+      let candidates = opts?.courseIds;
+      if (!candidates && sinceCursor) {
+        const desktop = await fetchDesktopCourses(opts?.customUrl).catch(() => []);
+        candidates = desktop.map((c) => c.id);
+      }
+      fullCourseIds = (candidates ?? []).filter((id) => !onDevice.has(id.toLowerCase()));
+    }
+    if (fullCourseIds.length > 0) {
+      appendSyncLog(`${fullCourseIds.length} course(s) will download in full`);
+    } else {
+      appendSyncLog('All selected courses already on device — incremental only');
+    }
+
     if (sinceCursor) {
       params.set('since', sinceCursor);
     }
@@ -223,10 +252,8 @@ export async function syncFromDesktop(
     if (opts?.courseIds && opts.courseIds.length > 0) {
       params.set('courseIds', opts.courseIds.join(','));
     }
-    // Courses missing on this device must ignore the incremental cursor, or
-    // the bundle skips them entirely and the sync is a silent no-op.
-    if (opts?.fullCourseIds && opts.fullCourseIds.length > 0) {
-      params.set('fullCourses', opts.fullCourseIds.join(','));
+    if (fullCourseIds.length > 0) {
+      params.set('fullCourses', fullCourseIds.join(','));
     }
 
     const { getApiBaseUrl } = await import('./api');
@@ -239,14 +266,24 @@ export async function syncFromDesktop(
 
     // Unpushed local writes would be clobbered by the incoming bundle (the
     // extract blindly overwrites everything but annotations) and then dropped
-    // by clearPendingPush below — flush them to the desktop first.
+    // by clearPendingPush below — flush them to the desktop first, and abort
+    // loudly (rather than clobber silently) when the flush fails.
+    // discardPendingPush is the user's explicit "replace local data" choice.
     await refreshPendingPushCount();
-    if (syncState.pendingPushCount > 0) {
+    if (syncState.pendingPushCount > 0 && !opts?.discardPendingPush) {
+      appendSyncLog(`Pushing ${syncState.pendingPushCount} local change(s) first…`);
       try {
         await pushToDesktop();
       } catch (e) {
-        console.warn('[Sync] pre-sync push failed; local-only writes may be overwritten:', e);
+        const msg = e instanceof Error ? e.message : String(e);
+        appendSyncLog(`Push failed: ${msg}`);
+        throw new Error(
+          `Could not push ${syncState.pendingPushCount} local change(s) to the desktop (${msg}). ` +
+            'Sync was cancelled so your local changes are not lost — try again, or choose to replace local data.'
+        );
       }
+    } else if (syncState.pendingPushCount > 0) {
+      appendSyncLog(`Discarding ${syncState.pendingPushCount} local change(s) (replacing local data)`);
     }
 
     try {
@@ -258,46 +295,33 @@ export async function syncFromDesktop(
 
     const { invoke } = await import('@tauri-apps/api/core');
 
-    // Preferred flow: the desktop packs the zip server-side while we watch
-    // NDJSON progress via streamUpload, then Rust downloads the prepared
-    // archive. Falls back to the one-shot GET when the desktop predates the
-    // prepare endpoint so sync never breaks.
-    let summary: SyncZipSummary;
-    try {
-      const { streamUpload } = await import('./streamUpload');
-      const query = params.toString();
-      const prepareUrl =
-        (opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : baseUrl) +
-        '/api/sync/bundle/prepare' +
-        (query ? `?${query}` : '');
-      const prepared = await streamUpload<{
-        type?: string;
-        url?: string;
-        message?: string;
-        status?: string;
-        courseCount?: number;
-        fileCount?: number;
-        generatedAt?: string;
-      }>({
-        url: prepareUrl,
-        body: new FormData(),
-        onMessage: (msg) => {
-          if (msg.status) appendSyncLog(msg.status);
-        }
-      });
-      if (!prepared?.url) {
-        throw new Error(prepared?.message || 'Desktop did not return a prepared bundle');
-      }
-      const base = opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : baseUrl;
-      summary = await invoke<SyncZipSummary>('sync_fetch_prepared_zip', {
-        url: `${base}${prepared.url}`
-      });
-    } catch (prepareErr) {
-      console.warn('[Sync] Prepare flow unavailable, falling back to direct bundle GET:', prepareErr);
-      appendSyncLog('Downloading bundle…');
-      summary = await invoke<SyncZipSummary>('sync_fetch_bundle_zip', {
-        url: `${baseUrl}/api/sync/bundle?${params.toString()}`
-      });
+    // The desktop packs the zip server-side (streaming NDJSON progress, which
+    // the Rust command relays as `sync-progress` events we already log), then
+    // Rust downloads the prepared archive. Everything stays on the native
+    // transport — a webview XHR from the iOS custom-scheme origin can't pass
+    // the desktop's CORS allowlist, which is why streamUpload isn't used here.
+    const base = opts?.customUrl ? opts.customUrl.replace(/\/+$/, '') : baseUrl;
+    const query = params.toString();
+    appendSyncLog(`Requesting bundle from ${base || 'desktop'}…`);
+    debugLog(`prepare URL: ${base}/api/sync/bundle/prepare?${query}`, { tag: 'sync' });
+    const prepared = await invoke<{
+      url: string;
+      courseCount: number;
+      fileCount: number;
+      generatedAt: string;
+    }>('sync_prepare_bundle', {
+      url: `${base}/api/sync/bundle/prepare${query ? `?${query}` : ''}`
+    });
+    if (!prepared?.url) {
+      throw new Error('Desktop did not return a prepared bundle');
+    }
+    appendSyncLog(`Bundle ready — ${prepared.courseCount} course(s), ${prepared.fileCount} file(s)`);
+    const summary = await invoke<SyncZipSummary>('sync_fetch_prepared_zip', {
+      url: `${base}${prepared.url}`
+    });
+    appendSyncLog(`Imported ${summary.courses.length} course(s)`);
+    for (const c of summary.courses) {
+      debugLog(`${c.course_id}: ${c.files} files, ${c.assets} assets`, { tag: 'sync' });
     }
 
     if (summary.llmConfig) {
@@ -319,7 +343,7 @@ export async function syncFromDesktop(
     await clearPendingPush();
     syncState.pendingPushCount = 0;
   } catch (e) {
-    console.error('[Sync Error]', e);
+    debugLog(`Sync error: ${e instanceof Error ? e.message : String(e)}`, { tag: 'sync', level: 'error' });
     syncState.syncError = e instanceof Error ? e.message : 'Sync failed';
     appendSyncLog(`Failed: ${syncState.syncError}`);
     throw e;
@@ -354,7 +378,7 @@ async function gzipJsonPayload(data: unknown): Promise<{ body: BodyInit; isGzip:
       }
       return { body: out, isGzip: true };
     } catch (e) {
-      console.warn('[Push] CompressionStream failed, falling back to raw JSON:', e);
+      debugLog(`CompressionStream failed, sending raw JSON: ${e instanceof Error ? e.message : String(e)}`, { tag: 'push', level: 'warn' });
     }
   }
   return { body: jsonStr, isGzip: false };
@@ -441,7 +465,7 @@ export async function pushToDesktop(): Promise<{ success: boolean; results?: Rec
                 bytes = await readLockerDocBytes(courseId, entry.filename);
               } catch (err) {
                 // The local file is gone — nothing to push, drop the entry.
-                console.warn(`[Push] Skipping ${courseId}/${entry.filename} — unreadable locally:`, err);
+                debugLog(`Skipping ${courseId}/${entry.filename} — unreadable locally: ${err instanceof Error ? err.message : String(err)}`, { tag: 'push', level: 'warn' });
                 await removePendingPushAsset(courseId, entry.filename);
                 continue;
               }
@@ -479,7 +503,7 @@ export async function pushToDesktop(): Promise<{ success: boolean; results?: Rec
     syncState.serverReachable = true;
     return { success: true, results };
   } catch (e) {
-    console.error('[Push Error]', e);
+    debugLog(`Push error: ${e instanceof Error ? e.message : String(e)}`, { tag: 'push', level: 'error' });
     syncState.pushError = e instanceof Error ? e.message : 'Push failed';
     throw e;
   } finally {

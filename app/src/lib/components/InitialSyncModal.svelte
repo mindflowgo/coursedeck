@@ -206,7 +206,7 @@
         </div>
         {#if syncState.syncLog.length > 0}
           <div class="w-full space-y-0.5 max-h-24 overflow-y-auto text-left" aria-live="polite">
-            {#each syncState.syncLog.slice(-5) as line (line)}
+            {#each syncState.syncLog.slice(-5) as line}
               <p class="text-[10px] font-mono text-stone-400 dark:text-stone-500 truncate">{line}</p>
             {/each}
           </div>

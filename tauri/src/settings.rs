@@ -88,3 +88,35 @@ pub fn get_setting(app: tauri::AppHandle, key: Option<String>) -> Result<serde_j
 pub fn set_setting(app: tauri::AppHandle, key: String, value: serde_json::Value) -> Result<(), String> {
     set_setting_value(&app, key, value)
 }
+
+/// Appends a timestamped line to the debug log at the app data root
+/// (`Documents/debug.log` on iOS — visible in the Files app). Used by the
+/// webview's DebugLog() so sync and other subsystems leave a persistent
+/// on-device trail without devtools. Failures are silent: debugging must
+/// never crash the app.
+#[tauri::command]
+pub fn debug_log_append(app: tauri::AppHandle, message: String) -> Result<(), String> {
+    #[cfg(target_os = "ios")]
+    let dir = crate::mobile::base_dir(&app);
+    #[cfg(not(target_os = "ios"))]
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+
+    let path = dir.join("debug.log");
+    let now = {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Format as HH:MM:SS UTC — seconds precision is enough to order lines.
+        format!("{:02}:{:02}:{:02}", (now / 3600) % 24, (now / 60) % 60, now % 60)
+    };
+    let line = format!("{} {}\n", now, message);
+    let _ = std::fs::create_dir_all(&dir);
+    let mut file = match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(_) => return Ok(()), // no crash for logging
+    };
+    use std::io::Write as _;
+    let _ = file.write_all(line.as_bytes());
+    Ok(())
+}

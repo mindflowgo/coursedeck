@@ -27,6 +27,7 @@
     Sun,
     Moon,
     Monitor,
+    Bug,
     ZoomIn,
     Plus,
     Trash2,
@@ -46,6 +47,8 @@
   } from 'lucide-svelte';
   import { openConnectIpadModal, openScanDesktopModal } from '$lib/modalState.svelte';
   import { theme } from '$lib/theme.svelte';
+  import { debugState, debugLogBuffer, setDebuggerEnabled } from '$lib/debugLog.svelte';
+  import { toggleConsole, consoleState } from '$lib/consoleCapture.svelte';
   import { zoom } from '$lib/zoom.svelte';
   import { ZOOM_STEPS } from '$lib/zoomLevels';
   import { getResumeLastPosition, setResumeLastPosition } from '$lib/preferences';
@@ -878,6 +881,43 @@
         >
           <Monitor class="w-3.5 h-3.5" />
           <span>System</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Debugger Row -->
+    <div class="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div class="flex items-center space-x-2">
+        <Bug class="w-3.5 h-3.5 text-stone-600 dark:text-stone-400 shrink-0" />
+        <div>
+          <span class="font-medium text-stone-900 dark:text-stone-100">Debugger</span>
+          <span class="text-[11px] text-stone-400 dark:text-stone-500 ml-1.5">
+            {debugState.enabled ? 'Console mirror on — DebugLog lines go to console + debug.log' : 'DebugLog lines go to debug.log only'}
+          </span>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 self-start sm:self-auto">
+        {#if debugState.enabled}
+          <button
+            type="button"
+            onclick={() => toggleConsole()}
+            class="px-2.5 py-1 rounded text-xs font-medium border border-stone-200 dark:border-stone-700 text-stone-700 dark:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
+          >
+            View console ({consoleState.entries.length + debugLogBuffer.lines.length})
+          </button>
+        {/if}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={debugState.enabled}
+          onclick={() => setDebuggerEnabled(!debugState.enabled)}
+          class="relative w-9 h-5 rounded-full transition cursor-pointer shrink-0 {debugState.enabled
+            ? 'bg-stone-900 dark:bg-stone-100'
+            : 'bg-stone-200 dark:bg-stone-700'}"
+        >
+          <span
+            class="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white dark:bg-stone-900 shadow transition-transform {debugState.enabled ? 'translate-x-4' : ''}"
+          ></span>
         </button>
       </div>
     </div>

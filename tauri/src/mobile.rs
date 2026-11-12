@@ -129,18 +129,95 @@ fn merge_annotations_lww(existing_path: &std::path::Path, incoming: &str) -> Str
         .unwrap_or_else(|_| "[]".into())
 }
 
-/// Downloads the desktop's zip sync bundle and extracts `courses/<id>/**`
-/// straight into Documents/courses. The whole payload stays in Rust: no JSON,
-/// no base64, no webview round-trips.
-#[tauri::command]
-pub async fn sync_fetch_bundle_zip(app: tauri::AppHandle, url: String) -> Result<SyncZipSummary, String> {
-    let bytes = download_with_progress(&app, &url).await?;
-    extract_sync_zip(&app, &bytes)
+/// Final line of a successful `/api/sync/bundle/prepare` NDJSON stream.
+#[derive(serde::Serialize)]
+pub struct PreparedBundle {
+    pub url: String,
+    #[serde(rename = "courseCount")]
+    pub course_count: u64,
+    #[serde(rename = "fileCount")]
+    pub file_count: u64,
+    #[serde(rename = "generatedAt")]
+    pub generated_at: String,
 }
 
-/// Same as `sync_fetch_bundle_zip`, but for a bundle the desktop already
-/// packed to disk via `/api/sync/bundle/prepare` — the webview watched the
-/// packing progress there and hands us the download URL.
+/// POSTs to the desktop's `/api/sync/bundle/prepare` and relays its NDJSON
+/// progress lines as `sync-progress` events, returning the final `complete`
+/// payload. Runs in Rust (reqwest) rather than a webview XHR: the iOS webview's
+/// custom-scheme origin (`tauri://localhost`) can't pass the sidecar's CORS
+/// allowlist, which is why a streamUpload/XHR-based prepare fails silently on
+/// device while every smartFetch request works.
+#[tauri::command]
+pub async fn sync_prepare_bundle(app: tauri::AppHandle, url: String) -> Result<PreparedBundle, String> {
+    let client = tauri_plugin_http::reqwest::Client::new();
+    let mut response = client
+        .post(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach the desktop app ({e}). Is it running on the same Wi-Fi?"))?;
+    if !response.status().is_success() {
+        return Err(format!("Desktop returned HTTP {}", response.status()));
+    }
+
+    let mut buffer = String::new();
+    let mut prepared: Option<PreparedBundle> = None;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("Lost connection to the desktop while packing ({e})"))?
+    {
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        // Process only complete lines; the final line arrives without one only
+        // if the stream ends, handled after the loop.
+        while let Some(pos) = buffer.find('\n') {
+            let line: String = buffer.drain(..=pos).collect();
+            let Some(value) = serde_json::from_str::<serde_json::Value>(line.trim()).ok() else {
+                continue;
+            };
+            if value.get("success") == Some(&serde_json::Value::Bool(false)) {
+                return Err(
+                    value
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Desktop failed to pack the sync bundle")
+                        .to_string(),
+                );
+            }
+            match value.get("type").and_then(|v| v.as_str()) {
+                Some("progress") => {
+                    if let Some(status) = value.get("status").and_then(|v| v.as_str()) {
+                        emit_sync_progress(&app, status.to_string());
+                    }
+                }
+                Some("complete") => {
+                    prepared = Some(PreparedBundle {
+                        url: value
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        course_count: value.get("courseCount").and_then(|v| v.as_u64()).unwrap_or(0),
+                        file_count: value.get("fileCount").and_then(|v| v.as_u64()).unwrap_or(0),
+                        generated_at: value
+                            .get("generatedAt")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    prepared.ok_or_else(|| "Desktop finished packing but never returned the bundle".to_string())
+}
+
+/// Downloads the desktop's prepared sync bundle (`/api/sync/bundle/download`)
+/// and extracts `courses/<id>/**` straight into Documents/courses. The whole
+/// payload stays in Rust: no JSON, no base64, no webview round-trips. The
+/// bundle itself is packed first by `POST /api/sync/bundle/prepare`, driven by
+/// `sync_prepare_bundle`.
 #[tauri::command]
 pub async fn sync_fetch_prepared_zip(app: tauri::AppHandle, url: String) -> Result<SyncZipSummary, String> {
     let bytes = download_with_progress(&app, &url).await?;

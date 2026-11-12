@@ -41,7 +41,9 @@ export function createDataBackupZipStream(options: BackupOptions = {}): BackupZi
       const absPath = path.join(absDir, entry.name);
       const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
 
-      // Skip raw zip packages in _backup if excluded
+      // Skip raw zip packages in _backup if excluded; never archive prepared
+      // sync bundles (they can carry LLM keys and are device-transient).
+      if (entry.name === '_sync-tmp') continue;
       if (!includeRawArchives && entry.name === '_backup') {
         continue;
       }
@@ -236,7 +238,9 @@ export function createSyncBundleZipStream(options: SyncBundleZipOptions = {}): {
         } catch {}
       }
       if (wanted && !wanted.has(courseId)) continue;
-      const full = fullCourseSet ? fullCourseSet.has(courseId) : !Number.isFinite(sinceMs);
+      // No cursor = full sync; with a cursor, courses listed in fullCourses
+      // ignore it (device never received them / explicit full re-download).
+      const full = !Number.isFinite(sinceMs) || Boolean(fullCourseSet?.has(courseId));
 
       const courseEntries: { absPath: string; relPath: string }[] = [];
       collectCourseFiles(courseFolder, `courses/${courseId}`, courseEntries, full);
@@ -355,6 +359,7 @@ export function createDataBackupZip(options: BackupOptions = {}): {
     for (const entry of fs.readdirSync(absDir, { withFileTypes: true })) {
       const absPath = path.join(absDir, entry.name);
       const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+      if (entry.name === '_sync-tmp') continue;
       if (!includeRawArchives && entry.name === '_backup') continue;
       if (entry.isDirectory()) {
         addTree(absPath, relPath);

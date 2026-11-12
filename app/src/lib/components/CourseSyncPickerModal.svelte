@@ -4,7 +4,6 @@
   import {
     syncState,
     syncFromDesktop,
-    pushToDesktop,
     fetchDesktopCourses,
     type DesktopCourseSummary
   } from '$lib/syncState.svelte';
@@ -19,6 +18,9 @@
   let syncError = $state<string | null>(null);
   let selected = $state<Record<string, boolean>>({});
   let onDevice = $state<Set<string>>(new Set());
+  // Repair escape hatch: force every selected course to be archived in full,
+  // fixing partially-synced copies (e.g. synced before the fullCourses fix).
+  let fullRedownload = $state(false);
 
   const selectedIds = $derived(Object.entries(selected).filter(([, v]) => v).map(([id]) => id));
   const allSelected = $derived(
@@ -61,27 +63,27 @@
   async function handleSync() {
     if (syncState.isSyncing || selectedIds.length === 0) return;
 
+    // If there are unpushed local writes, syncFromDesktop pushes them (with
+    // log lines) before pulling and aborts visibly if the push fails — so the
+    // answer here only decides between "push first" and "discard local edits".
+    let discardPendingPush = false;
     if (syncState.pendingPushCount > 0) {
       const proceed = await confirmDialog(
         `You have ${syncState.pendingPushCount} note or checkpoint change(s) that haven't been pushed to your computer yet.\n\nSyncing now will replace local data with the computer's current copy. Would you like to push your changes first?`,
         'Sync Warning'
       );
-      if (proceed) {
-        try {
-          await pushToDesktop();
-        } catch {
-          return;
-        }
-      }
+      discardPendingPush = !proceed;
     }
 
     syncError = null;
     try {
-      // Courses not yet on this device must arrive complete — otherwise the
-      // incremental `since` cursor silently skips their (unchanged) files.
-      const onDeviceLower = new Set(Array.from(onDevice).map((id) => id.toLowerCase()));
-      const fullCourseIds = selectedIds.filter((id) => !onDeviceLower.has(id.toLowerCase()));
-      await syncFromDesktop({ courseIds: selectedIds, fullCourseIds });
+      // syncFromDesktop detects missing courses on its own; fullRedownload
+      // overrides that with "archive every selected course in full".
+      await syncFromDesktop({
+        courseIds: selectedIds,
+        fullCourseIds: fullRedownload ? selectedIds : undefined,
+        discardPendingPush
+      });
       onClose();
       if (typeof window !== 'undefined') {
         window.location.reload();
@@ -208,13 +210,29 @@
         {#if syncError}
           <p class="text-[11px] text-red-600 dark:text-red-400 text-center">{syncError}</p>
         {/if}
-        {#if syncState.isSyncing && syncState.syncLog.length > 0}
+        {#if syncState.syncLog.length > 0}
           <div class="space-y-0.5 max-h-28 overflow-y-auto" aria-live="polite">
-            {#each syncState.syncLog.slice(-5) as line (line)}
+            {#each syncState.syncLog.slice(-5) as line}
               <p class="text-[10px] font-mono text-stone-400 dark:text-stone-500 truncate">{line}</p>
             {/each}
           </div>
+        {:else if syncState.isSyncing}
+          <div aria-live="polite">
+            <p class="text-[10px] font-mono text-stone-400 dark:text-stone-500">Starting sync…</p>
+          </div>
         {/if}
+        <button
+          type="button"
+          onclick={() => (fullRedownload = !fullRedownload)}
+          disabled={syncState.isSyncing}
+          class="w-full text-center text-[11px] {fullRedownload
+            ? 'text-amber-600 dark:text-amber-400 font-medium'
+            : 'text-stone-400 dark:text-stone-500 hover:text-stone-600 dark:hover:text-stone-300'} underline underline-offset-2 transition cursor-pointer disabled:opacity-50"
+        >
+          {fullRedownload
+            ? 'Full re-download enabled — selected courses will be fetched completely'
+            : 'Something missing? Re-download selected courses in full'}
+        </button>
         <div class="flex space-x-2">
           <button
             type="button"
@@ -233,6 +251,9 @@
             {#if syncState.isSyncing}
               <RefreshCw class="w-4 h-4 animate-spin" />
               <span>Syncing...</span>
+            {:else if fullRedownload}
+              <Download class="w-4 h-4" />
+              <span>Re-download {selectedIds.length} course{selectedIds.length === 1 ? '' : 's'} (full)</span>
             {:else}
               <Download class="w-4 h-4" />
               <span>Sync {selectedIds.length} course{selectedIds.length === 1 ? '' : 's'}</span>

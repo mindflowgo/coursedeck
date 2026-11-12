@@ -2,6 +2,7 @@
 <script lang="ts">
   import {
     syncFromDesktop,
+    syncState,
     fetchDesktopCourses,
     type DesktopCourseSummary
   } from '$lib/syncState.svelte';
@@ -449,6 +450,16 @@
               Streaming ZIP archive & extracting offline files natively
             </p>
           </div>
+          {#if syncState.syncLog.length > 0}
+            <div
+              class="w-full max-w-xs mx-auto max-h-28 overflow-y-auto rounded-md bg-stone-100/70 dark:bg-stone-800/50 px-2 py-1.5"
+              aria-live="polite"
+            >
+              {#each syncState.syncLog.slice(-5) as line}
+                <p class="font-mono text-[10px] leading-4 text-stone-500 dark:text-stone-400 truncate">{line}</p>
+              {/each}
+            </div>
+          {/if}
         </div>
 
       <!-- State: Done -->

@@ -76,6 +76,13 @@ export { streamUpload, resolveUploadUrl, type StreamUploadOptions, type StreamUp
  *    - Even for non-loopback calls, passing large binary/multipart payloads through Tauri's IPC bridge
  *      triggers the same devastating array serialization penalty.
  *
+ *    RULES 2 & 3 APPLY TO DESKTOP TAURI ONLY. Mobile has no local sidecar, and
+ *    its webview transport (custom-scheme origin `tauri://localhost`) cannot
+ *    reach the LAN desktop — WebKit rejects those requests with a generic
+ *    "Load failed". On mobile every remote request goes native (rule 4),
+ *    including pushes with binary bodies; the IPC array-serialization cost is
+ *    the price of actually being able to sync.
+ *
  * 4. External Cross-Origin & Remote LAN in Tauri -> 'native' (tauriFetch)
  *    - e.g. Cloud LLM providers (OpenAI, DeepSeek, Anthropic, Gemini, OpenRouter) or iPad-to-desktop LAN sync.
  *    WHY: WebKit / Safari enforce strict CORS and App Transport Security (ATS). Third-party LLM APIs
@@ -109,27 +116,30 @@ export function resolveFetchTransport(url: string, init?: RequestInit): FetchTra
     return 'browser';
   }
 
-  // 2. Local sidecar communication (loopback TCP):
-  //    Direct loopback TCP socket avoids Tauri IPC JSON-RPC bridge overhead, UI thread locking,
-  //    and message size limits. Bun sidecar has CORS enabled.
-  const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i.test(trimmedUrl);
-  if (isLocalBackend) {
-    return 'browser';
-  }
+  // 2 & 3 (loopback sidecar, binary bodies) are desktop-only strategies.
+  if (isTauriDesktop()) {
+    // 2. Local sidecar communication (loopback TCP):
+    //    Direct loopback TCP socket avoids Tauri IPC JSON-RPC bridge overhead, UI thread locking,
+    //    and message size limits. Bun sidecar has CORS enabled.
+    const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/i.test(trimmedUrl);
+    if (isLocalBackend) {
+      return 'browser';
+    }
 
-  // 3. High-payload bodies:
-  //    Avoid serializing multi-megabyte buffers into JSON arrays across Tauri IPC.
-  const body = init?.body;
-  const isBinaryOrForm =
-    body != null &&
-    ((typeof FormData !== 'undefined' && body instanceof FormData) ||
-      (typeof Blob !== 'undefined' && body instanceof Blob) ||
-      (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) ||
-      (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(body)) ||
-      (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream));
+    // 3. High-payload bodies:
+    //    Avoid serializing multi-megabyte buffers into JSON arrays across Tauri IPC.
+    const body = init?.body;
+    const isBinaryOrForm =
+      body != null &&
+      ((typeof FormData !== 'undefined' && body instanceof FormData) ||
+        (typeof Blob !== 'undefined' && body instanceof Blob) ||
+        (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) ||
+        (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(body)) ||
+        (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream));
 
-  if (isBinaryOrForm) {
-    return 'browser';
+    if (isBinaryOrForm) {
+      return 'browser';
+    }
   }
 
   // 4. External cross-origin requests in Tauri (Cloud LLMs, remote iPad-to-desktop LAN sync):

@@ -640,28 +640,36 @@ describe('smartFetch & resolveFetchTransport routing', () => {
     expect(resolveFetchTransport('')).toBe('browser');
   });
 
-  it('routes local loopback sidecar backend traffic to browser window.fetch for maximum zero-IPC performance', () => {
-    expect(resolveFetchTransport('http://127.0.0.1:3182/api/courses')).toBe('browser');
-    expect(resolveFetchTransport('http://127.0.0.1:3182/health')).toBe('browser');
-    expect(resolveFetchTransport('http://localhost:3182/api/sync')).toBe('browser');
-    expect(resolveFetchTransport('http://[::1]:3182/health')).toBe('browser');
-    expect(resolveFetchTransport('http://127.0.0.1')).toBe('browser');
-    expect(resolveFetchTransport('http://localhost')).toBe('browser');
+  it('on mobile, even loopback goes native — there is no local sidecar on a device', () => {
+    expect(resolveFetchTransport('http://127.0.0.1:3182/api/courses')).toBe('native');
+    expect(resolveFetchTransport('http://127.0.0.1:3182/health')).toBe('native');
+    expect(resolveFetchTransport('http://localhost:3182/api/sync')).toBe('native');
+    expect(resolveFetchTransport('http://[::1]:3182/health')).toBe('native');
   });
 
-  it('routes heavy or binary request bodies to browser window.fetch to avoid IPC array serialization lockup', () => {
+  it('on mobile, binary bodies go native — the webview transport cannot reach the LAN desktop', () => {
+    // Desktop keeps the zero-IPC window.fetch strategy for heavy bodies, but
+    // mobile would be stranded: WKWebView rejects LAN http from the custom
+    // scheme origin ("Load failed"), which silently broke every iPad push.
     const externalUrl = 'https://api.openai.com/v1/audio/transcriptions';
     const form = new FormData();
-    expect(resolveFetchTransport(externalUrl, { body: form })).toBe('browser');
+    expect(resolveFetchTransport(externalUrl, { body: form })).toBe('native');
 
     const blob = new Blob(['data'], { type: 'application/octet-stream' });
-    expect(resolveFetchTransport(externalUrl, { body: blob })).toBe('browser');
+    expect(resolveFetchTransport(externalUrl, { body: blob })).toBe('native');
 
     const buffer = new ArrayBuffer(64);
-    expect(resolveFetchTransport(externalUrl, { body: buffer })).toBe('browser');
+    expect(resolveFetchTransport(externalUrl, { body: buffer })).toBe('native');
 
     const uint8 = new Uint8Array([1, 2, 3]);
-    expect(resolveFetchTransport(externalUrl, { body: uint8 })).toBe('browser');
+    expect(resolveFetchTransport(externalUrl, { body: uint8 })).toBe('native');
+
+    expect(
+      resolveFetchTransport('http://192.168.1.150:3182/api/sync/push', {
+        method: 'POST',
+        body: new Uint8Array([1, 2, 3])
+      })
+    ).toBe('native');
   });
 
   it('routes external cross-origin and remote LAN requests in Tauri to native tauriFetch', () => {

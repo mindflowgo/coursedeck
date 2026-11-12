@@ -37,7 +37,7 @@ export function isTauri(): boolean {
   );
 }
 
-/** Result of the iPad's native zip sync (`sync_fetch_bundle_zip`). */
+/** Result of the iPad's native zip sync (`sync_fetch_prepared_zip`). */
 export interface SyncZipSummary {
   generatedAt: string;
   courses: Array<{ course_id: string; files: number; assets: number }>;

@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { CourseService, type SchedulePayloadStats } from './courses';
 import { LibraryService } from './library';
@@ -674,8 +676,10 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       return json({ courses });
     }
 
-    // ---- /api/sync/bundle (iPad offline sync: streaming zip archive) ----
-    if (pathname === '/api/sync/bundle' && method === 'GET') {
+    // ---- /api/sync/bundle* (iPad offline sync) ----
+    // Shared param parsing + sync-meta payload so the GET and prepare routes
+    // can't drift apart.
+    if (pathname === '/api/sync/bundle' || pathname === '/api/sync/bundle/prepare') {
       const courseIdsParam = url.searchParams.get('courseIds');
       const requestedIds = courseIdsParam
         ? courseIdsParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
@@ -693,171 +697,186 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       const generatedAt = new Date().toISOString();
       const includeLlmKeys = url.searchParams.get('includeLlmKeys') === 'true';
       const llmStore = LLMService.loadStore();
-
-      const { stream, courseCount, fileCount } = createSyncBundleZipStream({
-        courseIds: requestedIds,
-        fullCourses: fullCourseIds,
-        since: sinceParam,
-        syncMeta: {
-          version: 1,
-          generatedAt,
-          llmConfig: {
-            version: llmStore.version,
-            activeId: llmStore.activeId,
-            cards: llmStore.cards.map((card) => ({
-              ...card,
-              apiKey: includeLlmKeys ? card.apiKey : undefined
-            }))
-          },
-          prompts: PromptService.listPrompts(),
-          groups: GroupService.getAllGroups()
-        }
-      });
-
-      return new Response(stream, {
-        headers: {
-          'Content-Type': 'application/zip',
-          'Content-Disposition': `attachment; filename="coursedeck-sync-${generatedAt}.zip"`,
-          'X-Sync-Generated-At': generatedAt,
-          'X-Sync-Courses': String(courseCount),
-          'X-Sync-Files': String(fileCount),
-          'Cache-Control': 'no-store'
-        }
-      });
-    }
-
-    // ---- /api/sync/bundle/prepare (pack the iPad sync zip server-side while
-    // streaming NDJSON packing progress; the device then downloads the file) ----
-    if (pathname === '/api/sync/bundle/prepare' && method === 'POST') {
-      const courseIdsParam = url.searchParams.get('courseIds');
-      const requestedIds = courseIdsParam
-        ? courseIdsParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
-        : null;
-      const fullCoursesParam = url.searchParams.get('fullCourses');
-      const fullCourseIds = fullCoursesParam
-        ? fullCoursesParam.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
-        : null;
-
-      const sinceParam = url.searchParams.get('since');
-      if (sinceParam && Number.isNaN(Date.parse(sinceParam))) {
-        return error(400, 'Invalid "since" timestamp — use ISO 8601 (e.g. 2026-10-27T12:00:00Z)');
-      }
-
-      const generatedAt = new Date().toISOString();
-      const includeLlmKeys = url.searchParams.get('includeLlmKeys') === 'true';
-      const llmStore = LLMService.loadStore();
-      const token = `sync-${generatedAt.replace(/[:.]/g, '-')}.zip`;
-      const tmpDir = safeJoin(getDataDir(), '_sync-tmp');
-      fs.mkdirSync(tmpDir, { recursive: true });
-      // Best-effort cleanup of stale prepare files (older than 1 hour).
-      try {
-        const cutoff = Date.now() - 60 * 60 * 1000;
-        for (const old of fs.readdirSync(tmpDir)) {
-          const oldPath = safeJoin(tmpDir, old);
-          try {
-            if (fs.statSync(oldPath).mtimeMs < cutoff) fs.unlinkSync(oldPath);
-          } catch {}
-        }
-      } catch {}
-
-      // The zip pump runs while the NDJSON reader drains the stream, so
-      // per-course packing lines are queued here and flushed after each read.
-      const packingLines: string[] = [];
-      const { stream, courseCount, fileCount } = createSyncBundleZipStream({
-        courseIds: requestedIds,
-        fullCourses: fullCourseIds,
-        since: sinceParam,
-        onProgress: (info) => {
-          if (info.courseId) {
-            packingLines.push(`Packing ${info.courseId} — ${info.current}/${info.total} files`);
-          }
+      const buildSyncMeta = () => ({
+        version: 1,
+        generatedAt,
+        llmConfig: {
+          version: llmStore.version,
+          activeId: llmStore.activeId,
+          cards: llmStore.cards.map((card) => ({
+            ...card,
+            apiKey: includeLlmKeys ? card.apiKey : undefined
+          }))
         },
-        syncMeta: {
-          version: 1,
-          generatedAt,
-          llmConfig: {
-            version: llmStore.version,
-            activeId: llmStore.activeId,
-            cards: llmStore.cards.map((card) => ({
-              ...card,
-              apiKey: includeLlmKeys ? card.apiKey : undefined
-            }))
-          },
-          prompts: PromptService.listPrompts(),
-          groups: GroupService.getAllGroups()
-        }
+        prompts: PromptService.listPrompts(),
+        groups: GroupService.getAllGroups()
       });
 
-      const zipPath = safeJoin(tmpDir, token);
-      const ndjson = new ReadableStream<Uint8Array>({
-        async start(controller) {
-          const encoder = new TextEncoder();
-          const send = (data: unknown) => {
-            try {
-              controller.enqueue(encoder.encode(JSON.stringify(data) + '\n'));
-            } catch {}
-          };
+      // ---- GET /api/sync/bundle: stream the zip directly (lite-PWA
+      // satellites download it from the paired desktop over LAN) ----
+      if (method === 'GET') {
+        const { stream, courseCount, fileCount } = createSyncBundleZipStream({
+          courseIds: requestedIds,
+          fullCourses: fullCourseIds,
+          since: sinceParam,
+          syncMeta: buildSyncMeta()
+        });
 
-          try {
-            send({ type: 'progress', status: `Packing ${courseCount} course(s), ${fileCount} file(s)...` });
+        return new Response(stream, {
+          headers: {
+            'Content-Type': 'application/zip',
+            'Content-Disposition': `attachment; filename="coursedeck-sync-${generatedAt}.zip"`,
+            'X-Sync-Generated-At': generatedAt,
+            'X-Sync-Courses': String(courseCount),
+            'X-Sync-Files': String(fileCount),
+            'Cache-Control': 'no-store'
+          }
+        });
+      }
+
+      // ---- POST /api/sync/bundle/prepare: pack the zip server-side while
+      // streaming NDJSON packing progress; the device then downloads the file ----
+      if (method === 'POST') {
+        const token = `sync-${randomUUID()}.zip`;
+        const tmpDir = safeJoin(getDataDir(), '_sync-tmp');
+        fs.mkdirSync(tmpDir, { recursive: true });
+        // Best-effort cleanup of stale prepare files (older than 1 hour).
+        try {
+          const cutoff = Date.now() - 60 * 60 * 1000;
+          for (const old of fs.readdirSync(tmpDir)) {
+            const oldPath = safeJoin(tmpDir, old);
+            try {
+              if (fs.statSync(oldPath).mtimeMs < cutoff) fs.unlinkSync(oldPath);
+            } catch {}
+          }
+        } catch {}
+
+        // The zip pump runs while the NDJSON reader drains the stream, so
+        // per-course packing lines are queued here and flushed after each read.
+        const packingLines: string[] = [];
+        const { stream, courseCount, fileCount } = createSyncBundleZipStream({
+          courseIds: requestedIds,
+          fullCourses: fullCourseIds,
+          since: sinceParam,
+          onProgress: (info) => {
+            if (info.courseId) {
+              packingLines.push(`Packing ${info.courseId} — ${info.current}/${info.total} files`);
+            }
+          },
+          syncMeta: buildSyncMeta()
+        });
+
+        const zipPath = safeJoin(tmpDir, token);
+        const ndjson = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            const encoder = new TextEncoder();
+            const send = (data: unknown) => {
+              try {
+                controller.enqueue(encoder.encode(JSON.stringify(data) + '\n'));
+              } catch {}
+            };
+
             const out = fs.createWriteStream(zipPath);
-            const reader = stream.getReader();
-            let bytes = 0;
-            let lastBytes = 0;
-            const waitForDrain = () =>
-              new Promise<void>((resolve) => out.once('drain', () => resolve()));
-            while (true) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              bytes += value?.length || 0;
-              if (!out.write(value)) await waitForDrain();
+            // Attach immediately: a disk-full/permission error mid-pump must
+            // not surface as an unhandled 'error' (crashes the sidecar) and
+            // the drain wait below must be interruptible.
+            let writeFailure: Error | null = null;
+            out.on('error', (err) => {
+              writeFailure = err;
+            });
+
+            try {
+              send({ type: 'progress', status: `Packing ${courseCount} course(s), ${fileCount} file(s)...` });
+              const reader = stream.getReader();
+              let bytes = 0;
+              let lastBytes = 0;
+
+              while (true) {
+                if (writeFailure) throw writeFailure;
+                const { done, value } = await reader.read();
+                if (done) break;
+                bytes += value?.length || 0;
+                if (!out.write(value)) {
+                  await new Promise<void>((resolve, reject) => {
+                    const cleanup = () => {
+                      out.off('drain', onDrain);
+                      out.off('error', onError);
+                    };
+                    const onDrain = () => {
+                      cleanup();
+                      resolve();
+                    };
+                    const onError = (err: Error) => {
+                      cleanup();
+                      reject(err);
+                    };
+                    out.once('drain', onDrain);
+                    out.once('error', onError);
+                  });
+                }
+                while (packingLines.length > 0) {
+                  send({ type: 'progress', status: packingLines.shift() });
+                }
+                if (bytes - lastBytes > 1024 * 1024) {
+                  lastBytes = bytes;
+                  send({ type: 'progress', status: `Packed ${(bytes / 1024 / 1024).toFixed(1)} MB` });
+                }
+              }
+
               while (packingLines.length > 0) {
                 send({ type: 'progress', status: packingLines.shift() });
               }
-              if (bytes - lastBytes > 1024 * 1024) {
-                lastBytes = bytes;
-                send({ type: 'progress', status: `Packed ${(bytes / 1024 / 1024).toFixed(1)} MB` });
-              }
-            }
-            await new Promise<void>((resolve, reject) => {
-              out.end(() => resolve());
-              out.on('error', reject);
-            });
-            send({ type: 'progress', status: `Packed ${(bytes / 1024 / 1024).toFixed(1)} MB total` });
-            send({
-              type: 'complete',
-              token,
-              url: `/api/sync/bundle/download?token=${encodeURIComponent(token)}`,
-              courseCount,
-              fileCount,
-              generatedAt
-            });
-            controller.close();
-          } catch (err) {
-            console.error('[SyncServer] Prepare failed:', err);
-            try {
-              fs.unlinkSync(zipPath);
-            } catch {}
-            send({
-              type: 'error',
-              success: false,
-              message: err instanceof Error ? err.message : 'Failed to pack sync bundle'
-            });
-            controller.close();
-          }
-        }
-      });
 
-      return new Response(ndjson, {
-        headers: {
-          'Content-Type': 'application/x-ndjson',
-          'Cache-Control': 'no-cache, no-store',
-          'X-Accel-Buffering': 'no'
-        }
-      });
+              await new Promise<void>((resolve, reject) => {
+                out.end(() => resolve());
+                out.once('error', reject);
+              });
+
+              send({ type: 'progress', status: `Packed ${(bytes / 1024 / 1024).toFixed(1)} MB total` });
+              send({
+                type: 'complete',
+                token,
+                url: `/api/sync/bundle/download?token=${encodeURIComponent(token)}`,
+                courseCount,
+                fileCount,
+                generatedAt
+              });
+              controller.close();
+            } catch (err) {
+              console.error('[SyncServer] Prepare failed:', err);
+              if (!out.closed) out.destroy();
+              await new Promise<void>((resolve) => {
+                if (out.closed) return resolve();
+                out.once('close', () => resolve());
+              });
+              try {
+                fs.unlinkSync(zipPath);
+              } catch {}
+              send({
+                type: 'error',
+                success: false,
+                message: err instanceof Error ? err.message : 'Failed to pack sync bundle'
+              });
+              try {
+                controller.close();
+              } catch {}
+            }
+          }
+        });
+
+        return new Response(ndjson, {
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+            'Cache-Control': 'no-cache, no-store',
+            'X-Accel-Buffering': 'no'
+          }
+        });
+      }
     }
 
-    // ---- /api/sync/bundle/download (fetch a prepared sync bundle by token) ----
+    // ---- /api/sync/bundle/download (fetch a prepared sync bundle by token;
+    // streamed, with Content-Length, and deleted after this one download so
+    // bundles with LLM keys don't linger on disk) ----
     if (pathname === '/api/sync/bundle/download' && method === 'GET') {
       const token = url.searchParams.get('token') || '';
       if (!/^sync-[\w-]+\.zip$/.test(token)) {
@@ -867,10 +886,16 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
       if (!fs.existsSync(zipPath)) {
         return error(404, 'Prepared sync bundle not found or expired — restart the sync');
       }
-      return new Response(fs.readFileSync(zipPath), {
+      const stat = fs.statSync(zipPath);
+      const file = fs.createReadStream(zipPath);
+      file.once('close', () => {
+        void fs.promises.unlink(zipPath).catch(() => {});
+      });
+      return new Response(Readable.toWeb(file) as unknown as ReadableStream<Uint8Array>, {
         headers: {
           'Content-Type': 'application/zip',
           'Content-Disposition': `attachment; filename="${token}"`,
+          'Content-Length': String(stat.size),
           'Cache-Control': 'no-store'
         }
       });
@@ -1925,6 +1950,21 @@ export async function handleApiRequest(req: Request, url: URL): Promise<Response
         } catch (err) {
           return error(500, err instanceof Error ? err.message : 'Failed to save theme setting');
         }
+      }
+    }
+
+    // ---- /api/debug-log (webview DebugLog fallback: append to the desktop's
+    // data-root debug.log when a browser/PWA client has no Tauri file access) ----
+    if (pathname === '/api/debug-log' && method === 'POST') {
+      try {
+        const body = (await req.json()) as { message?: unknown };
+        if (typeof body.message === 'string') {
+          const line = `${new Date().toLocaleTimeString([], { hour12: false })} ${body.message.replace(/\n+$/, '')}\n`;
+          fs.appendFileSync(safeJoin(getDataDir(), 'debug.log'), line, 'utf8');
+        }
+        return json({ success: true });
+      } catch (err) {
+        return error(400, err instanceof Error ? err.message : 'Failed to write debug log');
       }
     }
 

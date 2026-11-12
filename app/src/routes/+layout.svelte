@@ -7,6 +7,7 @@
   import InitialSyncModal from '$lib/components/InitialSyncModal.svelte';
   import ConnectIpadModal from '$lib/components/ConnectIpadModal.svelte';
   import ScanDesktopModal from '$lib/components/ScanDesktopModal.svelte';
+  import ConsoleInspector from '$lib/components/ConsoleInspector.svelte';
   import {
     modalState,
     closeConnectIpadModal,
@@ -17,6 +18,13 @@
   import { isTauriDesktop } from '$lib/api';
   import { initSyncState } from '$lib/syncState.svelte';
   import { initWebviewGestures } from '$lib/webviewGestures';
+  import { initConsoleCapture } from '$lib/consoleCapture.svelte';
+  import { initDebugger } from '$lib/debugLog.svelte';
+
+  // Capture console output before any module logs so the console inspector
+  // (Settings → Debugger → View console) sees the whole session.
+  initConsoleCapture();
+  initDebugger();
 
   onMount(() => {
     // Skip app initialization and modal prompts when rendered inside an iframe
@@ -72,3 +80,5 @@
   {@render children()}
   <ZoomIndicator />
 </div>
+
+<ConsoleInspector />
