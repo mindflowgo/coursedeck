@@ -94,7 +94,7 @@
   import type { Checkpoint, Anchor } from '$lib/checkpoint';
   import { checkpointBelongsToSource } from '$lib/checkpoint';
   import { annotationSourceFile, stripMarkdownAnchorMetadata } from '$lib/checkpoint/sourceAnchors';
-  import { anchorAtReaderY, resolveCheckpointTop } from '$lib/checkpoint/selection';
+  import { anchorAtReaderY } from '$lib/checkpoint/selection';
   import { buildCheckpointAskUserPrompt, DEFAULT_CHECKPOINT_ASK_PROMPT } from '$lib/checkpoint/askPrompt';
   import FloatingCheckpointTrigger from '$lib/components/FloatingCheckpointTrigger.svelte';
   import CheckpointMarker from '$lib/components/CheckpointMarker.svelte';
@@ -393,7 +393,7 @@
 
   let externalCursorPosition = $state<{ cursorY: number; scrollTop: number; anchor?: Anchor } | null>(null);
   let lastHtmlPointerAnchor = $state<Anchor | undefined>();
-  let htmlAnchorPositions = $state<Record<string, number>>({});
+  let anchorPositions = $state<Record<string, number>>({});
 
   // Selections and anchor lookups belong to one document. Clear them whenever
   // the rendered document changes so nothing carries over to another
@@ -406,7 +406,7 @@
     activeSelection = null;
     externalCursorPosition = null;
     lastHtmlPointerAnchor = undefined;
-    htmlAnchorPositions = {};
+    anchorPositions = {};
     openNoteIds = new Set();
   });
 
@@ -3362,14 +3362,7 @@
           {#each currentFileNotes as note (note.id)}
             <CheckpointMarker
               checkpoint={note}
-              resolvedTop={(() => {
-                if (annotationRenderer === 'html') {
-                  return htmlAnchorPositions[note.id] ?? note.verticalPosition;
-                }
-                const body = contentScroller?.querySelector<HTMLElement>('.markdown-body');
-                if (body && contentScroller && (note.selection?.text || note.anchor?.blockId)) return resolveCheckpointTop(note, body, contentScroller);
-                return undefined;
-              })()}
+              resolvedTop={anchorPositions[note.id] ?? note.verticalPosition}
               isOpen={openNoteIds.has(note.id)}
               isActive={activeCheckpoint?.id === note.id && isCheckpointModalOpen}
               onToggle={handleToggleCheckpoint}
@@ -3709,7 +3702,7 @@
                       activeSelection = null;
                     }}
                     onResolveAnchors={(positions) => {
-                      htmlAnchorPositions = { ...htmlAnchorPositions, ...positions };
+                      anchorPositions = { ...anchorPositions, ...positions };
                     }}
                   />
                 {:else if effectiveFormat === 'pdf'}
@@ -3732,6 +3725,9 @@
                   markupFile={currentFile}
                   markupScroller={contentScroller}
                   checkpoints={currentFileNotes}
+                  onResolveAnchors={(positions) => {
+                    anchorPositions = { ...anchorPositions, ...positions };
+                  }}
                   onAnnotationSelect={(params) => {
                     activeSelection = {
                       text: params.text,

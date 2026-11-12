@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { findBestQuoteSpan } from './selection';
+import { findBestQuoteSpan, resolveCheckpointTop } from './selection';
 import { clamp, clampTriggerY, defaultTriggerY, isWithinVerticalBounds, readerYToOverlayY, iframeClientYToViewportSpace } from './coordinates';
 
 describe('findBestQuoteSpan', () => {
@@ -100,5 +100,75 @@ describe('coordinate clamps', () => {
     expect(isWithinVerticalBounds(101, rect)).toBe(true);
     expect(isWithinVerticalBounds(710, rect)).toBe(true);
     expect(isWithinVerticalBounds(70, rect)).toBe(false);
+  });
+});
+
+describe('resolveCheckpointTop', () => {
+  it('resolves block anchor by blockId with yRatio', () => {
+    const scroller = {
+      scrollTop: 100,
+      getBoundingClientRect: () => ({ top: 50 })
+    } as unknown as HTMLElement;
+    const block = {
+      dataset: { anchorId: 'a-123' },
+      getBoundingClientRect: () => ({ top: 350, height: 60 })
+    };
+    const root = {
+      querySelectorAll: () => [block]
+    } as unknown as HTMLElement;
+
+    const cp: any = {
+      id: 'note-1',
+      type: 'note',
+      verticalPosition: 200,
+      anchor: { blockId: 'a-123', yRatio: 0.5 }
+    };
+    // Expected top: rect.top (350) - scroller.top (50) + scroller.scrollTop (100) + height (60) * 0.5 = 430
+    const top = resolveCheckpointTop(cp, root, scroller);
+    expect(top).toBe(430);
+  });
+
+  it('falls back to verticalPosition when blockId is not found in root', () => {
+    const scroller = {
+      scrollTop: 0,
+      getBoundingClientRect: () => ({ top: 0 })
+    } as unknown as HTMLElement;
+    const root = {
+      querySelectorAll: () => []
+    } as unknown as HTMLElement;
+
+    const cp: any = {
+      id: 'note-2',
+      type: 'note',
+      verticalPosition: 539,
+      anchor: { blockId: 'a-nonexistent' }
+    };
+    const top = resolveCheckpointTop(cp, root, scroller);
+    expect(top).toBe(539);
+  });
+
+  it('falls back to blockId when selection text resolution is missing or invalid', () => {
+    const scroller = {
+      scrollTop: 0,
+      getBoundingClientRect: () => ({ top: 0 })
+    } as unknown as HTMLElement;
+    const block = {
+      dataset: { anchorId: 'a-block-fallback' },
+      getBoundingClientRect: () => ({ top: 800, height: 40 })
+    };
+    const root = {
+      querySelectorAll: () => [block],
+      textContent: 'Completely different text'
+    } as unknown as HTMLElement;
+
+    const cp: any = {
+      id: 'ai-1',
+      type: 'ai',
+      verticalPosition: 539,
+      selection: { text: 'Some deleted passage' },
+      anchor: { blockId: 'a-block-fallback', yRatio: 0 }
+    };
+    const top = resolveCheckpointTop(cp, root, scroller);
+    expect(top).toBe(800);
   });
 });

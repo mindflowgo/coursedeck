@@ -68,7 +68,6 @@ export function resolveCheckpointTop(cp: Checkpoint, root: HTMLElement, scroller
     const range = resolveMarkdownRange(root, cp.selection);
     const rect = range?.getBoundingClientRect();
     if (rect && rect.height) return rect.top - scroller.getBoundingClientRect().top + scroller.scrollTop;
-    return cp.verticalPosition;
   }
   const block = cp.anchor?.blockId ? findAnchorBlock(root, cp.anchor.blockId) : null;
   if (!block) return cp.verticalPosition;
@@ -302,6 +301,7 @@ function rangeFromSpan(root: Element, index: TextIndex, start: number, end: numb
  * the selection can no longer be located unambiguously.
  */
 export function resolveMarkdownRange(root: Element, sel: SelectionRange): Range | null {
+  if (typeof document === 'undefined') return null;
   const startBlock = sel.startAnchorId ? findAnchorBlock(root, sel.startAnchorId) : null;
   const endBlock = sel.endAnchorId ? findAnchorBlock(root, sel.endAnchorId) : null;
 

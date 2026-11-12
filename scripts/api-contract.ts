@@ -670,7 +670,7 @@ try {
   {
     // An asset name containing a literal '%' arrives percent-encoded (%25);
     // it must decode once and miss (404), not double-decode and blow up (500).
-    const pct = await fetch(`${BASE}/api/courses/tst01/assets/img/100%25.png`);
+    const pct = await fetch(`${BASE}/api/courses/tst01/assets/data/100%25.dat`);
     check('asset path with encoded % → 404, not double-decoded 500', pct.status === 404);
 
     const malformed = await fetch(`${BASE}/api/courses/%E0%A4%A`);

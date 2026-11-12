@@ -6,7 +6,7 @@
   import FloatingCheckpointTrigger from '../../app/src/lib/components/FloatingCheckpointTrigger.svelte';
   import CheckpointMarker from '../../app/src/lib/components/CheckpointMarker.svelte';
   import CheckpointModal from '../../app/src/lib/components/CheckpointModal.svelte';
-  import { resolveCheckpointTop, anchorAtReaderY } from '../../app/src/lib/checkpoint/selection';
+  import { anchorAtReaderY } from '../../app/src/lib/checkpoint/selection';
 
   const renderer = new URLSearchParams(location.search).get('annotations') || 'html';
   const sourceFile = renderer === 'html' ? 'first.lesson.html' : 'first.lesson.companion.md';
@@ -19,7 +19,6 @@
   let positions = $state({});
   let draft = $state(null);
   let openId = $state(null);
-  let revision = $state(0);
   const visible = $derived(checkpoints.filter(cp => cp.anchor.sourceFile === sourceFile));
   onMount(async () => {
     const data = await fetch('/__annotation-state').then(r => r.json());
@@ -38,17 +37,8 @@
     selection = null;
   }
   function resolved(cp) {
-    revision;
-    if(renderer==='html') return positions[cp.id] ?? cp.verticalPosition;
-    const body = reader?.querySelector('.markdown-body');
-    return body && reader ? resolveCheckpointTop(cp,body,reader) : cp.verticalPosition;
+    return positions[cp.id] ?? cp.verticalPosition;
   }
-  $effect(() => {
-    if(!reader) return;
-    const ro = new ResizeObserver(()=>revision++);
-    ro.observe(reader);
-    return ()=>ro.disconnect();
-  });
 </script>
 
 <div class="relative mx-auto w-full max-w-5xl h-[650px] mt-16" data-test-reader-host>
@@ -67,6 +57,7 @@
       {:else}
         <div class="p-6">
           <MarkdownViewer {markdown} courseId="fixture" markupScroller={reader} checkpoints={visible}
+            onResolveAnchors={p=>positions=p}
             onAnnotationSelect={s=>selection=s} onSelectionCleared={()=>selection=null} />
         </div>
       {/if}

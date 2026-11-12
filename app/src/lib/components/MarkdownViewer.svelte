@@ -16,7 +16,8 @@
     rangeRectsInScroller,
     resolveMarkdownRange,
     serializeMarkdownSelection,
-    attachMarkdownAnchorIds
+    attachMarkdownAnchorIds,
+    resolveCheckpointTop
   } from '$lib/checkpoint/selection';
   import {
     afterPaint,
@@ -113,6 +114,8 @@
     }) => void;
     /** Called when selection is cleared or collapsed. */
     onSelectionCleared?: () => void;
+    /** Called with resolved Y positions for checkpoints whenever layout renders or reflows. */
+    onResolveAnchors?: (positions: Record<string, number>) => void;
   }
 
   let {
@@ -124,7 +127,8 @@
     markupScroller,
     checkpoints = [],
     onAnnotationSelect,
-    onSelectionCleared
+    onSelectionCleared,
+    onResolveAnchors
   }: Props = $props();
 
   let containerEl: HTMLElement | null = $state(null);
@@ -866,6 +870,7 @@
     layoutRevision;
     renderedHtml;
     const highlights = highlightCheckpoints;
+    const allCheckpoints = checkpoints;
     const host = wrapperEl;
     const body = containerEl;
     if (!host || !body) {
@@ -883,6 +888,21 @@
         }
       }
       highlightRects = out;
+
+      const scroller = markupScroller ?? (body.closest('.overflow-y-auto') as HTMLElement | null) ?? body.parentElement;
+      if (scroller && onResolveAnchors) {
+        const positions: Record<string, number> = {};
+        for (const cp of allCheckpoints) {
+          if (!cp || !cp.id || cp.deleted || cp.type === 'position') continue;
+          if (cp.selection?.text || cp.anchor?.blockId) {
+            const top = resolveCheckpointTop(cp, body, scroller);
+            if (typeof top === 'number' && !isNaN(top)) {
+              positions[cp.id] = Math.round(top);
+            }
+          }
+        }
+        onResolveAnchors(positions);
+      }
     }, 60);
     return () => clearTimeout(timer);
   });
