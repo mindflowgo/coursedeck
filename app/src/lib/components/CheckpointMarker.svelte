@@ -62,7 +62,13 @@
   }
 
   function handleStartDelete(e: MouseEvent) {
+    console.log('[CheckpointMarker] handleStartDelete fired', { checkpoint });
     e.stopPropagation();
+    if (checkpoint.type === 'highlight' || !checkpoint.noteText?.trim()) {
+      console.log('[CheckpointMarker] invoking onDelete for highlight', checkpoint.id);
+      onDelete?.(checkpoint);
+      return;
+    }
     isConfirmingDelete = true;
   }
 
@@ -142,58 +148,65 @@
       <!-- Top colored sticky strip accent -->
       <div class="h-1 w-full shrink-0" style="background-color: {color.dot};"></div>
 
+      <!-- Actions bar overlay in top right: positioned absolutely with z-30 so it can NEVER be obscured by text -->
+      <div
+        class="absolute top-2 right-2 z-30 flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-semibold select-none bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 transition-colors border border-black/5 dark:border-white/10 pointer-events-auto"
+      >
+        {#if isConfirmingDelete}
+          <span class="text-rose-600 dark:text-rose-400 font-bold">Delete?</span>
+          <button
+            type="button"
+            onclick={handleConfirmDelete}
+            class="px-1 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold transition cursor-pointer"
+            title="Confirm delete"
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            onclick={handleCancelDelete}
+            class="px-1 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition cursor-pointer opacity-70"
+            title="Cancel"
+          >
+            No
+          </button>
+        {:else}
+          {#if checkpoint.type !== 'highlight' && onEdit}
+            <button
+              type="button"
+              onclick={handleEditClick}
+              class="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition cursor-pointer"
+              title="Edit note"
+              aria-label="Edit note"
+            ><Edit3 class="w-3 h-3" /></button>
+          {/if}
+
+          {#if checkpoint.type !== 'highlight' && onEdit && onDelete}
+            <span class="opacity-30">|</span>
+          {/if}
+
+          {#if onDelete}
+            <button
+              type="button"
+              onpointerdown={(e) => console.log('[CheckpointMarker] trash pointerdown', e)}
+              onclick={(e) => {
+                console.log('[CheckpointMarker] trash button clicked', e);
+                handleStartDelete(e);
+              }}
+              class="p-0.5 rounded text-stone-600 dark:text-stone-300 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer flex items-center justify-center"
+              title={checkpoint.type === 'highlight' ? 'Remove highlight' : 'Delete note'}
+              aria-label={checkpoint.type === 'highlight' ? 'Remove highlight' : 'Delete note'}
+            >
+              <Trash2 class="w-3.5 h-3.5 pointer-events-none" />
+            </button>
+          {/if}
+        {/if}
+      </div>
+
       <!-- Note body: scrollable text inside note height, text starts on first line -->
       <div
-        class="flex-1 overflow-y-auto px-2.5 py-2 text-xs font-medium leading-relaxed select-text break-words scrollbar-thin"
+        class="flex-1 overflow-y-auto px-2.5 py-2 pr-10 text-xs font-medium leading-relaxed select-text break-words scrollbar-thin"
       >
-        <!-- Floated Edit | Trash actions overlay in top right of note -->
-        <div
-          class="float-right mb-0.5 ml-2 flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-semibold select-none bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 transition-colors border border-black/5 dark:border-white/10"
-        >
-          {#if isConfirmingDelete}
-            <span class="text-rose-600 dark:text-rose-400 font-bold">Delete?</span>
-            <button
-              type="button"
-              onclick={handleConfirmDelete}
-              class="px-1 py-0.5 rounded bg-rose-600 hover:bg-rose-700 text-white font-bold transition cursor-pointer"
-              title="Confirm delete"
-            >
-              Yes
-            </button>
-            <button
-              type="button"
-              onclick={handleCancelDelete}
-              class="px-1 py-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition cursor-pointer opacity-70"
-              title="Cancel"
-            >
-              No
-            </button>
-          {:else}
-            {#if onEdit}
-              <button
-                type="button"
-                onclick={handleEditClick}
-                class="hover:underline cursor-pointer"
-                title="Edit note"
-              ><Edit3 class="w-2.5 h-2.5" /></button>
-            {/if}
-
-            {#if onEdit && onDelete}
-              <span class="opacity-30">|</span>
-            {/if}
-
-            {#if onDelete}
-              <button
-                type="button"
-                onclick={handleStartDelete}
-                class="hover:text-rose-600 dark:hover:text-rose-400 transition cursor-pointer flex items-center space-x-0.5"
-                title="Delete note"
-              >
-                <Trash2 class="w-2.5 h-2.5" />
-              </button>
-            {/if}
-          {/if}
-        </div>
 
         {#if checkpoint.type === 'ai'}
           {#if checkpoint.aiStatus === 'pending'}

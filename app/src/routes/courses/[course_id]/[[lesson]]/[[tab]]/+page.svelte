@@ -956,12 +956,19 @@
   }
 
   async function handleDeleteCheckpoint(cp?: Checkpoint) {
+    console.log('[+page.svelte] handleDeleteCheckpoint called with:', cp);
     const target = cp || activeCheckpoint;
-    if (!target?.id || !courseId) return;
+    console.log('[+page.svelte] resolved target:', target, 'courseId:', courseId);
+    if (!target?.id || !courseId) {
+      console.warn('[+page.svelte] target.id or courseId missing!');
+      return;
+    }
     try {
+      console.log(`[+page.svelte] Sending DELETE /api/courses/${courseId}/checkpoints/${target.id}`);
       const res = await apiFetch(`/api/courses/${courseId}/checkpoints/${target.id}`, {
         method: 'DELETE'
       });
+      console.log('[+page.svelte] DELETE response status:', res.status, res.ok);
       if (res.ok) {
         checkpoints = checkpoints.filter((c) => c.id !== target.id);
         const next = new Set(openNoteIds);
@@ -971,9 +978,12 @@
           isCheckpointModalOpen = false;
           activeCheckpoint = null;
         }
+        console.log('[+page.svelte] Checkpoint removed successfully from state.');
+      } else {
+        console.error('[+page.svelte] DELETE failed with status:', res.status);
       }
     } catch (e) {
-      console.error('Failed to delete checkpoint note:', e);
+      console.error('[+page.svelte] Failed to delete checkpoint note:', e);
       alert('Could not delete checkpoint note.');
     }
   }
