@@ -865,14 +865,15 @@
   });
 
   $effect(() => {
-    // Re-run when the document re-renders, the checkpoint set changes, or the
-    // content box reflows.
+    // Re-run when the document re-renders, the checkpoint set changes, the
+    // content box reflows, or the scroller container binds.
     layoutRevision;
     renderedHtml;
     const highlights = highlightCheckpoints;
     const allCheckpoints = checkpoints;
     const host = wrapperEl;
     const body = containerEl;
+    const currentScroller = markupScroller;
     if (!host || !body) {
       highlightRects = [];
       return;
@@ -889,7 +890,7 @@
       }
       highlightRects = out;
 
-      const scroller = markupScroller ?? (body.closest('.overflow-y-auto') as HTMLElement | null) ?? body.parentElement;
+      const scroller = currentScroller ?? (body.closest('.overflow-y-auto') as HTMLElement | null) ?? body.parentElement;
       if (scroller && onResolveAnchors) {
         const positions: Record<string, number> = {};
         for (const cp of allCheckpoints) {
