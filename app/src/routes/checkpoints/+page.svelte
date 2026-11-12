@@ -193,6 +193,8 @@
         filtered = filtered.filter(
           (cp) =>
             (cp.noteText || '').toLowerCase().includes(q) ||
+            (cp.aiAnswer || '').toLowerCase().includes(q) ||
+            (cp.aiQuestion || '').toLowerCase().includes(q) ||
             cp.file.toLowerCase().includes(q)
         );
       }
@@ -441,9 +443,9 @@
                         <!-- Written Text (small font, truncated snippet, no date) -->
                         <span
                           class="text-xs text-stone-700 dark:text-stone-300 group-hover:text-stone-900 dark:group-hover:text-stone-100 truncate flex-1 min-w-0"
-                          title="{fullLabel}: {cp.noteText || '(no note text)'}"
+                          title="{fullLabel}: {cp.noteText || cp.aiAnswer || cp.aiQuestion || '(no note text)'}"
                         >
-                          {cp.noteText || fullLabel}
+                          {cp.noteText || cp.aiAnswer || cp.aiQuestion || fullLabel}
                         </span>
                       </div>
 

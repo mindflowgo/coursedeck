@@ -26,7 +26,7 @@
   $effect(() => {
     if (isOpen) {
       selectedColorId = checkpoint?.color || DEFAULT_CHECKPOINT_COLOR;
-      noteText = checkpoint?.noteText || '';
+      noteText = checkpoint?.noteText || checkpoint?.aiAnswer || '';
       setTimeout(() => {
         textareaEl?.focus();
       }, 50);

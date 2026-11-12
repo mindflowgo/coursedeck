@@ -288,4 +288,13 @@ describe('Checkpoint Palette & Models', () => {
     expect(formatCheckpointDate('invalid')).toBe('');
     expect(formatCheckpointDate('2026-10-16T14:30:00Z')).toContain('Oct 16');
   });
+
+  it('renders markdown and KaTeX math in checkpoint AI notes', () => {
+    const { renderTextWithMath } = require('./markdown/mathRenderer');
+    const input = 'The expression is **\\(7x^2+x-3\\)**. Its discriminant is\n\n\\[\nb^2-4ac=1^2-4(7)(-3)=85\n\\]\n\nand \\(85\\) is not a perfect square.';
+    const html = renderTextWithMath(input);
+    expect(html).toContain('<strong><span class="katex">');
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain('b^2-4ac=1^2-4(7)(-3)=85');
+  });
 });

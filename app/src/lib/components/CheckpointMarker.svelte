@@ -6,6 +6,8 @@
     type Checkpoint,
     type CheckpointColor
   } from '$lib/checkpoint';
+  import { renderTextWithMath } from '$lib/markdown/mathRenderer';
+  import DOMPurify from 'dompurify';
 
   interface Props {
     checkpoint: Checkpoint;
@@ -74,6 +76,17 @@
     isConfirmingDelete = false;
     onDelete?.(checkpoint);
   }
+
+  function renderContent(text?: string): string {
+    if (!text) return '';
+    const rendered = renderTextWithMath(text);
+    if (typeof window === 'undefined') return rendered;
+    const purify = typeof DOMPurify.sanitize === 'function' ? DOMPurify : (DOMPurify as any)(window);
+    if (!purify || typeof purify.sanitize !== 'function') return rendered;
+    return purify.sanitize(rendered, {
+      ADD_TAGS: ['details', 'summary', 'mark']
+    });
+  }
 </script>
 
 <div
@@ -116,7 +129,7 @@
   <!-- Non-editable Overlay Post-It Note expanding to the left -->
   {#if isOpen}
     <div
-      class="absolute {side === 'left' ? 'left-[calc(100%+12px)]' : 'right-[calc(100%+12px)]'} top-1/2 -translate-y-1/2 max-w-[calc(100vw-4.5rem)] {checkpoint.type === 'ai' ? 'w-[320px] min-h-[120px] max-h-[220px]' : 'w-[250px] h-[100px]'} rounded-xl border shadow-xl flex flex-col overflow-hidden z-30 transition-all select-text bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)] text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
+      class="absolute {side === 'left' ? 'left-[calc(100%+12px)]' : 'right-[calc(100%+12px)]'} top-1/2 -translate-y-1/2 max-w-[calc(100vw-4.5rem)] {checkpoint.type === 'ai' ? 'w-[320px] sm:w-[380px] min-h-[120px] max-h-[340px]' : 'w-[250px] min-h-[100px] max-h-[240px]'} rounded-xl border shadow-xl flex flex-col overflow-hidden z-30 transition-all select-text bg-[var(--note-bg-light)] dark:bg-[var(--note-bg-dark)] border-[var(--note-border-light)] dark:border-[var(--note-border-dark)] text-[var(--note-text-light)] dark:text-[var(--note-text-dark)]"
       style="
         --note-bg-light: {color.bgLight};
         --note-bg-dark: {color.bgDark};
@@ -131,11 +144,11 @@
 
       <!-- Note body: scrollable text inside note height, text starts on first line -->
       <div
-        class="flex-1 overflow-y-auto px-2.5 py-2 text-xs font-medium leading-relaxed select-text whitespace-pre-wrap break-words scrollbar-thin"
+        class="flex-1 overflow-y-auto px-2.5 py-2 text-xs font-medium leading-relaxed select-text break-words scrollbar-thin"
       >
         <!-- Floated Edit | Trash actions overlay in top right of note -->
         <div
-          class="float-right mb-0.5 flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-semibold select-none bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 transition-colors border border-black/5 dark:border-white/10"
+          class="float-right mb-0.5 ml-2 flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-semibold select-none bg-black/5 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15 transition-colors border border-black/5 dark:border-white/10"
         >
           {#if isConfirmingDelete}
             <span class="text-rose-600 dark:text-rose-400 font-bold">Delete?</span>
@@ -206,17 +219,23 @@
               {/if}
             </div>
             {#if checkpoint.aiAnswer}
-              <div class="text-[11px] opacity-70 whitespace-pre-wrap">{checkpoint.aiAnswer}</div>
+              <div class="checkpoint-markdown text-[11px] opacity-70">
+                {@html renderContent(checkpoint.aiAnswer)}
+              </div>
             {/if}
           {:else}
-            <div class="text-[11px] leading-relaxed whitespace-pre-wrap">{checkpoint.aiAnswer || checkpoint.noteText}</div>
+            <div class="checkpoint-markdown text-[11px] leading-relaxed">
+              {@html renderContent(checkpoint.aiAnswer || checkpoint.noteText)}
+            </div>
           {/if}
         {:else if checkpoint.type === 'highlight' && checkpoint.selection?.text && !checkpoint.noteText}
-          <div class="italic text-[11px] leading-relaxed opacity-80">"{checkpoint.selection.text.length > 120
+          <div class="italic text-[11px] leading-relaxed opacity-80 whitespace-pre-wrap">"{checkpoint.selection.text.length > 120
             ? checkpoint.selection.text.slice(0, 120) + '…'
             : checkpoint.selection.text}"</div>
         {:else}
-          {checkpoint.noteText || ''}
+          <div class="checkpoint-markdown text-[11px] leading-relaxed">
+            {@html renderContent(checkpoint.noteText || '')}
+          </div>
         {/if}
       </div>
 
@@ -227,3 +246,65 @@
     </div>
   {/if}
 </div>
+
+<style>
+  :global(.checkpoint-markdown) {
+    word-break: break-word;
+  }
+  :global(.checkpoint-markdown p) {
+    margin-bottom: 0.45rem;
+  }
+  :global(.checkpoint-markdown p:first-child) {
+    margin-top: 0;
+  }
+  :global(.checkpoint-markdown p:last-child) {
+    margin-bottom: 0;
+  }
+  :global(.checkpoint-markdown ul, .checkpoint-markdown ol) {
+    margin: 0.35rem 0 0.45rem 1.25rem;
+    padding: 0;
+  }
+  :global(.checkpoint-markdown ul) {
+    list-style-type: disc;
+  }
+  :global(.checkpoint-markdown ol) {
+    list-style-type: decimal;
+  }
+  :global(.checkpoint-markdown li) {
+    margin-bottom: 0.15rem;
+  }
+  :global(.checkpoint-markdown strong) {
+    font-weight: 700;
+  }
+  :global(.checkpoint-markdown code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.9em;
+    padding: 0.1rem 0.25rem;
+    border-radius: 0.25rem;
+    background-color: rgba(0, 0, 0, 0.08);
+  }
+  :global(.dark .checkpoint-markdown code) {
+    background-color: rgba(255, 255, 255, 0.12);
+  }
+  :global(.checkpoint-markdown pre) {
+    overflow-x: auto;
+    padding: 0.4rem;
+    border-radius: 0.375rem;
+    background-color: rgba(0, 0, 0, 0.08);
+    margin: 0.35rem 0;
+  }
+  :global(.dark .checkpoint-markdown pre) {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
+  :global(.checkpoint-markdown .katex-display) {
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    padding: 0.2rem 0;
+    margin: 0.35rem 0;
+  }
+  :global(.checkpoint-markdown .katex) {
+    font-size: 1.05em;
+    text-rendering: auto;
+  }
+</style>
